@@ -192,3 +192,5 @@ freshness:
 
 related:
   - container-exit-code-137-oomkilled
+  - kubernetes-imagepullbackoff
+  - kubernetes-createcontainerconfigerror

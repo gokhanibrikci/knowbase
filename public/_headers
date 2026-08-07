@@ -1,0 +1,12 @@
+# Cloudflare Workers Static Assets reads this; Next.js `headers()` does not reach
+# files served straight off the asset binding.
+#
+# Everything under /_next/static is content-addressed — the filename contains a hash
+# of the contents, so a changed file is a different URL and the old one can be cached
+# forever. Without this they are revalidated on every visit for no reason.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The IndexNow key must stay verifiable but should not be pinned at the edge.
+/20ad100837b75d3a5dbfa457d6f0e9a6.txt
+  Cache-Control: public, max-age=0, s-maxage=300

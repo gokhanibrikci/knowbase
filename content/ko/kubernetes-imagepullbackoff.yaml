@@ -1,0 +1,205 @@
+slug: kubernetes-imagepullbackoff
+title: "Kubernetes pod stuck in ImagePullBackOff or ErrImagePull"
+summary: >-
+  The kubelet cannot pull the image, so the container never starts. ErrImagePull is
+  the first failure and ImagePullBackOff is the wait between retries — neither says
+  why. The registry's own error text, printed in the pod's Events, is what identifies
+  the cause.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - images
+  - registry
+  - imagepullbackoff
+  - troubleshooting
+
+error:
+  signature: "ImagePullBackOff"
+  codes:
+    - ImagePullBackOff
+    - ErrImagePull
+  aliases:
+    - "Back-off pulling image"
+    - "Failed to pull image"
+    - "ErrImagePull kubernetes"
+    - "manifest unknown"
+    - "pull access denied"
+
+problem: >-
+  A pod never reaches Running. Its status alternates between ErrImagePull and
+  ImagePullBackOff, and the restart interval grows. kubectl logs returns nothing
+  because no container was ever created — the failure happens before the image
+  becomes a container, so the usual log-reading reflex gives you nothing to work with.
+
+rootCauses:
+  - cause: The image reference is wrong or the tag does not exist
+    weight: primary
+    detail: >-
+      A typo in the repository, a tag that was never pushed, or a tag that has since
+      been deleted or overwritten. The registry answers correctly; the reference is
+      simply wrong.
+    discriminator: >-
+      Events show 'manifest unknown' or 'not found', and pulling the exact same
+      reference from your own machine fails identically
+  - cause: The registry is private and credentials are missing or wrong
+    weight: common
+    detail: >-
+      No imagePullSecrets on the pod or its ServiceAccount, a secret in the wrong
+      namespace, or credentials that have expired. Image pull secrets are namespaced,
+      so one that works in staging does nothing in production.
+    discriminator: "Events show '401 Unauthorized', 'pull access denied' or 'authentication required'"
+  - cause: The registry rate-limited the pull
+    weight: common
+    detail: >-
+      Docker Hub limits unauthenticated pulls to 100 per IPv4 address or IPv6 /64
+      subnet per six hours. A cluster behind one NAT address shares that budget across
+      every node, so a busy cluster exhausts it without any single workload looking
+      unusual.
+    discriminator: "Events contain 'toomanyrequests' or 'You have reached your pull rate limit'"
+  - cause: The node cannot reach the registry
+    weight: common
+    detail: >-
+      DNS failure, an egress firewall, a proxy that needs configuring on the container
+      runtime rather than the pod, or a private registry with no route from the node
+      subnet.
+    discriminator: "Events show 'dial tcp ... i/o timeout', 'no such host' or a TLS handshake failure"
+  - cause: The image has no build for the node's architecture
+    weight: edge
+    detail: >-
+      An amd64-only image scheduled onto an arm64 node. The reference resolves and
+      credentials work, but the manifest list has no matching entry.
+    discriminator: "Events show 'no matching manifest for linux/arm64' or a similar platform string"
+
+solution:
+  steps:
+    - instruction: >-
+        Read the Events at the bottom of the pod description. The registry's own error
+        text is there, and it names the cause; the pod status never does.
+      command: "kubectl describe pod <pod-name> -n <namespace>"
+      note: >-
+        Look for the Failed event from the kubelet — it quotes the runtime's message
+        verbatim.
+    - instruction: >-
+        Reproduce the pull from outside the cluster with the exact same reference. This
+        separates a wrong reference from a cluster-side problem in one step.
+      command: "crane manifest <registry>/<repo>:<tag> || docker pull <registry>/<repo>:<tag>"
+    - instruction: >-
+        If the registry is private, create a pull secret and attach it to the pod in the
+        same namespace as the pod.
+      code: |
+        kubectl create secret docker-registry regcred \
+          --docker-server=<registry> \
+          --docker-username=<user> \
+          --docker-password=<password> \
+          -n <namespace>
+      language: bash
+      note: >-
+        Then reference it under spec.imagePullSecrets, or attach it to the
+        ServiceAccount so every pod in the namespace inherits it.
+    - instruction: >-
+        Wire the secret into the pod spec, or the kubelet will keep pulling anonymously.
+      code: |
+        spec:
+          imagePullSecrets:
+            - name: regcred
+          containers:
+            - name: app
+              image: <registry>/<repo>:<tag>
+      language: yaml
+    - instruction: >-
+        If the message mentions rate limiting, authenticate rather than retry.
+        Unauthenticated pulls share a per-IP budget across the whole cluster, so
+        retrying makes it worse. Mirroring hot images into your own registry removes
+        the dependency entirely.
+    - instruction: >-
+        Fix the reference or the credentials, then replace the pod. Editing nothing and
+        waiting does not help — the kubelet retries with the same failing spec, backing
+        off up to five minutes between attempts.
+      command: "kubectl rollout restart deployment/<name> -n <namespace>"
+  verification: >-
+    kubectl describe pod shows a 'Successfully pulled image' event and the pod reaches
+    Running; kubectl get pod reports a stable RESTARTS count.
+  fallback: >-
+    Where the registry is genuinely unreachable from the cluster — an air-gapped
+    environment, for example — pre-load the image onto the nodes and set
+    imagePullPolicy to IfNotPresent so the kubelet uses the local copy.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        ImagePullBackOff is a Waiting-state reason surfaced by the kubelet, not a Pod
+        phase.
+    - name: kubelet
+      versions: "1.20 and later"
+      note: "Pull retry delay grows to a compiled-in ceiling of 300 seconds."
+  runtimes:
+    - containerd
+    - CRI-O
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - CrashLoopBackOff, where the image pulled successfully and the container starts then exits
+  - CreateContainerConfigError, where a referenced ConfigMap or Secret is missing
+  - ErrImageNeverPull, which means imagePullPolicy is Never and the image is absent from the node
+  - Pods stuck in Pending, which is a scheduling problem and never reaches the pull stage
+
+evidence:
+  - type: official-docs
+    title: "Images — ImagePullBackOff"
+    url: https://kubernetes.io/docs/concepts/containers/images/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The definition of ImagePullBackOff, that an invalid image name and a private
+      registry without an imagePullSecret are its named causes, and that the retry
+      delay grows to a compiled-in ceiling of 300 seconds.
+    quote: "The status ImagePullBackOff means that a container could not start because Kubernetes could not pull a container image ... which is 300 seconds (5 minutes)"
+  - type: official-docs
+    title: "Pull an Image from a Private Registry"
+    url: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That a docker-registry Secret is the mechanism for authenticated pulls and that
+      it is referenced from the pod through imagePullSecrets.
+    quote: "Create a Secret by providing credentials on the command line"
+  - type: official-docs
+    title: "Docker Hub pull usage and limits"
+    url: https://docs.docker.com/docker-hub/usage/pulls/
+    publisher: Docker Inc.
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The unauthenticated pull ceiling of 100 per IPv4 address or IPv6 /64 subnet per
+      six hours, which is why a NATed cluster exhausts the budget collectively.
+    quote: "Unauthenticated and Docker Personal users are subject to a 6-hour pull rate limit on Docker Hub."
+  - type: official-docs
+    title: "Debug Pods"
+    url: https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That describing the pod and reading its recent events is the first diagnostic
+      step, which is where the registry's own error text appears.
+    quote: "The first step in debugging a Pod is taking a look at it. Check the current state of the Pod and recent events"
+
+confidence: high
+confidenceRationale: >-
+  The status definition, the retry ceiling and the named causes come from Kubernetes'
+  own image documentation, and the pull-limit figures from Docker's published table.
+  The per-cause discriminators are the runtime's own error strings as surfaced in pod
+  events rather than claims any single document makes about diagnosis.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 120
+
+related:
+  - kubernetes-crashloopbackoff
+  - kubernetes-createcontainerconfigerror

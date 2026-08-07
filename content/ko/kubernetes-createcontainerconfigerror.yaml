@@ -1,0 +1,187 @@
+slug: kubernetes-createcontainerconfigerror
+title: "Kubernetes pod fails with CreateContainerConfigError"
+summary: >-
+  The image pulled fine, but the kubelet cannot assemble the container's
+  configuration: a referenced ConfigMap or Secret does not exist, or exists without
+  the key the pod asks for. The pod stays in Waiting and no container is ever created.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - configmap
+  - secrets
+  - createcontainerconfigerror
+  - troubleshooting
+
+error:
+  signature: "CreateContainerConfigError"
+  codes:
+    - CreateContainerConfigError
+  aliases:
+    - "configmap not found kubernetes"
+    - "couldn't find key in ConfigMap"
+    - "secret not found pod"
+    - "Error: secret \"x\" not found"
+
+problem: >-
+  A pod sits in Waiting with reason CreateContainerConfigError. The image was pulled
+  successfully, so this is not a registry problem, and there are no logs because no
+  container was ever created. The kubelet retries indefinitely without progressing,
+  because nothing about the pod spec changes on its own.
+
+rootCauses:
+  - cause: The referenced ConfigMap or Secret does not exist
+    weight: primary
+    detail: >-
+      A required reference to an object that was never created, was deleted, or was
+      renamed. Kubernetes refuses to start the container rather than starting it with
+      missing configuration.
+    discriminator: >-
+      Events read 'configmap "<name>" not found' or 'secret "<name>" not found', and
+      kubectl get on that object returns NotFound
+  - cause: The object exists but the referenced key does not
+    weight: common
+    detail: >-
+      configMapKeyRef or secretKeyRef names a key that is absent — often a typo, or a
+      key renamed in the ConfigMap without updating the consumers.
+    discriminator: "Events read 'couldn't find key <key> in ConfigMap <namespace>/<name>'"
+  - cause: The object lives in a different namespace
+    weight: common
+    detail: >-
+      ConfigMaps and Secrets are namespaced and cannot be referenced across
+      namespaces. A manifest that works in one namespace fails silently in another
+      when the object was only ever created in the first.
+    discriminator: >-
+      kubectl get configmap -A shows the object present, but under a namespace other
+      than the pod's
+  - cause: The pod was created before the object it depends on
+    weight: common
+    detail: >-
+      Applying a manifest directory in the wrong order, or a CI job that creates the
+      Deployment before the ConfigMap. The kubelet keeps retrying, and once the object
+      appears an env-var reference still will not pick it up until the pod is replaced.
+    discriminator: >-
+      The object now exists and was created after the pod, yet the pod is still failing
+  - cause: The reference is genuinely optional but not marked as such
+    weight: edge
+    detail: >-
+      A pod that should tolerate absent configuration will still refuse to start
+      unless the reference carries optional true.
+    discriminator: "Adding optional: true to the reference lets the pod start with empty configuration"
+
+solution:
+  steps:
+    - instruction: >-
+        Read the pod's events. The kubelet names the exact object and, when the object
+        exists, the exact key it could not find.
+      command: "kubectl describe pod <pod-name> -n <namespace>"
+    - instruction: >-
+        Confirm whether the object exists in the pod's own namespace. Searching all
+        namespaces at once catches the most common mistake.
+      command: "kubectl get configmap,secret -A | grep <name>"
+    - instruction: >-
+        If the object exists, list its keys and compare them against what the pod asks
+        for. A key that differs by one character fails exactly like a missing object.
+      command: "kubectl get configmap <name> -n <namespace> -o jsonpath='{.data}' | tr ',' '\\n'"
+    - instruction: >-
+        Create whatever is missing in the correct namespace.
+      code: |
+        kubectl create configmap app-config \
+          --from-literal=LOG_LEVEL=info \
+          -n <namespace>
+      language: bash
+    - instruction: >-
+        Where the configuration really is optional, say so explicitly rather than
+        relying on the object always being present.
+      code: |
+        env:
+          - name: LOG_LEVEL
+            valueFrom:
+              configMapKeyRef:
+                name: app-config
+                key: LOG_LEVEL
+                optional: true
+      language: yaml
+      note: >-
+        With optional true and the object absent, the variable is simply unset rather
+        than blocking the container.
+    - instruction: >-
+        Replace the pod after fixing the reference. Creating the missing object is not
+        enough on its own for environment-variable references, which are resolved once
+        at container creation.
+      command: "kubectl rollout restart deployment/<name> -n <namespace>"
+  verification: >-
+    kubectl get pod shows Running, and kubectl describe pod no longer lists a Failed
+    event mentioning the ConfigMap or Secret.
+  fallback: >-
+    If the object is created by another controller or an external secrets operator that
+    has not reconciled yet, mark the reference optional so the pod can start degraded,
+    and have the application fail its readiness probe until the configuration arrives.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        CreateContainerConfigError is a Waiting-state reason: the pod phase stays
+        Pending and no container is created.
+    - name: kubelet
+      versions: "1.20 and later"
+  runtimes:
+    - containerd
+    - CRI-O
+
+notApplicableTo:
+  - CrashLoopBackOff, where configuration resolved and the container started before exiting
+  - ImagePullBackOff, which fails earlier, at the image pull, before configuration is read
+  - CreateContainerError, which is a container-runtime failure rather than a missing config reference
+  - RBAC errors on the ServiceAccount, which surface as API request failures inside the running application
+
+evidence:
+  - type: official-docs
+    title: "Configure a Pod to Use a ConfigMap — Restrictions"
+    url: https://kubernetes.io/docs/tasks/configure-pod-container/configure-pod-configmap/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That a ConfigMap must exist before it is referenced, that an unmarked reference
+      to a missing ConfigMap stops the pod starting, and that a missing key behaves the
+      same way unless the reference is optional.
+    quote: "You must create the ConfigMap object before you reference it in a Pod specification."
+  - type: official-docs
+    title: "Secrets"
+    url: https://kubernetes.io/docs/concepts/configuration/secret/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That a Secret must exist before the pods depending on it, and that when the
+      kubelet cannot fetch one it retries and records an Event describing the problem —
+      which is why the pod loops without progressing.
+    quote: "a Secret needs to be created before any Pods that depend on it"
+  - type: official-docs
+    title: "Debug Pods"
+    url: https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That describing the pod and reading its recent events is the first diagnostic
+      step, which is where the missing object and key are named.
+    quote: "The first step in debugging a Pod is taking a look at it. Check the current state of the Pod and recent events"
+
+confidence: high
+confidenceRationale: >-
+  The creation-order requirement, the optional-reference semantics and the retry
+  behaviour are stated directly in Kubernetes' ConfigMap and Secret documentation. The
+  event strings used as discriminators are the kubelet's own messages rather than
+  quoted documentation, and the namespace-mismatch case follows from ConfigMaps being
+  namespaced rather than from a sentence about this specific failure.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-crashloopbackoff
+  - kubernetes-imagepullbackoff
