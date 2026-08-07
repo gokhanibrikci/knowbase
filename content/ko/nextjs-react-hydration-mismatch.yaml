@@ -1,0 +1,217 @@
+slug: nextjs-react-hydration-mismatch
+title: "React hydration failed: server HTML did not match the client"
+summary: >-
+  Hydration compares the server-rendered HTML against the first client render and fails
+  when they differ. The cause is almost always one of three things: HTML the browser
+  silently restructured, rendering logic that branches on the environment, or a value
+  that changes between the two renders.
+domain: framework
+tags:
+  - react
+  - nextjs
+  - hydration
+  - ssr
+  - app-router
+  - rendering
+
+error:
+  signature: "Hydration failed because the server rendered HTML didn't match the client"
+  codes:
+    - "418"
+    - "423"
+    - "425"
+  aliases:
+    - "Text content does not match server-rendered HTML"
+    - "There was an error while hydrating"
+    - "Warning: Expected server HTML to contain a matching <div> in <p>"
+    - "react hydration error nextjs"
+
+problem: >-
+  The page renders on the server, reaches the browser, and then React throws during
+  hydration. The UI may flash correct content and then break, lose event handlers, or
+  re-render entirely on the client. The error frequently appears only in production, or
+  only for some users, which makes it look intermittent when it is not.
+
+rootCauses:
+  - cause: Invalid HTML nesting that the browser restructures before React sees it
+    weight: primary
+    detail: >-
+      A <div> inside a <p>, nested <p> tags, a <ul> inside a <p>, or nested interactive
+      elements such as an <a> inside an <a>. The HTML parser fixes the markup while
+      building the DOM, so the tree React finds is not the tree it sent.
+    discriminator: >-
+      The message names an element mismatch rather than a text mismatch, and the same
+      markup fails identically in every browser
+  - cause: Rendering logic that branches on the environment
+    weight: primary
+    detail: >-
+      typeof window !== 'undefined', or reading window, localStorage, or matchMedia
+      during render, produces one output on the server and a different one on the
+      client by construction.
+    discriminator: "Removing the branch makes both renders agree; the mismatch is deterministic"
+  - cause: A value that differs between the two renders
+    weight: common
+    detail: >-
+      new Date(), Date.now(), Math.random(), locale-formatted output, or data fetched
+      separately on each side. Timestamps are the classic case, since the server renders
+      at build or request time and the client renders later.
+    discriminator: "The mismatched text is a date, a random id, or a locale-formatted number"
+  - cause: A browser extension mutating the DOM before hydration
+    weight: common
+    detail: >-
+      Password managers, translators, and accessibility tools inject attributes or
+      wrapper nodes into the served HTML. This reproduces for affected users only and
+      never in a clean profile.
+    discriminator: "Reproduces in a normal profile but not in an incognito window with extensions disabled"
+  - cause: A misconfigured CSS-in-JS library
+    weight: edge
+    detail: >-
+      Styles collected on the server but not flushed into the initial HTML change class
+      names between the two renders.
+    discriminator: "The mismatch is confined to className attributes"
+  - cause: An edge or CDN layer rewriting the HTML in flight
+    weight: edge
+    detail: >-
+      HTML minification or injection performed after the response leaves the origin
+      makes the delivered markup differ from what React rendered.
+    discriminator: "The origin response and the CDN response differ when compared byte for byte"
+
+solution:
+  steps:
+    - instruction: >-
+        Read which element or text the error names, then check that region for invalid
+        nesting first. This is the cheapest cause to rule out and the most common one.
+    - instruction: >-
+        Move genuinely client-only logic out of render and into an effect, so the first
+        client render still matches the server.
+      code: |
+        'use client';
+        import { useState, useEffect } from 'react';
+
+        export function ClientOnlyClock() {
+          const [mounted, setMounted] = useState(false);
+          useEffect(() => setMounted(true), []);
+
+          // First client render matches the server; the clock appears after mount.
+          if (!mounted) return null;
+          return <time>{new Date().toLocaleTimeString()}</time>;
+        }
+      language: tsx
+    - instruction: >-
+        For a component that can never render on the server, skip prerendering it
+        entirely instead of guarding every branch inside it.
+      code: |
+        import dynamic from 'next/dynamic';
+
+        const Chart = dynamic(() => import('../components/chart'), { ssr: false });
+      language: tsx
+      note: "ssr: false is only permitted in Client Components in the App Router."
+    - instruction: >-
+        Where a difference is unavoidable and confined to one element's text, silence it
+        deliberately with suppressHydrationWarning.
+      code: |
+        <time dateTime={iso} suppressHydrationWarning>
+          {new Date(iso).toLocaleString()}
+        </time>
+      language: tsx
+      note: >-
+        It applies one level deep only and React will not patch mismatched text, so it
+        is an escape hatch rather than a fix.
+    - instruction: >-
+        If the mismatch only reproduces for real users, test in a clean profile with
+        extensions disabled before changing application code.
+    - instruction: >-
+        On iOS, stop Safari's automatic detection of phone numbers, dates, and addresses
+        from rewriting text nodes into links.
+      code: |
+        <meta
+          name="format-detection"
+          content="telephone=no, date=no, email=no, address=no"
+        />
+      language: html
+    - instruction: >-
+        Rule out the delivery layer by comparing the origin HTML with what the CDN
+        serves; disable HTML auto-minification if they differ.
+  verification: >-
+    Load the page with a production build and an empty browser profile: the console
+    should show no hydration warning, and the rendered output should be identical before
+    and after hydration.
+  fallback: >-
+    If the mismatch cannot be localised, bisect by rendering subtrees behind the mounted
+    flag one at a time until the warning disappears; the last subtree re-enabled
+    contains the cause.
+
+appliesTo:
+  technology:
+    - name: React
+      versions: "18 and later"
+      note: "Applies to hydrateRoot; React 18 changed mismatches from patch-up to a hard error."
+    - name: Next.js
+      versions: "13 and later"
+      note: "Applies to both the App Router and the Pages Router wherever SSR or SSG is used."
+  runtimes:
+    - Node.js
+    - Edge runtime
+
+notApplicableTo:
+  - Client-side-only React applications created without server rendering, which never hydrate
+  - Build-time errors, which fail before any HTML reaches the browser
+  - "React error #185, an infinite update loop, which is a render-phase setState problem"
+  - Content mismatches caused by an intentionally different client render after mount, which are not hydration errors
+
+evidence:
+  - type: official-docs
+    title: "Text content does not match server-rendered HTML"
+    url: https://nextjs.org/docs/messages/react-hydration-error
+    publisher: Vercel
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The enumerated causes — invalid nesting, typeof window checks, browser-only APIs,
+      time-dependent APIs, browser extensions, CSS-in-JS misconfiguration and CDN
+      auto-minify — and the three prescribed fixes plus the iOS format-detection meta
+      tag.
+    quote: "Incorrect nesting of HTML tags"
+  - type: official-docs
+    title: "hydrateRoot — Handling different client and server content"
+    url: https://react.dev/reference/react-dom/client/hydrateRoot
+    publisher: Meta Open Source
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That the client tree must produce the same output as the server, that mismatches
+      should be treated as bugs, and that suppressHydrationWarning works one level deep
+      and does not patch text.
+    quote: "You should treat mismatches as bugs and fix them."
+  - type: specification
+    title: "HTML Standard — Interactive content"
+    url: https://html.spec.whatwg.org/multipage/dom.html#interactive-content
+    publisher: WHATWG
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The content model that makes nested interactive elements invalid, which is why the
+      parser restructures such markup during DOM construction.
+    quote: "Interactive content is content that is specifically intended for user interaction."
+  - type: github-issue
+    title: "Bug: Hydration mismatch error due to plugins generating script tag on top"
+    url: https://github.com/react/react/issues/24430
+    publisher: React
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That DOM mutations performed by browser extensions before hydration are a known
+      source of mismatches outside the application's control. Note that Next.js links
+      this issue under the old facebook/react path, which no longer resolves.
+    quote: "Install a plugin that creates a script tag at the top"
+
+confidence: high
+confidenceRationale: >-
+  The cause list and every prescribed fix are taken from the framework's own error page
+  and React's hydrateRoot reference, with the nesting rules traced back to the HTML
+  Standard. The bisection fallback is a debugging technique rather than a documented
+  procedure and is presented as such.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 180
+
+related: []

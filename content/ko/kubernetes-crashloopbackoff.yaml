@@ -1,0 +1,194 @@
+slug: kubernetes-crashloopbackoff
+title: "Kubernetes pod stuck in CrashLoopBackOff"
+summary: >-
+  CrashLoopBackOff is not an error in itself — it is the kubelet waiting between
+  restarts of a container that keeps exiting. The exit code and reason on the previous
+  container instance identify the actual failure; the backoff only controls how long
+  you wait to see it again.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - pods
+  - crashloopbackoff
+  - restart-policy
+  - troubleshooting
+
+error:
+  signature: "CrashLoopBackOff"
+  codes:
+    - CrashLoopBackOff
+    - BackOff
+  aliases:
+    - "Back-off restarting failed container"
+    - "pod keeps restarting kubernetes"
+    - "kubectl get pods CrashLoopBackOff"
+
+problem: >-
+  A pod reports STATUS CrashLoopBackOff and its restart count climbs. The container
+  starts, exits, and the kubelet restarts it after an increasing delay. Logs from the
+  running container are empty or unavailable because the process has already died by
+  the time you look.
+
+rootCauses:
+  - cause: The container process exits non-zero during startup
+    weight: primary
+    detail: >-
+      Missing configuration, an unreachable dependency at boot, a failed migration, or
+      an unhandled startup exception. The application decides to die; Kubernetes only
+      reports it.
+    discriminator: "lastState.terminated.exitCode is non-zero and reason is Error"
+  - cause: The container is killed for exceeding its memory limit
+    weight: common
+    detail: >-
+      The cgroup OOM killer terminates the process, the kubelet restarts it, and it
+      dies again at the same allocation point.
+    discriminator: "lastState.terminated.reason is OOMKilled with exitCode 137"
+  - cause: A failing liveness probe restarts a container that is otherwise running
+    weight: common
+    detail: >-
+      A probe that is too aggressive, points at the wrong port or path, or fires before
+      a slow application finishes booting will restart a healthy process indefinitely.
+      A startupProbe is the correct fix for slow boots, not a longer liveness period.
+    discriminator: "Events show 'Liveness probe failed' and 'Container failed liveness probe, will be restarted'"
+  - cause: Invalid command, args, or entrypoint
+    weight: common
+    detail: >-
+      An overridden `command` that does not exist in the image, or arguments the binary
+      rejects, produces an immediate non-zero exit.
+    discriminator: "exitCode 126 (not executable) or 127 (not found), or the log shows a usage message"
+  - cause: The entrypoint completes successfully but restartPolicy is Always
+    weight: edge
+    detail: >-
+      A one-shot process that exits 0 is restarted forever under restartPolicy Always.
+      Such workloads belong in a Job, not a Deployment.
+    discriminator: "lastState.terminated.exitCode is 0 and reason is Completed"
+
+solution:
+  steps:
+    - instruction: >-
+        Read the previous container's termination state. This, not the pod status, names
+        the failure.
+      command: "kubectl describe pod <pod-name> -n <namespace>"
+      note: >-
+        Look at Last State, Exit Code, Reason, and the Events list at the bottom.
+    - instruction: >-
+        Read the logs of the instance that already died. Without --previous you get the
+        logs of the container that is currently waiting to start, which are empty.
+      command: "kubectl logs <pod-name> -n <namespace> --previous"
+    - instruction: >-
+        Map the exit code to a cause before changing anything. 137 means SIGKILL, almost
+        always the memory limit; 143 means SIGTERM; 126 and 127 point at the entrypoint;
+        anything else is the application's own exit status.
+    - instruction: >-
+        If Events show a liveness probe failure, add or widen a startupProbe rather than
+        loosening liveness. A startupProbe suspends liveness checks until the
+        application reports ready.
+      code: |
+        startupProbe:
+          httpGet: { path: /healthz, port: 8080 }
+          failureThreshold: 30
+          periodSeconds: 5   # allows up to 150s to boot
+        livenessProbe:
+          httpGet: { path: /healthz, port: 8080 }
+          periodSeconds: 10
+      language: yaml
+    - instruction: >-
+        Fix the underlying defect and redeploy. Deleting the pod does not reset the
+        backoff decision, it only reschedules the same failing spec.
+      command: "kubectl rollout restart deployment/<name> -n <namespace>"
+    - instruction: >-
+        While iterating, expect long gaps between restarts. The kubelet backs off
+        starting at 10 seconds, doubles each failure, and caps at 5 minutes. The counter
+        resets only after the container has run successfully for 10 minutes.
+      note: >-
+        Clusters with the ReduceDefaultCrashLoopBackoffDecay feature gate enabled start
+        at 1 second and cap at 1 minute instead.
+  verification: >-
+    kubectl get pod <pod-name> -n <namespace> shows STATUS Running with a stable
+    RESTARTS count over at least 10 minutes, which is also the window after which the
+    kubelet resets its backoff timer.
+  fallback: >-
+    If the container dies before producing any logs, override the entrypoint with a
+    sleep and exec into it to inspect the environment from inside — for example set
+    `command: ["sleep", "3600"]`, then `kubectl exec -it <pod> -- sh`.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        CrashLoopBackOff is surfaced by kubectl and is not a field of the Pod API; the
+        Pod phase stays Running while the container waits.
+    - name: kubelet
+      versions: "1.20 and later"
+      note: >-
+        Backoff defaults of 10s initial and 300s maximum apply through 1.31; from 1.32
+        the ReduceDefaultCrashLoopBackoffDecay gate offers 1s initial and 60s maximum.
+  runtimes:
+    - containerd
+    - CRI-O
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - ImagePullBackOff or ErrImagePull, which are registry or credential failures and never start the container
+  - CreateContainerConfigError, which means a referenced ConfigMap or Secret key is missing
+  - Pods stuck in Pending, which is a scheduling problem, not a restart loop
+  - Init container failures, which report Init:CrashLoopBackOff and must be debugged against the init container name
+
+evidence:
+  - type: official-docs
+    title: "Pod Lifecycle"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That CrashLoopBackOff is a kubectl-surfaced status rather than part of the Pod
+      API data model, and the restartPolicy semantics behind repeated restarts.
+    quote: "CrashLoopBackOff may appear in the Status field of some kubectl commands."
+  - type: official-docs
+    title: "Debug Pods"
+    url: https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The describe-then-logs diagnostic sequence and reading the terminated state of the
+      previous container instance.
+    quote: "The first step in debugging a Pod is taking a look at it. Check the current state of the Pod and recent events"
+  - type: official-docs
+    title: "Configure Liveness, Readiness and Startup Probes"
+    url: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That a failing liveness probe causes the kubelet to restart the container, and
+      that startupProbe is the mechanism for slow-starting applications.
+    quote: "Kubernetes provides liveness probes to detect and remedy such situations"
+  - type: specification
+    title: "KEP-4603: Tune CrashLoopBackoff"
+    url: https://raw.githubusercontent.com/kubernetes/enhancements/master/keps/sig-node/4603-tune-crashloopbackoff/README.md
+    publisher: Kubernetes Enhancements
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The exact backoff values: 10s initial with 2x decay capped at five minutes and a
+      10-minute success reset today, versus 1s initial capped at 1 minute behind the
+      ReduceDefaultCrashLoopBackoffDecay gate.
+    quote: "that is capped at five minutes. The delay for restarts will stay at 5 minutes until a container has executed for 2x the maximum backoff"
+
+confidence: high
+confidenceRationale: >-
+  Diagnostic steps and probe semantics come from Kubernetes' own documentation, and the
+  backoff timings come from the enhancement proposal that defines them rather than from
+  folklore. The stable-release target for the reduced-decay gate is a plan, not a
+  shipped fact, and is described here as such.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 120
+
+related:
+  - container-exit-code-137-oomkilled

@@ -1,0 +1,204 @@
+slug: container-exit-code-137-oomkilled
+title: "Container terminated with exit code 137 and reason OOMKilled"
+summary: >-
+  Exit code 137 means the process received SIGKILL (128 + 9). In Kubernetes it almost
+  always means the container breached its own memory limit and the cgroup OOM killer
+  ended it — a different failure from the node running out of memory, which evicts the
+  pod instead.
+domain: kubernetes
+tags:
+  - kubernetes
+  - oomkilled
+  - exit-code-137
+  - memory-limits
+  - cgroups
+  - containers
+
+error:
+  signature: "OOMKilled (exit code 137)"
+  codes:
+    - "137"
+    - OOMKilled
+    - SIGKILL
+  aliases:
+    - "container killed exit code 137"
+    - "Memory cgroup out of memory: Kill process"
+    - "docker exited with code 137"
+    - "pod OOMKilled kubernetes"
+
+problem: >-
+  A container is terminated abruptly with exitCode 137 and reason OOMKilled. There is no
+  stack trace and no graceful shutdown, because SIGKILL cannot be caught or handled. If
+  the restart policy allows it, the container comes back and is killed again at roughly
+  the same point in its workload.
+
+rootCauses:
+  - cause: The container exceeded the memory limit set on it
+    weight: primary
+    detail: >-
+      resources.limits.memory defines a cgroup ceiling. When the processes inside the
+      container reach it, the kernel OOM killer terminates one of them, and the kubelet
+      reports the container as OOMKilled with exit code 137.
+    discriminator: "Node events show 'Memory cgroup out of memory' naming the killed process"
+  - cause: The runtime's heap is not aware of the cgroup limit
+    weight: common
+    detail: >-
+      A JVM, Node.js, or .NET process that sizes its heap from total host memory will
+      happily grow past a much smaller container limit. The application believes it has
+      headroom that the cgroup does not grant.
+    discriminator: >-
+      Host memory greatly exceeds the container limit, and the process dies near a heap
+      size close to a fraction of host RAM rather than of the limit
+  - cause: A genuine memory leak or unbounded buffer
+    weight: common
+    detail: >-
+      Memory grows monotonically with uptime or with request volume, so raising the
+      limit only moves the time of death later.
+    discriminator: "Time-to-kill scales with the limit rather than being fixed at a workload step"
+  - cause: A sidecar consumed the shared budget
+    weight: edge
+    detail: >-
+      Limits are per container, but several containers in one pod compete for node
+      memory; a log shipper or service mesh proxy under-provisioned alongside the app
+      can be the one killed.
+    discriminator: "The OOMKilled container is not the application container"
+  - cause: Node-level memory pressure rather than a container limit
+    weight: edge
+    detail: >-
+      When the node itself runs out of allocatable memory, the kubelet evicts pods by
+      QoS class. This is eviction, not a cgroup OOM kill, and it is fixed by requests
+      and node sizing rather than by limits.
+    discriminator: "Pod status is Failed with reason Evicted and a MemoryPressure node condition"
+
+solution:
+  steps:
+    - instruction: >-
+        Confirm the kill was a cgroup OOM and read the exact limit that was breached.
+      command: "kubectl describe pod <pod-name> -n <namespace> | grep -A6 'Last State'"
+      note: >-
+        Expect reason OOMKilled and exitCode 137 under lastState.terminated.
+    - instruction: >-
+        Compare real usage against the limit before changing it, so the new number is
+        measured rather than guessed.
+      command: "kubectl top pod <pod-name> -n <namespace> --containers"
+    - instruction: >-
+        Tell the runtime about the container limit instead of raising the limit blindly.
+        This is the fix whenever the process sizes its heap from host memory.
+      code: |
+        # JVM: honour the cgroup limit and take a defined share of it
+        env:
+          - name: JAVA_TOOL_OPTIONS
+            value: "-XX:MaxRAMPercentage=75.0"
+
+        # Node.js: cap old-space below the container limit
+        env:
+          - name: NODE_OPTIONS
+            value: "--max-old-space-size=768"   # for a 1Gi limit
+      language: yaml
+    - instruction: >-
+        Set requests and limits deliberately. A request equal to the limit gives the pod
+        Guaranteed QoS and makes it the last candidate for eviction under node pressure.
+      code: |
+        resources:
+          requests:
+            memory: "1Gi"
+          limits:
+            memory: "1Gi"
+      language: yaml
+    - instruction: >-
+        If usage grows with uptime, treat it as a leak and profile it. Raising the limit
+        on a leaking process buys time, not a fix.
+    - instruction: >-
+        If the pod was evicted rather than OOMKilled, size the node or lower requests;
+        container limits are not the lever.
+  verification: >-
+    Run the workload at peak for at least one full duty cycle and confirm no
+    lastState.terminated.reason of OOMKilled appears, with kubectl top showing steady
+    memory below the limit rather than a sawtooth ending in a restart.
+  fallback: >-
+    Where peak memory is genuinely spiky and short-lived, keep the request at the steady
+    state and raise only the limit, accepting Burstable QoS and the eviction risk that
+    comes with it.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: "Applies wherever resources.limits.memory is set on a container."
+    - name: Docker Engine
+      versions: "all supported versions"
+      note: >-
+        Same signal semantics: the runtime reports 128 + signal, so a SIGKILL surfaces
+        as 137 here too.
+    - name: Linux kernel cgroups
+      versions: "cgroup v1 and v2"
+  runtimes:
+    - containerd
+    - CRI-O
+    - Docker
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - Exit code 143, which is SIGTERM and normally indicates a graceful shutdown or rollout
+  - Exit code 1 or other application-defined codes, which are the program's own failure
+  - Pods with reason Evicted, which is kubelet node-pressure eviction and not a cgroup OOM kill
+  - Windows containers, where job-object memory limits do not produce POSIX signal exit codes
+
+evidence:
+  - type: official-docs
+    title: "Assign Memory Resources to Containers and Pods"
+    url: https://kubernetes.io/docs/tasks/configure-pod-container/assign-memory-resource/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That a container exceeding its memory limit is terminated with exitCode 137 and
+      reason OOMKilled, that the kubelet restarts it, and the node event text emitted by
+      the cgroup OOM killer.
+    quote: "exitCode: 137 ... reason: OOMKilled"
+  - type: official-docs
+    title: "Resource Management for Pods and Containers"
+    url: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The distinction between requests and limits, and that memory limits are enforced
+      reactively by the kernel OOM killer rather than as a pre-emptive ceiling — a
+      container can exceed its limit and is killed once the kernel sees memory pressure.
+    quote: "memory limits are enforced by the kernel with out of memory (OOM) kills"
+  - type: official-docs
+    title: "Node-pressure Eviction"
+    url: https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That node-level memory exhaustion causes kubelet eviction by QoS class, which is a
+      different failure mode from a per-container OOM kill.
+    quote: "the kubelet can proactively fail one or more pods on the node to reclaim resources and prevent starvation"
+  - type: specification
+    title: "Bash Reference Manual — Exit Status"
+    url: https://www.gnu.org/software/bash/manual/html_node/Exit-Status.html
+    publisher: GNU Project
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The 128 + signal-number convention that makes 137 the status of a process killed
+      by SIGKILL (signal 9), and 143 the status of one terminated by SIGTERM.
+    quote: "Bash uses the value 128+N as the exit status"
+
+confidence: high
+confidenceRationale: >-
+  The exit code, the reason string, and the kubelet behaviour are quoted from a
+  Kubernetes task page that shows the literal status block, and the eviction contrast is
+  taken from the eviction reference. The runtime heap flags are widely used defaults
+  rather than values any single document prescribes, so they are presented as
+  configuration examples.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-crashloopbackoff

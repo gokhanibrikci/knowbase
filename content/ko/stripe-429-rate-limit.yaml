@@ -1,0 +1,187 @@
+slug: stripe-429-rate-limit
+title: "Stripe API returns 429 Too Many Requests"
+summary: >-
+  Stripe returns 429 for two unrelated reasons: you exceeded a rate or concurrency
+  limit, or you hit an object lock timeout. The Stripe-Rate-Limited-Reason header
+  tells you which, and only one of them is fixed by slowing down.
+domain: api
+tags:
+  - stripe
+  - rate-limiting
+  - http-429
+  - retry
+  - backoff
+  - idempotency
+
+error:
+  signature: "429 Too Many Requests"
+  codes:
+    - "429"
+    - "lock_timeout"
+  aliases:
+    - "Stripe rate limit exceeded"
+    - "Request rate limit exceeded stripe"
+    - "This object cannot be accessed right now because another API request or Stripe process is currently accessing it"
+    - "stripe RateLimitError"
+
+problem: >-
+  Requests to the Stripe API intermittently fail with HTTP 429. Retrying immediately
+  makes it worse, and the failures often cluster around batch jobs, migrations, or
+  traffic spikes. Because Stripe overloads 429 for both rate limiting and object lock
+  contention, integrations that treat every 429 as "send fewer requests" fix only half
+  of their failures.
+
+rootCauses:
+  - cause: Account-wide request rate exceeded
+    weight: primary
+    detail: >-
+      Stripe applies a global per-account limit of 100 requests/second in live mode and
+      25 requests/second in a sandbox. Bulk operations breach this long before any
+      single endpoint's limit.
+    discriminator: "Response carries Stripe-Rate-Limited-Reason: global-rate"
+  - cause: Per-endpoint request rate exceeded
+    weight: common
+    detail: >-
+      Individual endpoints are limited to 25 requests/second unless documented
+      otherwise, so a loop hammering one endpoint trips this while total account
+      traffic still looks low.
+    discriminator: "Response carries Stripe-Rate-Limited-Reason: endpoint-rate"
+  - cause: Concurrency limit exceeded
+    weight: common
+    detail: >-
+      Concurrency counts requests in flight at one moment rather than per second.
+      Long-running list requests and requests using `expand` are the usual trigger.
+    discriminator: "Stripe-Rate-Limited-Reason is global-concurrency or endpoint-concurrency"
+  - cause: Object lock timeout, not a rate limit
+    weight: common
+    detail: >-
+      Stripe locks an object during some mutations. Concurrent writes to the same
+      object time out waiting for that lock and return 429 with code `lock_timeout`.
+      Throttling global throughput does not help; serialising writes per object does.
+    discriminator: "429 with error code lock_timeout and no Stripe-Rate-Limited-Reason header"
+  - cause: Resource-specific limits on a hot object
+    weight: edge
+    detail: >-
+      Some resources have their own quotas, such as 1000 PaymentIntent updates per
+      object per hour, or 10 new invoices per subscription per minute.
+    discriminator: "Stripe-Rate-Limited-Reason: resource-specific"
+
+solution:
+  steps:
+    - instruction: >-
+        Read the Stripe-Rate-Limited-Reason response header before doing anything else.
+        It names the exact limit you hit and separates true rate limiting from a lock
+        timeout.
+      command: "curl -si https://api.stripe.com/v1/charges -u \"$STRIPE_SECRET_KEY:\" | grep -i 'stripe-rate-limited-reason\\|^HTTP'"
+      note: >-
+        A 429 with no such header and error code lock_timeout is contention on a single
+        object, not throughput.
+    - instruction: >-
+        For genuine rate limiting, retry on an exponential backoff schedule with
+        randomised jitter so retrying clients do not resynchronise into a thundering
+        herd.
+      code: |
+        // Retry only on rate limiting; never blind-retry a write without an idempotency key.
+        async function withBackoff(fn, { attempts = 5, base = 200 } = {}) {
+          for (let i = 0; i < attempts; i++) {
+            try {
+              return await fn();
+            } catch (err) {
+              const retriable = err.statusCode === 429 || err.type === 'StripeConnectionError';
+              if (!retriable || i === attempts - 1) throw err;
+              const delay = base * 2 ** i * (0.5 + Math.random());
+              await new Promise((r) => setTimeout(r, delay));
+            }
+          }
+        }
+      language: javascript
+    - instruction: >-
+        Attach an idempotency key to every retried write so a retry after a timeout
+        cannot create a second charge or customer.
+      code: |
+        await stripe.paymentIntents.create(
+          { amount: 2000, currency: 'usd' },
+          { idempotencyKey: `pi-${orderId}` }
+        );
+      language: javascript
+    - instruction: >-
+        Cap outbound throughput client-side with a token bucket rather than discovering
+        the ceiling through 429s. Budget against 100 rps account-wide and 25 rps per
+        endpoint.
+    - instruction: >-
+        For lock_timeout, queue mutations so that writes to the same object run
+        sequentially. Concurrency across distinct objects is fine.
+    - instruction: >-
+        Do not load test against a sandbox. Sandbox limits are 25 rps versus 100 rps in
+        live mode, so the test hits ceilings production never would.
+  verification: >-
+    Re-run the workload and confirm 429s drop to zero while throughput stays under
+    100 rps; any remaining 429 should carry error code lock_timeout, pointing at object
+    contention rather than volume.
+  fallback: >-
+    If legitimate payment traffic genuinely exceeds the published limits (for example a
+    flash sale), contact Stripe Support ahead of the event rather than engineering
+    around the limit.
+
+appliesTo:
+  technology:
+    - name: Stripe API
+      versions: all versions
+      note: Limits are per Stripe account, not per API key or API version.
+    - name: Stripe SDKs
+      versions: all officially maintained SDKs
+      note: >-
+        Official SDKs auto-retry 429s caused by lock timeouts, but not 429s caused by
+        rate limiting.
+  platforms:
+    - live mode
+    - sandbox
+
+notApplicableTo:
+  - 429 responses produced by your own API gateway, CDN, or reverse proxy rather than by Stripe
+  - 402 card decline errors, which indicate a payment failure and must not be retried blindly
+  - 403 responses caused by an API key lacking permissions
+
+evidence:
+  - type: official-docs
+    title: "Stripe API rate limits"
+    url: https://docs.stripe.com/rate-limits
+    publisher: Stripe
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The 100 rps live / 25 rps sandbox global limits, the 25 rps per-endpoint default,
+      the Stripe-Rate-Limited-Reason header values, the lock_timeout distinction, and
+      the exponential-backoff-with-jitter recommendation.
+    quote: "If you exceed the limits, you get 429 Too Many Requests HTTP status responses."
+  - type: official-docs
+    title: "Idempotent requests"
+    url: https://docs.stripe.com/api/idempotent_requests
+    publisher: Stripe
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That retried write requests must carry an idempotency key to avoid duplicate
+      side effects.
+    quote: "The API supports idempotency for safely retrying requests without accidentally performing the same operation twice."
+  - type: official-docs
+    title: "Error handling"
+    url: https://docs.stripe.com/error-handling
+    publisher: Stripe
+    retrievedAt: "2026-08-07"
+    supports: >-
+      The error taxonomy that separates rate limit errors from card errors and
+      invalid request errors, which determines what is safe to retry.
+    quote: "You made too many API calls in too short a time."
+
+confidence: high
+confidenceRationale: >-
+  Every numeric limit, header value, and retry recommendation comes verbatim from
+  Stripe's own rate limit reference rather than from community write-ups. The one claim
+  not stated as a number in the docs is the code example itself, which is illustrative.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 120
+
+related: []

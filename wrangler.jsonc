@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "knowbase",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-08-07",
+  // Required by the OpenNext adapter: Next.js server code uses Node APIs.
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  // Binding the apex as a custom domain makes Cloudflare create the DNS record and
+  // issue the certificate itself. The workers.dev subdomain stays reachable but is
+  // not the canonical origin — lib/site.ts pins that to knowbase.sh.
+  "routes": [{ "pattern": "knowbase.sh", "custom_domain": true }],
+  // Almost every route here is prerendered, so the Worker mostly serves static
+  // assets. Observability is on so we can see which crawlers actually arrive —
+  // that log is the only honest measure of whether agents are finding us.
+  "observability": {
+    "enabled": true
+  }
+}

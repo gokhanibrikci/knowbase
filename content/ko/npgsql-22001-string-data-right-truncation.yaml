@@ -1,0 +1,200 @@
+slug: npgsql-22001-string-data-right-truncation
+title: "Npgsql PostgresException 22001: value too long for type character varying(n)"
+summary: >-
+  PostgreSQL rejects the write because a string exceeds the column's declared length.
+  The error names the type and the limit but not the column, so the practical work is
+  identifying which parameter overflowed — and PostgreSQL counts characters, not bytes.
+domain: database
+tags:
+  - postgresql
+  - npgsql
+  - dotnet
+  - entity-framework-core
+  - sqlstate-22001
+  - varchar
+
+error:
+  signature: "22001: value too long for type character varying(n)"
+  codes:
+    - "22001"
+    - string_data_right_truncation
+  aliases:
+    - "Npgsql.PostgresException value too long for type character varying"
+    - "value too long for type character(n)"
+    - "string data right truncation postgres"
+    - "SqlState 22001 dotnet"
+
+problem: >-
+  An INSERT or UPDATE through Npgsql throws Npgsql.PostgresException with SqlState
+  22001. The message reports the column type and its length but not which column
+  failed, and with Entity Framework Core batching several rows into one round trip, it
+  is not obvious which entity or property caused it.
+
+rootCauses:
+  - cause: The value is genuinely longer than the column's declared length
+    weight: primary
+    detail: >-
+      PostgreSQL enforces varchar(n) as a hard constraint and rejects the statement
+      rather than silently truncating, unlike some other engines running in a permissive
+      mode.
+    discriminator: "The offending .NET string's Length exceeds the n reported in the message"
+  - cause: The EF Core model does not declare a maximum length that matches the schema
+    weight: common
+    detail: >-
+      Without HasMaxLength or a MaxLength attribute, EF Core will not validate on the
+      client, so an over-long value travels to the server and fails there. The reverse
+      also happens after schema drift, where the model says 200 and the table still says
+      50.
+    discriminator: "The property has no MaxLength in the model, or its value disagrees with information_schema.columns"
+  - cause: The column is char(n) rather than varchar(n)
+    weight: common
+    detail: >-
+      char(n) is blank-padded to exactly n characters. Trailing whitespace that looks
+      harmless still counts toward the limit and triggers the same error.
+    discriminator: "The message says 'character(n)' rather than 'character varying(n)'"
+  - cause: Character count confused with byte count
+    weight: common
+    detail: >-
+      PostgreSQL's n in varchar(n) counts characters, not bytes. Columns sized from a
+      byte budget are wrong in both directions — too small for multi-byte text sized in
+      bytes, and unexpectedly permissive when developers assume the opposite.
+    discriminator: "The string's character length is at or under n but its UTF-8 byte length is larger"
+  - cause: An explicit parameter Size smaller than the value
+    weight: edge
+    detail: >-
+      Setting NpgsqlParameter.Size or an explicit NpgsqlDbType with a narrower width can
+      truncate ahead of the server.
+    discriminator: "The failure disappears when the explicit Size is removed from the parameter"
+
+solution:
+  steps:
+    - instruction: >-
+        Catch the exception as PostgresException and read SqlState rather than matching
+        on the message text, which is localised and version-dependent.
+      code: |
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.StringDataRightTruncation)
+        {
+            // 22001 — a value exceeded its column's declared length
+            logger.LogError(ex, "Truncation on {Table}", ex.TableName);
+            throw;
+        }
+      language: csharp
+      note: >-
+        PostgresException always populates SqlState; TableName and ColumnName are only
+        present for error classes where the server supplies them, and 22001 generally
+        does not identify the column.
+    - instruction: >-
+        Find the offending column by comparing the declared widths against the lengths
+        you are actually sending.
+      command: "psql -c \"SELECT column_name, data_type, character_maximum_length FROM information_schema.columns WHERE table_name = 'your_table' ORDER BY character_maximum_length\""
+    - instruction: >-
+        Decide whether the schema or the input is wrong. If the limit is a real business
+        rule, validate before the database call so the user gets a field-level message
+        instead of a 500.
+      code: |
+        modelBuilder.Entity<Customer>()
+            .Property(c => c.DisplayName)
+            .HasMaxLength(200)
+            .IsRequired();
+      language: csharp
+    - instruction: >-
+        If the limit is arbitrary, widen the column. In PostgreSQL, increasing a
+        varchar's length does not rewrite the table and takes only a brief lock.
+      command: "ALTER TABLE customers ALTER COLUMN display_name TYPE varchar(500);"
+    - instruction: >-
+        If there is no business limit at all, use text. In PostgreSQL text and varchar
+        share an implementation, so text carries no performance penalty over varchar(n).
+    - instruction: >-
+        Size columns in characters, not bytes, and verify with length() versus
+        octet_length() when the data is multi-byte.
+      command: "SELECT length(val) AS chars, octet_length(val) AS bytes FROM t WHERE id = 1;"
+  verification: >-
+    Re-run the failing write; it should succeed, and a deliberately over-long value
+    should now be rejected by model validation with a field-level error rather than
+    reaching PostgreSQL.
+  fallback: >-
+    Where the input legitimately exceeds the limit and cannot be rejected — imported
+    third-party data, for example — truncate explicitly at the application boundary and
+    record that truncation, rather than widening a column that encodes a real contract.
+
+appliesTo:
+  technology:
+    - name: PostgreSQL
+      versions: "9.0 and later"
+      note: "SQLSTATE 22001 is string_data_right_truncation in class 22, Data Exception."
+    - name: Npgsql
+      versions: "4.0 and later"
+      note: "PostgresException.SqlState is always present; PostgresErrorCodes exposes named constants."
+    - name: Entity Framework Core
+      versions: "3.1 and later"
+      note: "Client-side length validation only happens when the model declares a maximum length."
+  runtimes:
+    - .NET 6
+    - .NET 8
+    - .NET 9
+
+notApplicableTo:
+  - SQLSTATE 23505 unique_violation, which is a duplicate key rather than a length problem
+  - SQL Server error 8152 or 2628, which is the same class of failure in a different engine with different semantics
+  - Numeric overflow, which raises 22003 numeric_value_out_of_range
+  - PostgreSQL text columns, which have no declared length limit and cannot raise this error
+
+evidence:
+  - type: official-docs
+    title: "PostgreSQL Error Codes (Appendix A)"
+    url: https://www.postgresql.org/docs/current/errcodes-appendix.html
+    publisher: The PostgreSQL Global Development Group
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That SQLSTATE 22001 is named string_data_right_truncation and belongs to class 22,
+      Data Exception.
+    quote: "22001 string_data_right_truncation"
+  - type: official-docs
+    title: "PostgreSQL Character Types"
+    url: https://www.postgresql.org/docs/current/datatype-character.html
+    publisher: The PostgreSQL Global Development Group
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That varchar(n) rejects over-long values rather than truncating, that char(n) is
+      blank-padded, that n is measured in characters, and that text and varchar perform
+      identically.
+    quote: "There is no performance difference among these three types, apart from increased storage space when using the blank-padded type"
+  - type: official-docs
+    title: "Npgsql PostgresException API reference"
+    url: https://www.npgsql.org/doc/api/Npgsql.PostgresException.html
+    publisher: Npgsql
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That PostgresException exposes SqlState, always populated, alongside TableName,
+      ColumnName, and ConstraintName, which are populated only when the server supplied
+      them.
+    quote: "If the error was associated with a specific table column, the name of the column."
+  - type: specification
+    title: "PostgreSQL Error and Notice Message Fields"
+    url: https://www.postgresql.org/docs/current/protocol-error-fields.html
+    publisher: The PostgreSQL Global Development Group
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That the column name field is only supplied for specific error classes, which is
+      why 22001 typically arrives without naming the column that overflowed.
+    quote: "The fields for schema name, table name, column name, data type name, and constraint name are supplied only for a limited number of error types"
+
+confidence: high
+confidenceRationale: >-
+  The error code, the character-versus-byte semantics, and the varchar/text equivalence
+  are stated directly in PostgreSQL's own reference, and the exception surface is taken
+  from Npgsql's API documentation. The claim that 22001 usually omits the column name
+  follows from the protocol's error-field rules rather than from an explicit sentence
+  about 22001, so it is stated as a tendency, not a guarantee.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 365
+
+related: []

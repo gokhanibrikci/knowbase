@@ -1,0 +1,41 @@
+{
+  "name": "knowbase",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "npm run validate && next build",
+    "start": "next start",
+    "lint": "eslint",
+    "validate": "tsx scripts/validate.ts",
+    "verify:links": "tsx scripts/verify-links.ts",
+    "verify:quotes": "tsx scripts/verify-quotes.ts",
+    "source": "tsx scripts/read-source.ts",
+    "cf:preview": "npm run content && npm run validate && opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "cf:deploy": "npm run content && npm run validate && opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "content": "tsx scripts/build-content.ts",
+    "predev": "npm run content",
+    "prebuild": "npm run content",
+    "indexnow": "tsx scripts/indexnow.ts"
+  },
+  "dependencies": {
+    "@opennextjs/cloudflare": "^1.20.2",
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.0",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.10",
+    "typescript": "^5",
+    "wrangler": "^4.120.0"
+  }
+}
