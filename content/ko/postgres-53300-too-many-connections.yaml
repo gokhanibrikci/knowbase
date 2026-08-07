@@ -1,0 +1,207 @@
+slug: postgres-53300-too-many-connections
+title: "PostgreSQL error 53300: sorry, too many clients already"
+summary: >-
+  Every connection slot is taken. Raising max_connections is the obvious move and
+  usually the wrong one — each slot costs memory whether it is working or idle. The
+  real question is why so many connections exist, and the answer is almost always
+  pool size multiplied by instance count.
+domain: database
+tags:
+  - postgresql
+  - connections
+  - connection-pooling
+  - pgbouncer
+  - sqlstate-53300
+  - scaling
+
+error:
+  signature: "FATAL: sorry, too many clients already"
+  codes:
+    - "53300"
+    - too_many_connections
+  aliases:
+    - "remaining connection slots are reserved for non-replication superuser connections"
+    - "psql: FATAL: sorry, too many clients already"
+    - "PG::ConnectionBad too many clients"
+    - "SQLSTATE 53300"
+
+problem: >-
+  New connections are refused while existing ones keep working. The database itself is
+  not slow and CPU looks fine, but every new client — including psql from an operator
+  trying to investigate — is rejected. Restarting the application clears it briefly,
+  then it returns under the same load.
+
+rootCauses:
+  - cause: Pool size multiplied by instance count exceeds max_connections
+    weight: primary
+    detail: >-
+      Each application instance opens its own pool. Twenty pods with a pool of ten
+      each is two hundred connections against a default limit of one hundred, and
+      neither number looks alarming on its own.
+    discriminator: >-
+      Count rows in pg_stat_activity and compare against instance count times pool
+      size — they match, and most connections are idle rather than active
+  - cause: Connections are leaked rather than returned
+    weight: common
+    detail: >-
+      A code path that takes a connection and never releases it — an early return, a
+      swallowed exception, or a transaction left open. Usage grows monotonically with
+      uptime rather than with load.
+    discriminator: >-
+      pg_stat_activity shows connections stuck in 'idle in transaction' with a
+      state_change timestamp minutes or hours old
+  - cause: Autoscaling multiplied the pools
+    weight: common
+    detail: >-
+      Serverless functions and horizontally autoscaled services each open their own
+      connections. Connection count then tracks instance count, not request volume,
+      and a traffic spike exhausts the database before the application is under any
+      real strain.
+    discriminator: >-
+      Connection count rises in step with replica or invocation count while queries
+      per second stay flat
+  - cause: max_connections is genuinely too low for the architecture
+    weight: common
+    detail: >-
+      The default is typically 100. That is a starting point, not a sizing decision —
+      but raising it allocates more shared memory and gives every backend its own
+      work_mem allowance, so a large value trades stability for headroom.
+    discriminator: >-
+      Connections are legitimately active rather than idle, and the workload genuinely
+      needs concurrency beyond the current limit
+  - cause: The reserved superuser slots have been consumed
+    weight: edge
+    detail: >-
+      Three slots are held back for superusers by default. Once those go too, even an
+      administrator cannot connect to diagnose the problem.
+    discriminator: >-
+      Even a superuser connection is refused, and the message mentions slots reserved
+      for non-replication superuser connections
+
+solution:
+  steps:
+    - instruction: >-
+        Find out who is connected and what they are doing before changing any setting.
+        The split between active and idle decides which fix applies.
+      command: "psql -c \"SELECT state, count(*) FROM pg_stat_activity GROUP BY state ORDER BY 2 DESC;\""
+    - instruction: >-
+        Look for transactions held open. These hold a slot and often a lock, and they
+        are a bug rather than a capacity problem.
+      command: "psql -c \"SELECT pid, usename, application_name, state, now()-state_change AS idle_for, left(query,60) FROM pg_stat_activity WHERE state='idle in transaction' ORDER BY idle_for DESC LIMIT 20;\""
+    - instruction: >-
+        Do the arithmetic that actually governs this: total connections must fit
+        within max_connections minus the reserved slots. Size the pool per instance
+        from the limit downward, not upward from what feels reasonable.
+      code: |
+        # instances x pool_size + admin headroom <= max_connections
+        #
+        #   max_connections            100
+        #   superuser_reserved           3   (default)
+        #   admin/monitoring headroom    7
+        #   ------------------------------
+        #   available to apps           90
+        #   20 instances  ->  pool_size 4
+      language: text
+    - instruction: >-
+        Put a pooler in front of the database when instance count is the driver.
+        Transaction pooling lets many clients share few server connections, which is
+        the only fix that survives autoscaling.
+      code: |
+        [databases]
+        appdb = host=127.0.0.1 port=5432 dbname=appdb
+
+        [pgbouncer]
+        pool_mode = transaction
+        max_client_conn = 1000
+        default_pool_size = 20
+      language: ini
+      note: >-
+        Transaction mode is incompatible with session-level features such as
+        session-scoped prepared statements, advisory locks and LISTEN/NOTIFY — check
+        the driver before switching.
+    - instruction: >-
+        Fix leaks at the source rather than papering over them: release connections in
+        a finally block, and set a statement timeout and an idle-in-transaction
+        timeout so a stuck client cannot hold a slot forever.
+      code: |
+        ALTER ROLE app SET idle_in_transaction_session_timeout = '30s';
+        ALTER ROLE app SET statement_timeout = '30s';
+      language: sql
+    - instruction: >-
+        Only raise max_connections once pooling and leaks are ruled out, and budget the
+        memory first — the parameter can only be changed at server start, so it costs a
+        restart either way.
+  verification: >-
+    Under peak load, the count from pg_stat_activity stays comfortably below
+    max_connections with most connections active rather than idle, and no client
+    reports 53300 over a full traffic cycle.
+  fallback: >-
+    To recover a database that is already full, terminate the oldest idle-in-transaction
+    backends to reclaim slots — pg_terminate_backend against the pids found above — then
+    apply the pooling fix before load returns.
+
+appliesTo:
+  technology:
+    - name: PostgreSQL
+      versions: "9.0 and later"
+      note: "max_connections defaults to about 100 and can only be changed at server start."
+    - name: PgBouncer
+      versions: "1.x"
+      note: "Transaction pooling is the mode that decouples client count from server connections."
+  platforms:
+    - self-hosted
+    - managed PostgreSQL
+
+notApplicableTo:
+  - SQLSTATE 53200 out_of_memory, which is a server memory failure rather than slot exhaustion
+  - Client-side pool timeouts such as HikariCP's connection-is-not-available, which occur before the database is reached
+  - Authentication failures (28P01), where the connection is refused for credentials rather than capacity
+  - Managed-service connection limits enforced by the provider's proxy, which report their own error text
+
+evidence:
+  - type: official-docs
+    title: "PostgreSQL — Connection Settings"
+    url: https://www.postgresql.org/docs/current/runtime-config-connection.html
+    publisher: The PostgreSQL Global Development Group
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That max_connections defaults to roughly 100, can only be set at server start,
+      and that raising it increases shared memory allocation — which is why it is a
+      sizing trade-off rather than a free fix. Also the three reserved superuser slots.
+    quote: "PostgreSQL sizes certain resources based directly on the value of max_connections . Increasing its value leads to higher allocation of those resources, including shared memory."
+  - type: official-docs
+    title: "PostgreSQL Error Codes (Appendix A)"
+    url: https://www.postgresql.org/docs/current/errcodes-appendix.html
+    publisher: The PostgreSQL Global Development Group
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That SQLSTATE 53300 is named too_many_connections and belongs to class 53,
+      Insufficient Resources.
+    quote: "too_many_connections"
+  - type: official-docs
+    title: "PgBouncer features — pooling modes"
+    url: https://www.pgbouncer.org/features.html
+    publisher: PgBouncer
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That a connection pooler offers session, transaction and statement pooling, and
+      what session pooling implies — a server connection held for the whole client
+      session, which is why it does not solve instance-count multiplication.
+    quote: "When a client connects, a server connection will be assigned to it for the whole duration it stays connected."
+
+confidence: high
+confidenceRationale: >-
+  The limit's default, its restart-only nature, its memory cost and the reserved
+  superuser slots are quoted from PostgreSQL's configuration reference, and the pooling
+  modes from PgBouncer's own documentation. The sizing arithmetic and the timeout
+  settings are standard operational practice rather than values any document
+  prescribes, and are presented as a method rather than a rule.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 365
+
+related:
+  - npgsql-22001-string-data-right-truncation

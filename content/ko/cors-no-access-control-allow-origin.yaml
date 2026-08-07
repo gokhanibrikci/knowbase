@@ -1,0 +1,210 @@
+slug: cors-no-access-control-allow-origin
+title: "CORS error: No Access-Control-Allow-Origin header on the response"
+summary: >-
+  The browser blocked the response because the server did not say the requesting
+  origin is allowed. Nothing about the frontend can fix it — the header has to come
+  from the server, and the browser deliberately hides the reason from JavaScript, so
+  the console is the only place the actual rule violation is named.
+domain: api
+tags:
+  - cors
+  - http
+  - browser
+  - preflight
+  - same-origin-policy
+  - api
+
+error:
+  signature: "No 'Access-Control-Allow-Origin' header is present on the requested resource"
+  codes:
+    - CORS
+    - ERR_FAILED
+  aliases:
+    - "Access to fetch has been blocked by CORS policy"
+    - "CORS header 'Access-Control-Allow-Origin' missing"
+    - "Cross-Origin Request Blocked"
+    - "has been blocked by CORS policy"
+
+problem: >-
+  A fetch or XMLHttpRequest to another origin fails in the browser while the same URL
+  works from curl or Postman. The JavaScript error object says only that the request
+  failed; it carries no status, no body and no reason. Developers conclude the API is
+  down or their client code is wrong, when the request usually reached the server and
+  was answered — the browser simply refused to hand the response to the page.
+
+rootCauses:
+  - cause: The server never sends an Access-Control-Allow-Origin header
+    weight: primary
+    detail: >-
+      The endpoint was written for same-origin use, or CORS middleware is registered
+      after the route that answers, so the header never reaches the response. The
+      request succeeds server-side and is discarded by the browser.
+    discriminator: >-
+      curl with an explicit Origin request header returns 200 but the response has no
+      access-control-allow-origin header
+  - cause: The preflight OPTIONS request is not handled
+    weight: common
+    detail: >-
+      Any request that is not a simple one — a custom header, a JSON content type, a
+      method other than GET/HEAD/POST — makes the browser send an OPTIONS request
+      first. Frameworks that only route GET and POST answer it with 404 or 405, and
+      the real request is never sent.
+    discriminator: >-
+      DevTools Network shows an OPTIONS entry before the failing request, and it
+      returns 404, 405, or a 2xx without CORS headers
+  - cause: Credentials are used together with the wildcard origin
+    weight: common
+    detail: >-
+      A response of Access-Control-Allow-Origin '*' is rejected outright when the
+      request carries cookies or HTTP auth. The server must echo the specific origin
+      instead, and add Access-Control-Allow-Credentials.
+    discriminator: >-
+      The console message mentions credentials mode 'include' while the response
+      header is the literal asterisk
+  - cause: The preflight succeeds but does not allow the header or method being used
+    weight: common
+    detail: >-
+      Access-Control-Allow-Origin alone is not enough. A custom header such as
+      Authorization or X-Request-Id must also appear in Access-Control-Allow-Headers,
+      and non-simple methods in Access-Control-Allow-Methods.
+    discriminator: >-
+      The console names a specific field, for example 'Request header field
+      authorization is not allowed by Access-Control-Allow-Headers'
+  - cause: Only error responses lack the header
+    weight: edge
+    detail: >-
+      CORS middleware often runs inside the normal request pipeline, so 500s raised
+      earlier and 404s from the router bypass it. The API looks fine until something
+      fails, and then the real status code is invisible to the client.
+    discriminator: >-
+      Successful calls work and only failing ones report a CORS error, hiding the
+      underlying 4xx or 5xx
+  - cause: A proxy or CDN strips or overwrites the header
+    weight: edge
+    detail: >-
+      An API gateway, reverse proxy or CDN layer rewrites response headers, so the
+      origin server sends a correct header that never reaches the browser.
+    discriminator: >-
+      curl against the origin shows the header, curl against the public hostname does
+      not
+
+solution:
+  steps:
+    - instruction: >-
+        Read the exact message in the browser console. The specification deliberately
+        withholds the reason from JavaScript, so this text is the only place the
+        violated rule is named — and it distinguishes a missing header from a
+        disallowed header or method.
+    - instruction: >-
+        Ask the server what it actually returns for a cross-origin request. This
+        separates a server that omits the header from a proxy that strips it.
+      command: "curl -si -H 'Origin: https://your-site.example' https://api.example.com/endpoint | grep -i 'access-control\\|^HTTP'"
+    - instruction: >-
+        Test the preflight separately if the request is not simple. A working GET
+        proves nothing about an OPTIONS the router never registered.
+      command: "curl -si -X OPTIONS -H 'Origin: https://your-site.example' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: authorization,content-type' https://api.example.com/endpoint"
+    - instruction: >-
+        Add the headers on the server, echoing the caller's origin rather than
+        hardcoding one, and register the middleware before the routes so error
+        responses carry it too.
+      code: |
+        // Express — mount before any route so 404s and 500s are covered as well
+        const ALLOWED = new Set(["https://your-site.example"]);
+
+        app.use((req, res, next) => {
+          const origin = req.headers.origin;
+          if (origin && ALLOWED.has(origin)) {
+            res.setHeader("Access-Control-Allow-Origin", origin);
+            res.setHeader("Vary", "Origin");
+            res.setHeader("Access-Control-Allow-Credentials", "true");
+            res.setHeader("Access-Control-Allow-Headers", "authorization,content-type");
+            res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+          }
+          if (req.method === "OPTIONS") return res.sendStatus(204);
+          next();
+        });
+      language: javascript
+      note: >-
+        Vary Origin matters as soon as the value is dynamic — without it a shared cache
+        can serve one origin's allowed response to another origin.
+    - instruction: >-
+        If the request sends cookies or an Authorization header, never use the
+        wildcard. Echo the exact origin and set Access-Control-Allow-Credentials to
+        true, as above.
+    - instruction: >-
+        Re-run the curl checks and confirm both the preflight and the real request
+        carry the headers, then retry from the browser with the cache disabled —
+        preflight results are cached and a stale one keeps failing after the fix.
+  verification: >-
+    curl with an Origin header shows access-control-allow-origin echoing your origin on
+    both the OPTIONS and the real request, and the browser console reports no CORS
+    error on a hard reload.
+  fallback: >-
+    Where the API is third-party and cannot be changed, route the call through your own
+    backend or a same-origin path rewrite. CORS is enforced by the browser, so a
+    server-to-server request is not subject to it.
+
+appliesTo:
+  technology:
+    - name: Browsers
+      versions: "all current browsers"
+      note: "CORS is enforced by the browser; it is not a server-side security control."
+    - name: Fetch API and XMLHttpRequest
+      versions: "all versions"
+      note: "Both follow the same-origin policy and the same CORS rules."
+  platforms:
+    - web
+
+notApplicableTo:
+  - Same-origin requests, which are never subject to CORS regardless of headers
+  - Server-side HTTP clients such as curl, Postman, or fetch inside Node.js, none of which enforce CORS
+  - 401 and 403 responses, which are authentication or authorisation failures the browser will surface normally once CORS headers are present
+  - Mixed-content blocking, where an HTTPS page requests an HTTP resource
+
+evidence:
+  - type: official-docs
+    title: "Cross-Origin Resource Sharing (CORS)"
+    url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS
+    publisher: MDN Web Docs
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That CORS is a header-based mechanism enforced by the browser, that non-simple
+      requests are preflighted with OPTIONS, and — critically for diagnosis — that the
+      failure reason is withheld from JavaScript and available only in the console.
+    quote: "CORS failures result in errors but for security reasons, specifics about the error are not available to JavaScript."
+  - type: official-docs
+    title: "Reason: CORS header 'Access-Control-Allow-Origin' missing"
+    url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS/Errors/CORSMissingAllowOrigin
+    publisher: MDN Web Docs
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That this specific error means the response lacked the required header, rather
+      than the request having failed to reach the server.
+    quote: "The response to the CORS request is missing the required Access-Control-Allow-Origin header"
+  - type: official-docs
+    title: "Access-Control-Allow-Origin header reference"
+    url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Allow-Origin
+    publisher: MDN Web Docs
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That the wildcard is rejected for credentialed requests, that a server serving
+      multiple origins must echo the requesting origin, and that a dynamic value
+      requires Vary Origin so caches do not cross-serve responses.
+    quote: "Attempting to use the wildcard with credentials results in an error"
+
+confidence: high
+confidenceRationale: >-
+  The mechanism, the preflight rules, the credentials restriction and the Vary
+  requirement are all quoted from MDN's CORS reference. All three sources share a
+  publisher, which is a real limitation — but MDN is the reference implementation
+  documentation for browser behaviour here, and the Fetch Standard it summarises
+  defines the same rules. The per-cause discriminators are observed console and
+  DevTools output rather than documented diagnostic procedure.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 365
+
+related: []

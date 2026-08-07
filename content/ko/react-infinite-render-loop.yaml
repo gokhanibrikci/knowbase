@@ -1,0 +1,212 @@
+slug: react-infinite-render-loop
+title: "React re-render loop: Too many re-renders or Maximum update depth exceeded"
+summary: >-
+  A state update is triggering a render that triggers the same update again. The two
+  error messages point at different halves of the problem — one means state is set
+  during render, the other means an Effect is updating a value it also depends on —
+  and neither names the component responsible.
+domain: framework
+tags:
+  - react
+  - hooks
+  - useeffect
+  - usestate
+  - rendering
+  - performance
+
+error:
+  signature: "Too many re-renders. React limits the number of renders to prevent an infinite loop."
+  codes:
+    - "185"
+  aliases:
+    - "Maximum update depth exceeded"
+    - "Too many re-renders"
+    - "React limits the number of renders to prevent an infinite loop"
+    - "infinite loop useEffect setState"
+
+problem: >-
+  The component renders endlessly until React throws, or the page freezes and the tab
+  becomes unresponsive. The stack trace points into React internals rather than at
+  application code, so the component actually causing the loop is not named. The same
+  code often works in one place and loops in another, which makes it look
+  intermittent.
+
+rootCauses:
+  - cause: State is set during render rather than in response to an event
+    weight: primary
+    detail: >-
+      Almost always an event handler that is called instead of passed —
+      onClick={handleClick()} runs on every render, and if it sets state the component
+      re-renders and calls it again.
+    discriminator: >-
+      The message is 'Too many re-renders'; look for a handler prop with parentheses,
+      or a setState call in the component body
+  - cause: An Effect depends on a value it recreates every render
+    weight: primary
+    detail: >-
+      Objects, arrays and functions declared during render are new references each
+      time. An Effect listing one in its dependency array runs after every commit,
+      and if that Effect sets state the cycle never ends.
+    discriminator: >-
+      The message is 'Maximum update depth exceeded' and the dependency array contains
+      an object, array or inline function rather than only primitives
+  - cause: An Effect updates state that is in its own dependency array
+    weight: common
+    detail: >-
+      The Effect writes the very value that retriggers it. Even with a correct
+      dependency list this is a closed loop by construction.
+    discriminator: >-
+      The same identifier appears both in the dependency array and as the target of a
+      setter inside the Effect body
+  - cause: The dependency array is missing entirely
+    weight: common
+    detail: >-
+      useEffect with no second argument runs after every render. That is harmless
+      until the Effect sets state, at which point every render schedules another.
+    discriminator: "The useEffect call has one argument; adding [] stops the loop"
+  - cause: Chained Effects that adjust state to trigger each other
+    weight: edge
+    detail: >-
+      Several Effects each derive one piece of state from another. Each hop is a
+      separate render pass, and a cycle anywhere in the chain becomes an infinite one.
+    discriminator: >-
+      Multiple Effects exist whose only job is to set state derived from other state,
+      and removing one breaks the loop
+
+solution:
+  steps:
+    - instruction: >-
+        Read which of the two messages you have. They are different bugs: 'Too many
+        re-renders' means state is being set during render; 'Maximum update depth
+        exceeded' means an Effect is looping.
+    - instruction: >-
+        For a render-phase update, pass the handler rather than calling it. This single
+        mistake accounts for most occurrences.
+      code: |
+        // 🔴 calls handleClick during every render
+        <button onClick={handleClick()}>Buy</button>
+
+        // ✅ passes the function, called only on click
+        <button onClick={handleClick}>Buy</button>
+
+        // ✅ when arguments are needed
+        <button onClick={() => handleClick(id)}>Buy</button>
+      language: jsx
+    - instruction: >-
+        For an Effect loop, make the dependencies primitives. Depend on the fields you
+        actually use rather than on the object that contains them, so a new reference
+        with identical contents does not retrigger the Effect.
+      code: |
+        // 🔴 options is a new object every render
+        const options = { roomId, serverUrl };
+        useEffect(() => connect(options), [options]);
+
+        // ✅ depend on the primitive values instead
+        useEffect(() => {
+          const options = { roomId, serverUrl };
+          connect(options);
+        }, [roomId, serverUrl]);
+      language: javascript
+      note: >-
+        Moving the object construction inside the Effect is usually better than
+        wrapping it in useMemo — it removes the dependency rather than caching it.
+    - instruction: >-
+        If the Effect must update state derived from its own dependency, use a
+        functional update so the current value is not a dependency at all.
+      code: |
+        // 🔴 count is a dependency, so the Effect retriggers itself
+        useEffect(() => { setCount(count + 1); }, [count]);
+
+        // ✅ no dependency on the current value
+        useEffect(() => { setCount((c) => c + 1); }, []);
+      language: javascript
+    - instruction: >-
+        Ask whether the Effect is needed at all. State derived from other state or
+        props should be computed during render, not synchronised by an Effect —
+        deriving it removes both the extra render pass and the possibility of a loop.
+      code: |
+        // 🔴 an Effect that mirrors derived state
+        const [visible, setVisible] = useState([]);
+        useEffect(() => { setVisible(items.filter((i) => i.active)); }, [items]);
+
+        // ✅ derive it during render
+        const visible = items.filter((i) => i.active);
+      language: javascript
+    - instruction: >-
+        If the culprit is still unclear, comment out Effects one at a time until the
+        loop stops. React does not name the offending component, so bisection is
+        faster than reading.
+  verification: >-
+    The component renders a bounded number of times for one interaction, the console
+    reports no re-render or update-depth error, and React DevTools' profiler shows the
+    render count settling instead of climbing.
+  fallback: >-
+    Where the value genuinely must be an object and cannot move inside the Effect,
+    stabilise its identity with useMemo and the same primitive dependencies — treating
+    that as a last resort, since a memo that is wrong simply hides the loop until the
+    inputs change.
+
+appliesTo:
+  technology:
+    - name: React
+      versions: "16.8 and later"
+      note: "Applies wherever hooks are used; the update-depth limit is a React runtime guard."
+    - name: React DOM
+      versions: "16.8 and later"
+  runtimes:
+    - browser
+    - React Native
+
+notApplicableTo:
+  - Slow rendering without an error, which is a performance problem rather than a loop
+  - Hydration mismatches, where server and client output differ on the first render only
+  - Infinite loops in plain JavaScript outside a component, which never reach React's guard
+  - Effects that run twice in development, which is React Strict Mode behaviour and not a loop
+
+evidence:
+  - type: official-docs
+    title: "useState — I'm getting an error: Too many re-renders"
+    url: https://react.dev/reference/react/useState
+    publisher: Meta Open Source
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That this error means state is being set unconditionally during render, and the
+      render/set-state cycle that follows — including the event-handler mistake that
+      most often causes it.
+    quote: "so your component enters a loop: render, set state (which causes a render), render, set state"
+  - type: official-docs
+    title: "useEffect — Removing unnecessary object dependencies"
+    url: https://react.dev/reference/react/useEffect
+    publisher: Meta Open Source
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That an object or function created during render is a new value on every render,
+      so an Effect depending on it re-runs after every commit.
+    quote: "If your Effect depends on an object or a function created during rendering, it might run too often."
+  - type: official-docs
+    title: "You Might Not Need an Effect"
+    url: https://react.dev/learn/you-might-not-need-an-effect
+    publisher: Meta Open Source
+    retrievedAt: "2026-08-07"
+    supports: >-
+      That an Effect which updates state restarts the render cycle from the beginning,
+      and that data derived from props or state should be computed during render
+      instead of synchronised by an Effect.
+    quote: "To avoid the unnecessary render passes, transform all the data at the top level of your components."
+
+confidence: high
+confidenceRationale: >-
+  Both error conditions, the reference-identity rule behind Effect loops, and the
+  guidance to derive rather than synchronise state are quoted from React's own
+  reference and learning documentation. The bisection step is a debugging technique
+  rather than documented procedure, and the split between the two messages is inferred
+  from where each is documented rather than from a single sentence contrasting them.
+
+freshness:
+  created: "2026-08-07"
+  updated: "2026-08-07"
+  verifiedAt: "2026-08-07"
+  reviewIntervalDays: 365
+
+related:
+  - nextjs-react-hydration-mismatch
