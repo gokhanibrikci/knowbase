@@ -1,0 +1,205 @@
+slug: python-modulenotfounderror
+title: "Python ModuleNotFoundError: No module named 'x'"
+summary: >-
+  Python looked along sys.path and did not find the module. Which directories are on
+  that path depends on how the interpreter was started — not on where you are standing
+  in the shell — and that is why the same code runs one way and fails another.
+domain: language
+tags:
+  - python
+  - imports
+  - sys-path
+  - virtualenv
+  - packaging
+  - pythonpath
+
+error:
+  signature: "ModuleNotFoundError: No module named 'x'"
+  codes:
+    - ModuleNotFoundError
+    - ImportError
+  aliases:
+    - "No module named"
+    - "ImportError: cannot import name"
+    - "ModuleNotFoundError: No module named 'src'"
+    - "attempted relative import with no known parent package"
+
+problem: >-
+  An import fails even though the package is installed or the file is visibly next to
+  the script. It works in the IDE and fails from the terminal, or works with python
+  script.py and fails with python -m, or works locally and fails in the container. The
+  message names the module but never says where Python actually looked.
+
+rootCauses:
+  - cause: The package is installed into a different interpreter
+    weight: primary
+    detail: >-
+      pip and python resolve independently. Installing with a system pip while running
+      a virtual environment's python — or the reverse — puts the package somewhere the
+      running interpreter never looks.
+    discriminator: >-
+      python -c "import sys; print(sys.executable)" and which pip point at different
+      installations
+  - cause: The virtual environment is not active for this process
+    weight: primary
+    detail: >-
+      A virtual environment is isolated from the base installation by design, so only
+      what was installed inside it is importable. An IDE, a cron entry, a systemd unit
+      or a Dockerfile CMD that calls python rather than the venv's python gets the base
+      interpreter and none of the project's packages.
+    discriminator: >-
+      sys.prefix does not point at the project's .venv directory, or sys.path contains
+      no site-packages under it
+  - cause: The project root is not on sys.path
+    weight: primary
+    detail: >-
+      sys.path starts with the directory of the script being run, not the working
+      directory. Running python src/app.py puts src on the path, so import src.utils
+      fails while import utils works — and running python -m src.app behaves
+      differently again.
+    discriminator: >-
+      The import succeeds when run as python -m package.module from the project root
+      but fails as python path/to/module.py
+  - cause: The package is not installed at all
+    weight: common
+    detail: >-
+      The straightforward case, worth excluding early: the requirement is missing from
+      the environment, or the install failed silently and was never checked.
+    discriminator: "pip show <package> reports nothing for the interpreter actually running"
+  - cause: The import name differs from the distribution name
+    weight: common
+    detail: >-
+      What you pip install is not always what you import. The distribution and the
+      module it provides are separate names, and the error refers to the module.
+    discriminator: >-
+      pip show finds the distribution, but the name after import is not the module it
+      actually installs
+  - cause: A local file shadows the module
+    weight: edge
+    detail: >-
+      A file or directory in the script's own directory with the same name as a library
+      is found first, because that directory comes first on sys.path. Importing it
+      yields your file instead of the library, or fails midway.
+    discriminator: >-
+      A file matching the module name exists beside the script, and the module's
+      __file__ points into the project rather than site-packages
+
+solution:
+  steps:
+    - instruction: >-
+        Ask the failing interpreter what it is and where it looks. Every remaining step
+        depends on this answer, and it takes one command.
+      command: "python -c \"import sys; print(sys.executable); print(sys.prefix); [print(' ', p) for p in sys.path]\""
+      note: >-
+        Run it the exact way the failing code runs — same shell, same venv state, same
+        entry point. Running it differently answers a different question.
+    - instruction: >-
+        Confirm the package is installed for that interpreter specifically, rather than
+        for whichever pip happens to be first on PATH.
+      command: "python -m pip show <package>"
+    - instruction: >-
+        Install through the interpreter rather than through a bare pip, so the two
+        cannot diverge.
+      code: |
+        # 🔴 whichever pip is first on PATH
+        pip install requests
+
+        # ✅ the pip belonging to this interpreter
+        python -m pip install requests
+
+        # in a container, be explicit about the interpreter too
+        /app/.venv/bin/python -m pip install requests
+      language: bash
+    - instruction: >-
+        For a project's own modules, install the project instead of manipulating the
+        path. An editable install puts the package on sys.path properly, which fixes
+        every entry point at once — tests, scripts, and the IDE.
+      code: |
+        # pyproject.toml declares the package; then, once:
+        python -m pip install -e .
+
+        # now this resolves from any working directory
+        from myproject.utils import helper
+      language: bash
+      note: >-
+        This is what removes the whole class of problem. sys.path.append in application
+        code is the alternative, and it breaks the moment anything imports differently.
+    - instruction: >-
+        Prefer python -m package.module over python path/to/file.py when running project
+        code. The -m form puts the current directory on sys.path; the file form puts the
+        file's own directory there instead.
+    - instruction: >-
+        If a name resolves to the wrong thing, check what was actually imported and
+        rename the local file that shadows it.
+      code: |
+        import requests
+        print(requests.__file__)   # points into the project => a local file shadows it
+      language: python
+  verification: >-
+    The import succeeds from the same entry point that failed, and requests.__file__ —
+    or the equivalent for the module in question — resolves under the intended
+    interpreter's site-packages rather than into the project tree.
+  fallback: >-
+    Where the layout genuinely cannot change — a legacy script tree, for example — set
+    PYTHONPATH for the process rather than editing sys.path in code, so the path is
+    part of how the program is invoked instead of hidden inside it.
+
+appliesTo:
+  technology:
+    - name: Python
+      versions: "3.6 and later"
+      note: >-
+        ModuleNotFoundError is a subclass of ImportError, added in 3.6; earlier versions
+        raise ImportError for the same condition.
+    - name: venv
+      versions: "3.3 and later"
+      note: "Virtual environments are isolated from base-environment packages by default."
+  platforms:
+    - linux
+    - macos
+    - windows
+
+notApplicableTo:
+  - ImportError naming a symbol rather than a module, which means the module was found but the attribute was not
+  - Circular imports, where the module is found but is only partly initialised
+  - Compiled-extension failures such as a missing shared library, which report the library rather than the module
+  - Syntax errors inside an imported module, which surface as SyntaxError rather than a missing module
+
+evidence:
+  - type: official-docs
+    title: "Python tutorial — The Module Search Path"
+    url: https://docs.python.org/3/tutorial/modules.html
+    publisher: Python Software Foundation
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That imports resolve along sys.path, and that sys.path begins with the directory
+      of the script being run — or the current directory when no file is given — which
+      is the mechanism behind the project-root and shadowing causes.
+    quote: "The directory containing the input script (or the current directory when no file is specified)."
+  - type: official-docs
+    title: "Python — venv, Creation of virtual environments"
+    url: https://docs.python.org/3/library/venv.html
+    publisher: Python Software Foundation
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That a virtual environment is isolated from the base installation by default, so
+      only packages installed inside it are importable — which is why calling the wrong
+      interpreter loses every project dependency at once.
+    quote: "default is isolated from the packages in the base environment"
+
+confidence: medium
+confidenceRationale: >-
+  The two load-bearing claims — how sys.path is initialised and that virtual
+  environments are isolated by default — are quoted from Python's own documentation.
+  Confidence is medium rather than high because the remaining causes rest on two
+  sources: the pip-versus-interpreter divergence, the distribution-versus-import name
+  distinction and the editable-install remedy are standard packaging practice rather
+  than statements I could quote from a primary source here.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 365
+
+related: []

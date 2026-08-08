@@ -1,0 +1,192 @@
+slug: nginx-413-request-entity-too-large
+title: "nginx 413: Request Entity Too Large on upload"
+summary: >-
+  nginx refused the request body because it exceeded client_max_body_size, which
+  defaults to just 1 MB. The trap is that several layers can each impose their own
+  limit, and raising it in the application changes nothing when the proxy in front
+  rejects the body first.
+domain: networking
+tags:
+  - nginx
+  - http-413
+  - uploads
+  - reverse-proxy
+  - configuration
+  - ingress
+
+error:
+  signature: "413 Request Entity Too Large"
+  codes:
+    - "413"
+  aliases:
+    - "413 Content Too Large"
+    - "Payload Too Large"
+    - "client intended to send too large body"
+    - "413 Request Entity Too Large nginx"
+
+problem: >-
+  File uploads fail above a certain size while smaller ones succeed. The application
+  never sees the request, so its own logs are silent and its upload limit appears to be
+  ignored. Raising the framework's limit has no effect, which makes the boundary look
+  arbitrary — it is nginx rejecting the body before anything downstream is involved.
+
+rootCauses:
+  - cause: client_max_body_size is at its default of 1 MB
+    weight: primary
+    detail: >-
+      nginx caps request bodies at one megabyte unless told otherwise. Most people never
+      set the directive, so the first upload over that size fails on a stock
+      configuration.
+    discriminator: >-
+      The nginx error log records 'client intended to send too large body' with the exact
+      byte count, and the boundary sits at 1048576 bytes
+  - cause: The directive is set in the wrong context
+    weight: primary
+    detail: >-
+      client_max_body_size applies in http, server and location blocks, and the most
+      specific match wins. A generous value in http is overridden by a stale small one
+      in the location that actually handles uploads.
+    discriminator: >-
+      nginx -T shows the directive more than once, with a smaller value in the block
+      matching the upload path
+  - cause: Another proxy layer in front imposes its own limit
+    weight: common
+    detail: >-
+      A CDN, load balancer or ingress controller rejects the body before nginx sees it.
+      The response looks identical, so fixing nginx changes nothing.
+    discriminator: >-
+      curl against the origin accepts the upload while the same request to the public
+      hostname fails, and nginx's own error log has no matching entry
+  - cause: The Kubernetes ingress annotation is missing
+    weight: common
+    detail: >-
+      An ingress-nginx controller generates its configuration from annotations, so
+      editing nginx.conf inside the pod is overwritten. The limit has to be declared on
+      the Ingress object.
+    discriminator: >-
+      The rejection comes from an ingress-nginx pod and no proxy-body-size annotation is
+      present on the Ingress
+  - cause: The application also has a limit, reached after nginx is fixed
+    weight: edge
+    detail: >-
+      Raising nginx's limit moves the failure downstream rather than removing it. The
+      framework then rejects the body with its own error, which is easy to mistake for
+      the fix not working.
+    discriminator: >-
+      The status code changes from 413 to a framework-specific error, or the message now
+      names the application rather than nginx
+
+solution:
+  steps:
+    - instruction: >-
+        Confirm which layer is rejecting the request. nginx logs the intended body size
+        when it refuses, so its absence tells you the rejection happened upstream.
+      command: "grep 'too large body' /var/log/nginx/error.log | tail -5"
+    - instruction: >-
+        Print the configuration nginx has actually loaded, including every include, and
+        look for competing definitions rather than assuming the file you edited is the
+        one in force.
+      command: "nginx -T 2>/dev/null | grep -n 'client_max_body_size'"
+    - instruction: >-
+        Set the limit in the block that handles uploads, and keep it consistent with any
+        outer value so the specific one is not accidentally smaller.
+      code: |
+        http {
+          client_max_body_size 50m;   # sensible ceiling for the whole server
+
+          server {
+            location /api/upload {
+              client_max_body_size 200m;   # larger only where genuinely needed
+              proxy_pass http://app;
+            }
+          }
+        }
+      language: nginx
+      note: >-
+        A value of 0 disables the check entirely. That turns a bounded rejection into an
+        unbounded one, so prefer a real ceiling over removing it.
+    - instruction: >-
+        Reload rather than restart, after testing the configuration parses.
+      command: "nginx -t && nginx -s reload"
+    - instruction: >-
+        On Kubernetes, set it on the Ingress. Editing the controller's generated config
+        is undone on the next reconcile.
+      code: |
+        metadata:
+          annotations:
+            nginx.ingress.kubernetes.io/proxy-body-size: "200m"
+      language: yaml
+    - instruction: >-
+        Raise the application's own limit to match, and expect the failure to reappear
+        there once nginx stops rejecting. Both layers have to agree.
+      code: |
+        // Express
+        app.use(express.json({ limit: "200mb" }));
+
+        // PHP — php.ini
+        // upload_max_filesize = 200M
+        // post_max_size = 200M
+      language: javascript
+  verification: >-
+    An upload just under the new limit succeeds end to end, one just over it is rejected
+    with 413 by the layer you configured, and the nginx error log names the expected
+    boundary rather than 1048576.
+  fallback: >-
+    For genuinely large files, stop proxying the body at all: issue a pre-signed URL and
+    have the client upload directly to object storage. That removes the limit question
+    from every layer instead of raising it in each.
+
+appliesTo:
+  technology:
+    - name: nginx
+      versions: "all versions"
+      note: "client_max_body_size defaults to 1m and applies in http, server and location contexts."
+    - name: ingress-nginx
+      versions: "all versions"
+      note: "Configured through the proxy-body-size annotation rather than nginx.conf."
+  platforms:
+    - linux
+
+notApplicableTo:
+  - 408 Request Timeout, where the body is slow rather than large
+  - 431 Request Header Fields Too Large, which concerns headers and is governed by different directives
+  - Application-level upload limits that return the framework's own error rather than 413 from nginx
+  - Apache's LimitRequestBody, which produces the same status from an unrelated configuration
+
+evidence:
+  - type: official-docs
+    title: "nginx — ngx_http_core_module, client_max_body_size"
+    url: https://nginx.org/en/docs/http/ngx_http_core_module.html
+    publisher: nginx
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That client_max_body_size governs the maximum request body, defaults to 1m, and is
+      valid in http, server and location contexts — which is what makes the
+      wrong-context case possible.
+    quote: "Sets the maximum allowed size of the client request body."
+  - type: official-docs
+    title: "413 Content Too Large"
+    url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/413
+    publisher: MDN Web Docs
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That 413 means the request entity exceeded a server-defined limit — so any layer
+      in the chain may legitimately emit it, which is why identifying the layer comes
+      before changing configuration.
+    quote: "indicates that the request entity was larger than limits defined by server"
+
+confidence: medium
+confidenceRationale: >-
+  The directive's meaning, its 1m default and its valid contexts are quoted from nginx's
+  own module reference, and the status semantics from MDN. Confidence is medium rather
+  than high because it rests on two sources: the ingress annotation name and the
+  framework-side limits are drawn from the respective projects' conventions rather than
+  quoted here, and the layer-identification method is diagnostic practice.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 365
+
+related: []

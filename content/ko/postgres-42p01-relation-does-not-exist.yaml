@@ -1,0 +1,209 @@
+slug: postgres-42p01-relation-does-not-exist
+title: "PostgreSQL error 42P01: relation does not exist"
+summary: >-
+  The table usually exists. PostgreSQL looked for it along search_path and did not find
+  it there, or the name was folded to lower case and no longer matches a table created
+  with capitals. Both cases report the same error as a genuinely missing table.
+domain: database
+tags:
+  - postgresql
+  - search-path
+  - schemas
+  - identifiers
+  - sqlstate-42p01
+  - migrations
+
+error:
+  signature: "ERROR: relation \"x\" does not exist"
+  codes:
+    - 42P01
+    - undefined_table
+  aliases:
+    - "relation does not exist postgres"
+    - "undefined_table"
+    - "column does not exist"
+    - "SQLSTATE 42P01"
+
+problem: >-
+  A query fails saying the relation does not exist, but the table is visibly there in
+  psql or a GUI client. The same SQL works for one user and fails for another, or works
+  in psql and fails from the application, which makes it look like a permissions or
+  connection problem rather than a name resolution one.
+
+rootCauses:
+  - cause: The table is in a schema that is not on search_path
+    weight: primary
+    detail: >-
+      Unqualified names are resolved by walking search_path and taking the first match.
+      A table in a schema outside that list is invisible even though it exists in the
+      same database — and the error is identical to it not existing at all.
+    discriminator: >-
+      SHOW search_path does not list the schema, while the table appears in
+      information_schema.tables under a different schema name
+  - cause: The identifier was created quoted with capitals
+    weight: primary
+    detail: >-
+      Unquoted names are folded to lower case. A table created as "MyTable" can only be
+      referenced as "MyTable" with quotes; writing MyTable becomes mytable and does not
+      match. ORMs that quote on create but not on query cause exactly this.
+    discriminator: >-
+      The table name in information_schema.tables contains capitals, and the query
+      succeeds when the name is double-quoted
+  - cause: The connection is to the wrong database
+    weight: common
+    detail: >-
+      search_path is per-session and schemas are per-database. A connection string
+      pointing at the default database rather than the application's will report every
+      table missing.
+    discriminator: >-
+      SELECT current_database(), current_schema() returns something other than what the
+      application expects
+  - cause: The migration has not run on this environment
+    weight: common
+    detail: >-
+      The table exists in development and not in the target. Straightforward, but worth
+      excluding before chasing search_path — it is the only cause where the table is
+      genuinely absent.
+    discriminator: >-
+      The table is absent from information_schema.tables in every schema, not merely
+      outside search_path
+  - cause: The object exists but is not the kind being used
+    weight: edge
+    detail: >-
+      Referencing a sequence, view or type where a table is expected, or querying a
+      composite type by name. The name resolves to something, just not to a relation
+      usable in that position.
+    discriminator: >-
+      pg_class lists the name with a relkind other than r or p, or the object is a type
+      rather than a relation
+  - cause: A temporary table from another session
+    weight: edge
+    detail: >-
+      Temporary tables live in a per-session schema and vanish with the connection. With
+      a pooled connection the table may have been created on a different physical
+      session than the one now querying.
+    discriminator: >-
+      The table was created as TEMPORARY and the application uses a connection pool
+
+solution:
+  steps:
+    - instruction: >-
+        Ask the database where the table actually is, across every schema. This single
+        query separates the four common causes from each other.
+      command: "psql -c \"SELECT table_schema, table_name FROM information_schema.tables WHERE table_name ILIKE '%your_table%';\""
+      note: >-
+        ILIKE is deliberate — a case-insensitive match reveals a name created with
+        capitals, which an exact match would hide.
+    - instruction: >-
+        Check what the failing session can see, since search_path is per-session and
+        may differ from psql's.
+      command: "psql -c 'SELECT current_database(), current_schema(), current_user;' -c 'SHOW search_path;'"
+    - instruction: >-
+        If it is a schema problem, prefer qualifying the name over changing the path.
+        A qualified reference resolves the same way for every user and role.
+      code: |
+        -- ✅ unambiguous regardless of search_path
+        SELECT * FROM analytics.events;
+
+        -- session-scoped alternative
+        SET search_path TO analytics, public;
+
+        -- persistent, per role
+        ALTER ROLE app_user SET search_path TO analytics, public;
+      language: sql
+    - instruction: >-
+        If it is a case problem, decide on one convention and hold it. Lower case
+        unquoted is the path of least resistance in PostgreSQL; the alternative is
+        quoting the name everywhere, forever.
+      code: |
+        -- created quoted, so it must always be quoted
+        CREATE TABLE "MyTable" (id int);
+        SELECT * FROM MyTable;     -- 🔴 folded to mytable, fails
+        SELECT * FROM "MyTable";   -- ✅
+
+        -- rename to the convention instead of quoting forever
+        ALTER TABLE "MyTable" RENAME TO my_table;
+      language: sql
+    - instruction: >-
+        Verify the migration actually ran against this database before assuming name
+        resolution is at fault.
+      command: "psql -c \"SELECT * FROM schema_migrations ORDER BY version DESC LIMIT 5;\""
+    - instruction: >-
+        For pooled connections, never rely on a temporary table surviving between
+        statements — create it and use it inside one transaction, or use an unlogged
+        table with an explicit lifetime.
+  verification: >-
+    The failing query runs from the application's own connection, and
+    information_schema.tables confirms the schema and exact spelling the query uses.
+  fallback: >-
+    Where an ORM generates unqualified names you cannot control, set search_path on the
+    role rather than in application code, so every connection that role opens resolves
+    names the same way regardless of where the query is built.
+
+appliesTo:
+  technology:
+    - name: PostgreSQL
+      versions: "9.0 and later"
+      note: >-
+        Unquoted identifiers fold to lower case, which is incompatible with the SQL
+        standard's upper-case folding — portable code should quote consistently or never.
+    - name: search_path
+      versions: "all versions"
+      note: "Defaults to \"$user\", public — so a custom schema is invisible until added."
+  platforms:
+    - self-hosted
+    - managed PostgreSQL
+
+notApplicableTo:
+  - Permission errors (42501), where the relation is found but access is denied
+  - SQLSTATE 42703 undefined_column, which resolves the table but not a column in it
+  - MySQL error 1146 table doesn't exist, which has no search_path equivalent
+  - Connection failures, which never reach name resolution at all
+
+evidence:
+  - type: official-docs
+    title: "PostgreSQL — The Schema Search Path"
+    url: https://www.postgresql.org/docs/current/ddl-schemas.html
+    publisher: The PostgreSQL Global Development Group
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That unqualified names resolve along search_path, that the first match wins, and
+      that no match produces an error even when the table exists in another schema of
+      the same database — the exact behaviour behind the primary cause.
+    quote: "If there is no match in the search path, an error is reported, even if matching table names exist in other schemas in the database."
+  - type: official-docs
+    title: "PostgreSQL — Identifiers and Key Words"
+    url: https://www.postgresql.org/docs/current/sql-syntax-lexical.html
+    publisher: The PostgreSQL Global Development Group
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That quoting makes an identifier case-sensitive while unquoted names fold to lower
+      case, so a table created as "MyTable" cannot be reached by writing MyTable.
+    quote: "Quoting an identifier also makes it case-sensitive, whereas unquoted names are always folded to lower case."
+  - type: official-docs
+    title: "PostgreSQL Error Codes (Appendix A)"
+    url: https://www.postgresql.org/docs/current/errcodes-appendix.html
+    publisher: The PostgreSQL Global Development Group
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That 42P01 is undefined_table in class 42, Syntax Error or Access Rule Violation —
+      a name-resolution class rather than a missing-object one.
+    quote: "undefined_table"
+
+confidence: high
+confidenceRationale: >-
+  The search_path resolution rule and the case-folding rule are quoted verbatim from
+  PostgreSQL's own reference, and they account for the two primary causes. The pooled
+  temporary-table case follows from documented temporary-schema behaviour rather than
+  from a sentence about this error, and the diagnostic queries are standard practice
+  rather than documented procedure.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 365
+
+related:
+  - postgres-53300-too-many-connections
+  - npgsql-22001-string-data-right-truncation

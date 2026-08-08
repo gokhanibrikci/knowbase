@@ -1,0 +1,210 @@
+slug: node-err-require-esm
+title: "Node.js ERR_REQUIRE_ESM: require() of an ES Module is not supported"
+summary: >-
+  A CommonJS file tried to require() an ES module. Since Node 22.12 this is allowed for
+  modules that are fully synchronous, so on a current runtime the error usually means
+  the module contains top-level await — a different failure that most advice about this
+  error predates.
+domain: language
+tags:
+  - nodejs
+  - esm
+  - commonjs
+  - modules
+  - packaging
+  - interop
+
+error:
+  signature: "Error [ERR_REQUIRE_ESM]: require() of ES Module not supported"
+  codes:
+    - ERR_REQUIRE_ESM
+    - ERR_REQUIRE_ASYNC_MODULE
+  aliases:
+    - "require() of ES modules is not supported"
+    - "Must use import to load ES Module"
+    - "ERR_REQUIRE_ASYNC_MODULE"
+    - "Cannot use import statement outside a module"
+
+problem: >-
+  A dependency that worked before now throws on require(), usually after upgrading it to
+  a major version that shipped as ESM-only. The application is CommonJS, the library is
+  not, and the two cannot be mixed by the old rules. Advice found online contradicts
+  itself because the rules changed: what was impossible before Node 22.12 is now
+  permitted for a subset of modules.
+
+rootCauses:
+  - cause: The Node version predates require(esm) support
+    weight: primary
+    detail: >-
+      Before Node 22.12 a CommonJS file could not require() an ES module under any
+      circumstances. On those runtimes the error is unconditional and no change to the
+      dependency will fix it.
+    discriminator: "node --version reports below 22.12, and the error code is ERR_REQUIRE_ESM"
+  - cause: The module is not fully synchronous
+    weight: primary
+    detail: >-
+      Current Node allows require() of an ES module only if it has no top-level await.
+      An asynchronous module cannot be evaluated synchronously, so the error persists on
+      a new runtime — but with a different code.
+    discriminator: >-
+      Node is 22.12 or newer and the code is ERR_REQUIRE_ASYNC_MODULE, or the module
+      source contains await outside any function
+  - cause: The importing file is being treated as CommonJS unintentionally
+    weight: common
+    detail: >-
+      A .js file is CommonJS unless the nearest parent package.json declares
+      "type": "module". Adding an import statement to such a file produces a syntax
+      error rather than an ESM file.
+    discriminator: >-
+      The nearest package.json has no type field or says commonjs, while the file uses
+      import syntax
+  - cause: The dependency published only an ESM entry point
+    weight: common
+    detail: >-
+      A library that dropped its CommonJS build has no export the require() condition
+      can resolve. Its major-version notes usually say ESM-only, which is the real
+      change rather than a bug.
+    discriminator: >-
+      The package's exports field offers only an import condition, with no require
+      condition or main
+  - cause: A transpiler emits require() for what is genuinely ESM
+    weight: edge
+    detail: >-
+      TypeScript or Babel configured to output CommonJS turns import statements into
+      require() calls, so source that looks like ESM runs as CJS and hits the same wall
+      at runtime.
+    discriminator: >-
+      The source uses import but the compiled output in dist contains require(), and
+      module in tsconfig is commonjs
+
+solution:
+  steps:
+    - instruction: >-
+        Establish which of the two errors you have, because the fixes differ. Check the
+        runtime version and the exact error code before changing anything.
+      command: "node --version && node -e \"try{require('the-package')}catch(e){console.log(e.code)}\""
+    - instruction: >-
+        On Node older than 22.12, upgrade the runtime if you can. This alone resolves
+        the common case of requiring a synchronous ESM-only library.
+      command: "node --version   # target 22.12+ or 24 LTS"
+    - instruction: >-
+        Where the runtime cannot change, load the module asynchronously. Dynamic import
+        works from CommonJS on every supported version and returns a promise.
+      code: |
+        // 🔴 fails when the-package is ESM-only on an older runtime
+        const pkg = require("the-package");
+
+        // ✅ works from CommonJS everywhere
+        async function main() {
+          const { default: pkg } = await import("the-package");
+          return pkg();
+        }
+
+        // for a value needed at module scope, keep it lazy
+        let cached;
+        const getPkg = async () => (cached ??= (await import("the-package")).default);
+      language: javascript
+      note: >-
+        The import() call is asynchronous and cannot be made synchronous. If the calling
+        API must stay synchronous, the caller has to change too.
+    - instruction: >-
+        If the error is ERR_REQUIRE_ASYNC_MODULE, the module has top-level await and no
+        runtime will require() it. Use dynamic import, or if it is your own module,
+        move the awaited work into an exported async function.
+      code: |
+        // 🔴 top-level await makes this module unrequireable
+        const config = await loadConfig();
+        export { config };
+
+        // ✅ defer the await to the caller
+        export const getConfig = async () => loadConfig();
+      language: javascript
+    - instruction: >-
+        To convert the importing project to ESM instead, declare it and fix the
+        consequences — __dirname, require and .json imports all change.
+      code: |
+        {
+          "type": "module"
+        }
+      language: json
+      note: >-
+        Under type module, .js files are ESM and CommonJS-only files must be renamed to
+        .cjs. This is a project-wide change, not a per-file one.
+    - instruction: >-
+        If you publish the library, ship both entry points so consumers of either module
+        system resolve correctly.
+      code: |
+        {
+          "exports": {
+            ".": {
+              "require": "./dist/index.cjs",
+              "import": "./dist/index.mjs"
+            }
+          }
+        }
+      language: json
+  verification: >-
+    The application starts and the module loads without an ERR_REQUIRE_ESM or
+    ERR_REQUIRE_ASYNC_MODULE code, on the same Node version used in production rather
+    than a newer local one.
+  fallback: >-
+    Where an ESM-only dependency cannot be loaded asynchronously and the runtime cannot
+    move, pin the last version that shipped a CommonJS build and treat the upgrade as
+    scheduled work — an ESM-only major release is a deliberate break, not a defect.
+
+appliesTo:
+  technology:
+    - name: Node.js
+      versions: "12 and later"
+      note: >-
+        require() of a synchronous ES module became supported in 22.12; before that it
+        always failed. Asynchronous modules still cannot be required on any version.
+    - name: CommonJS
+      versions: "all versions"
+      note: "A .js file is CommonJS unless the nearest package.json sets type to module."
+  runtimes:
+    - Node.js
+
+notApplicableTo:
+  - "Cannot use import statement outside a module, which is a parse error in a CJS file rather than a load failure"
+  - ERR_MODULE_NOT_FOUND, where the specifier does not resolve at all
+  - Bundled applications where the bundler resolves modules at build time and Node never sees the require
+  - Browser module errors, which have no CommonJS to interoperate with
+
+evidence:
+  - type: official-docs
+    title: "Node.js — Modules: CommonJS modules, Loading ECMAScript modules using require()"
+    url: https://nodejs.org/api/modules.html
+    publisher: OpenJS Foundation
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That require() supports ES modules only when they are fully synchronous — no
+      top-level await — which is precisely why the error survives a runtime upgrade for
+      asynchronous modules and disappears for synchronous ones.
+    quote: "require() only supports loading ECMAScript modules that meet the following requirements: ... The module is fully synchronous (contains no top-level await)"
+  - type: official-docs
+    title: "Node.js — Modules: Packages, Determining module system"
+    url: https://nodejs.org/api/packages.html
+    publisher: OpenJS Foundation
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That the module system of a .js file is decided by the nearest parent
+      package.json's type field, which determines whether an import statement is valid
+      in it and whether its requires are CommonJS.
+    quote: 'Files with a .js extension when the nearest parent package.json file contains a top-level "type" field with a value of "module"'
+
+confidence: medium
+confidenceRationale: >-
+  The synchronous-module requirement and the type-field resolution rule are quoted from
+  Node's own API documentation, and together they explain both error codes. Confidence
+  is medium rather than high because it rests on two sources: the version at which
+  require(esm) became available and the dual-export remedy are drawn from release
+  history and ecosystem convention rather than from a sentence I could quote here.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 180
+
+related: []

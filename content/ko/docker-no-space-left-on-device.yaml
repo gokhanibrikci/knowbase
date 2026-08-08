@@ -1,0 +1,189 @@
+slug: docker-no-space-left-on-device
+title: "Docker error: no space left on device"
+summary: >-
+  The disk holding Docker's data directory is full, and the space is almost never where
+  people look first. Stopped containers, dangling images and — most often — the build
+  cache accumulate silently, and none of them appear in a directory listing of your
+  project.
+domain: devops
+tags:
+  - docker
+  - disk-space
+  - build-cache
+  - images
+  - volumes
+  - ci
+
+error:
+  signature: "no space left on device"
+  codes:
+    - ENOSPC
+  aliases:
+    - "write /var/lib/docker: no space left on device"
+    - "failed to register layer: no space left on device"
+    - "Error response from daemon: no space left on device"
+    - "ENOSPC docker build"
+
+problem: >-
+  A build or pull fails saying the device is full, but df on the project directory shows
+  free space. CI agents fail after weeks of working, and clearing the workspace changes
+  nothing. The consumed space belongs to the Docker daemon rather than to any project
+  tree, so ordinary cleanup misses all of it.
+
+rootCauses:
+  - cause: The build cache has grown without bound
+    weight: primary
+    detail: >-
+      BuildKit keeps every intermediate layer it might reuse. On a machine that builds
+      often — a CI runner especially — this is usually the largest consumer by a wide
+      margin, and it is invisible to docker images.
+    discriminator: >-
+      docker system df shows Build Cache far larger than Images, and docker images alone
+      does not account for the used space
+  - cause: Dangling and unused images accumulate
+    weight: primary
+    detail: >-
+      Every rebuild of a tag leaves the previous image untagged rather than deleting it.
+      Those layers stay on disk indefinitely because nothing removes them automatically.
+    discriminator: >-
+      docker images -f dangling=true lists many entries, or docker system df reports a
+      large reclaimable figure for Images
+  - cause: Stopped containers and their writable layers persist
+    weight: common
+    detail: >-
+      A container that exited keeps its writable layer and its logs until it is removed.
+      Runs without --rm leave one behind every time.
+    discriminator: >-
+      docker ps -a lists far more containers than docker ps, and the Containers row in
+      docker system df is non-trivial
+  - cause: Anonymous volumes are orphaned
+    weight: common
+    detail: >-
+      Volumes outlive the containers that created them and are never pruned by default.
+      Anonymous volumes from removed containers are the ones nobody remembers, and they
+      can hold database data measured in gigabytes.
+    discriminator: >-
+      docker volume ls shows volumes with hash-like names not referenced by any running
+      container
+  - cause: Container logs are unbounded
+    weight: common
+    detail: >-
+      The default json-file driver writes without rotation, so one chatty long-lived
+      container can fill a disk on its own with no image or volume growth at all.
+    discriminator: >-
+      Files under /var/lib/docker/containers/*/*-json.log are large, while docker system
+      df reports little reclaimable space
+  - cause: Inodes are exhausted rather than bytes
+    weight: edge
+    detail: >-
+      Many small files can exhaust the inode table while free space remains. The error
+      text is identical, which sends people to the wrong measurement.
+    discriminator: "df -i shows IUse% at or near 100 while df -h shows space available"
+
+solution:
+  steps:
+    - instruction: >-
+        Ask Docker where its space went before reaching for df. This one command
+        separates build cache from images, containers and volumes, and shows how much of
+        each is reclaimable.
+      command: "docker system df -v"
+    - instruction: >-
+        Check whether the problem is bytes or inodes. They report the same error and
+        need different fixes.
+      command: "df -h /var/lib/docker && df -i /var/lib/docker"
+    - instruction: >-
+        Clear the build cache first when that is the largest row. It is safe — the worst
+        outcome is a slower next build.
+      command: "docker buildx prune -f"
+      note: >-
+        Use --filter until=168h to keep recent cache while dropping anything older than
+        a week, which is usually the right trade on a CI runner.
+    - instruction: >-
+        Remove unused containers, networks and images together. Read what it reports
+        before confirming, because it does not stop at dangling images.
+      command: "docker system prune -a"
+      note: >-
+        Without -a only dangling images go; with -a every image not used by a container
+        is removed, including ones you will pull again tomorrow.
+    - instruction: >-
+        Prune volumes separately and deliberately. This is the one destructive step —
+        an orphaned volume can still hold the only copy of some data.
+      command: "docker volume ls -f dangling=true && docker volume prune"
+    - instruction: >-
+        Stop the recurrence rather than repeating the cleanup. Cap log size on the
+        daemon so no container can fill the disk, and let CI prune on a schedule.
+      code: |
+        {
+          "log-driver": "json-file",
+          "log-opts": { "max-size": "10m", "max-file": "3" }
+        }
+      language: json
+      note: >-
+        This is /etc/docker/daemon.json and applies to containers created after a daemon
+        restart — existing containers keep their original settings.
+  verification: >-
+    docker system df reports reclaimable space back to a small fraction of the disk, the
+    failing build or pull completes, and both df -h and df -i show headroom on the
+    filesystem holding /var/lib/docker.
+  fallback: >-
+    If the disk is too full for the daemon to operate at all, delete the largest
+    container log files in place to buy room for prune to run, then move Docker's
+    data-root onto a larger volume rather than repeating the recovery.
+
+appliesTo:
+  technology:
+    - name: Docker Engine
+      versions: "20.10 and later"
+      note: "Data lives under /var/lib/docker by default; docker system df accounts for it."
+    - name: BuildKit
+      versions: "all versions"
+      note: "Build cache is managed separately from images and is pruned with buildx prune."
+  platforms:
+    - linux
+    - macos
+    - windows
+
+notApplicableTo:
+  - A full disk unrelated to Docker, where /var/lib/docker is on a filesystem with space
+  - Container memory exhaustion (OOMKilled), which concerns RAM rather than disk
+  - Registry-side quota errors on push, which are rejected remotely rather than locally
+  - Kubernetes node disk pressure, which triggers kubelet eviction and reports its own condition
+
+evidence:
+  - type: official-docs
+    title: "docker system prune"
+    url: https://docs.docker.com/reference/cli/docker/system/prune/
+    publisher: Docker Inc.
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That unused containers, networks and images accumulate and are removed by an
+      explicit prune, and that volumes are excluded unless opted into — which is why
+      routine cleanup leaves volume space behind.
+    quote: "Remove all unused containers, networks, images (both dangling and unused), and optionally, volumes."
+  - type: official-docs
+    title: "docker buildx prune"
+    url: https://docs.docker.com/reference/cli/docker/buildx/prune/
+    publisher: Docker Inc.
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That the build cache is a distinct store cleared by its own command, separate from
+      images — the reason a machine can be full of cache while docker images looks small.
+    quote: "Clears the build cache of the selected builder."
+
+confidence: medium
+confidenceRationale: >-
+  That build cache and images are separate stores with separate prune commands, and that
+  volumes are excluded from a default prune, are quoted from Docker's own CLI reference
+  — and those two facts carry the primary causes. Confidence is medium rather than high
+  because it rests on two sources: the log-rotation defaults, the inode case and the
+  operational ordering of the cleanup steps are established practice rather than
+  statements quoted from a primary source.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 365
+
+related:
+  - container-exit-code-137-oomkilled
