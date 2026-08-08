@@ -24,6 +24,16 @@ const CYAN = "\x1b[36m";
 
 const ZONE_NAME = "knowbase.sh";
 
+/**
+ * The distinction that actually matters.
+ *
+ * An index crawler saying "this page exists, noted" is not the goal — it is the
+ * precondition. The goal is a model fetching a page *because a person asked it
+ * something*, which these user-agents represent. Until this count is non-zero, the
+ * site is discovered but not used.
+ */
+const USER_TRIGGERED = /ChatGPT-User|Claude-User|Perplexity-User|OAI-SearchBot|Claude-SearchBot|DuckAssistBot/i;
+
 /** Bots that identify themselves. Anything pretending to be a browser is counted separately. */
 const BOT_PATTERNS: [string, RegExp][] = [
   ["OpenAI", /GPTBot|OAI-SearchBot|ChatGPT-User/i],
@@ -142,6 +152,7 @@ async function main() {
 
   // Per operator: how many requests, and which renditions they took.
   const byOperator = new Map<string, { count: number; formats: Map<string, number>; paths: Map<string, number> }>();
+  const userTriggered = new Map<string, number>();
   let browserLike = 0;
   let selfTest = 0;
 
@@ -154,6 +165,9 @@ async function main() {
       else browserLike += row.count;
       continue;
     }
+
+    const triggered = ua.match(USER_TRIGGERED)?.[0];
+    if (triggered) userTriggered.set(triggered, (userTriggered.get(triggered) ?? 0) + row.count);
 
     const entry = byOperator.get(op) ?? { count: 0, formats: new Map(), paths: new Map() };
     entry.count += row.count;
@@ -203,6 +217,24 @@ async function main() {
     console.log(
       `${DIM}html:${agg.get("html") ?? 0} json:${agg.get("json") ?? 0} md:${agg.get("markdown") ?? 0} txt:${agg.get("text") ?? 0} llms:${agg.get("llms") ?? 0}${RESET}`,
     );
+  }
+
+  // The headline the rest of the report exists to support.
+  const triggeredTotal = [...userTriggered.values()].reduce((a, b) => a + b, 0);
+  console.log();
+  if (triggeredTotal === 0) {
+    console.log(
+      `${YELLOW}Agent fetches on behalf of a user: 0${RESET} ${DIM}— discovered, not yet used${RESET}`,
+    );
+    console.log(
+      `${DIM}Index crawlers noting the site exist is the precondition. The goal is`,
+    );
+    console.log(`${DIM}ChatGPT-User / Claude-User / Perplexity-User appearing here.${RESET}`);
+  } else {
+    console.log(`${GREEN}Agent fetches on behalf of a user: ${triggeredTotal}${RESET}`);
+    for (const [ua, n] of [...userTriggered.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${ua.padEnd(20)} ${n}`);
+    }
   }
 
   console.log(
