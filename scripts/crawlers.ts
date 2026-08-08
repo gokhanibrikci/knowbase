@@ -52,10 +52,24 @@ function readToken(): string {
 
   for (const file of candidates) {
     try {
-      const match = readFileSync(file, "utf8").match(/^oauth_token\s*=\s*"([^"]+)"/m);
-      if (match) return match[1];
-    } catch {
-      // try the next location
+      const toml = readFileSync(file, "utf8");
+      const match = toml.match(/^oauth_token\s*=\s*"([^"]+)"/m);
+      if (!match) continue;
+
+      // wrangler refreshes the OAuth token lazily, so a stale one on disk fails with
+      // a confusing "zone not visible" rather than an auth error. Say so plainly.
+      const expiry = toml.match(/^expiration_time\s*=\s*"([^"]+)"/m)?.[1];
+      if (expiry && new Date(expiry).getTime() < Date.now()) {
+        throw new Error(
+          `the stored Cloudflare token expired at ${expiry}\n` +
+            "run `npx wrangler whoami` once to refresh it, then try again",
+        );
+      }
+
+      return match[1];
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("expired")) throw error;
+      // otherwise try the next location
     }
   }
 
