@@ -1,0 +1,188 @@
+slug: npm-eresolve-peer-dependency
+title: "npm ERESOLVE: unable to resolve dependency tree"
+summary: >-
+  Two packages demand incompatible versions of the same peer dependency and npm refuses to
+  guess. The two flags everyone reaches for are not equivalent: --legacy-peer-deps ignores
+  peer constraints entirely, while overrides pins one version deliberately. Only the second
+  leaves a tree you can reason about.
+domain: language
+tags:
+  - npm
+  - dependencies
+  - peer-dependencies
+  - package-lock
+  - nodejs
+  - ci
+
+error:
+  signature: "npm error code ERESOLVE"
+  codes:
+    - ERESOLVE
+  aliases:
+    - "unable to resolve dependency tree"
+    - "Could not resolve dependency: peer"
+    - "Conflicting peer dependency"
+    - "Fix the upstream dependency conflict"
+
+problem: >-
+  An install that worked yesterday fails after one package was upgraded, and CI fails while
+  a developer machine succeeds because the developer has a lockfile and node_modules
+  already. The message prints a tree of conflicting requirements that is hard to read, and
+  the two suggested flags produce very different long-term outcomes with no indication of
+  which is appropriate.
+
+rootCauses:
+  - cause: Two dependencies require incompatible versions of the same peer
+    weight: primary
+    detail: >-
+      One package needs react 18, another declares a peer range of react 17 only. Both are
+      internally consistent; together they have no valid solution, and npm reports that
+      rather than choosing.
+    discriminator: >-
+      The error tree shows the same package name twice with non-overlapping ranges, one as
+      'Found' and one as 'Could not resolve'
+  - cause: A package has not published support for the new major
+    weight: primary
+    detail: >-
+      A plugin whose peerDependencies still name the previous major of its host. Frequently
+      it works fine in practice and the metadata is simply behind — but npm can only read
+      the metadata.
+    discriminator: >-
+      The blocking package's latest version still declares the old peer range, and its issue
+      tracker has an open request for the new one
+  - cause: The project is being installed with npm 7 or newer for the first time
+    weight: common
+    detail: >-
+      npm 6 ignored peer dependencies; npm 7 onwards enforces them. A tree that installed
+      cleanly for years can fail on a newer npm without anything in the project changing.
+    discriminator: >-
+      The same install succeeds with npm 6, and the conflict involves peers that were never
+      previously enforced
+  - cause: A stale lockfile encodes an arrangement npm will no longer produce
+    weight: common
+    detail: >-
+      The lockfile records a resolution from an older algorithm. npm then cannot reconcile
+      what is written with what the current rules allow.
+    discriminator: >-
+      Deleting package-lock.json changes the error or resolves it, and the lockfile's
+      lockfileVersion predates the npm in use
+  - cause: Workspace hoisting produces a conflict the packages do not have individually
+    weight: edge
+    detail: >-
+      In a monorepo, two workspaces pinning different majors of a shared peer collide when
+      hoisted to the root even though each workspace is self-consistent.
+    discriminator: >-
+      Each workspace installs cleanly on its own, and the conflict appears only from the
+      repository root
+
+solution:
+  steps:
+    - instruction: >-
+        Read the tree properly. 'Found' is what npm intends to install; 'Could not resolve'
+        is the package objecting. Those two lines identify the conflict.
+      command: "npm install 2>&1 | grep -A20 'ERESOLVE'"
+    - instruction: >-
+        Check what the objecting package actually requires, rather than inferring it from
+        the error.
+      command: "npm view <blocking-package> peerDependencies"
+    - instruction: >-
+        Prefer resolving the conflict for real: upgrade the package that lags, or move the
+        shared dependency to a version both accept. This leaves no override to explain later.
+      command: "npm view <blocking-package> versions --json | tail -20"
+    - instruction: >-
+        When the metadata is merely behind and you have verified compatibility, pin the
+        version deliberately with overrides. This states an intention, and it applies to the
+        one dependency you decided about rather than to all of them.
+      code: |
+        {
+          "overrides": {
+            "react": "18.3.1"
+          }
+        }
+      language: json
+      note: >-
+        Prefer this to --legacy-peer-deps. Overrides are recorded in package.json, apply to
+        a named package, and survive review; a flag in CI is invisible to everyone reading
+        the repository.
+    - instruction: >-
+        Understand what --legacy-peer-deps actually does before using it. It does not
+        resolve the conflict — it stops npm considering peer dependencies at all, for every
+        package, so a genuinely incompatible tree installs silently and fails at runtime.
+      code: |
+        # 🔴 ignores every peer constraint in the tree, not just the conflicting one
+        npm install --legacy-peer-deps
+
+        # ✅ a scoped, recorded decision
+        # package.json "overrides", then:
+        npm install
+      language: bash
+    - instruction: >-
+        Regenerate the lockfile if it encodes a stale arrangement, and commit the result so
+        CI and developers resolve identically.
+      command: "rm -rf node_modules package-lock.json && npm install && git add package-lock.json"
+  verification: >-
+    npm ci completes from a clean checkout with no ERESOLVE and no --legacy-peer-deps, and
+    npm ls <shared-package> shows a single version satisfying every consumer.
+  fallback: >-
+    If an upstream package is abandoned and blocks an otherwise necessary upgrade, pin it
+    with overrides and record why in the repository — then treat replacing it as scheduled
+    work, because an override is a deferred decision rather than a solved problem.
+
+appliesTo:
+  technology:
+    - name: npm
+      versions: "7 and later"
+      note: >-
+        npm 7 began enforcing peerDependencies; npm 3 through 6 ignored them, which is the
+        behaviour --legacy-peer-deps restores.
+    - name: Node.js
+      versions: "all versions shipping npm 7+"
+  platforms:
+    - linux
+    - macos
+    - windows
+
+notApplicableTo:
+  - ETARGET, where no published version matches the requested range at all
+  - ENOENT on a missing package.json, which fails before resolution begins
+  - EACCES permission errors during write, which are filesystem rather than dependency problems
+  - Yarn or pnpm resolution failures, which use different algorithms and report differently
+
+evidence:
+  - type: official-docs
+    title: "npm config — legacy-peer-deps"
+    url: https://docs.npmjs.com/cli/v11/using-npm/config
+    publisher: npm, Inc.
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That the flag makes npm ignore peerDependencies entirely, as npm 3 through 6 did, and
+      that its use is discouraged precisely because it stops enforcing a contract that
+      meta-dependencies may rely on — which is why it is not equivalent to an override.
+    quote: "Causes npm to completely ignore peerDependencies when building a package tree, as in npm versions 3 through 6."
+  - type: official-docs
+    title: "npm install — configuration, strict-peer-deps"
+    url: https://docs.npmjs.com/cli/v11/commands/npm-install
+    publisher: npm, Inc.
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That npm resolves deep peer conflicts using the nearest non-peer specification and
+      warns when it does so, and that treating such a warning as fatal is opt-in — which
+      explains why some conflicts warn and others fail outright.
+    quote: "conflicting peerDependencies deep in the dependency graph will be resolved using the nearest non-peer dependency specification"
+
+confidence: medium
+confidenceRationale: >-
+  What --legacy-peer-deps does, why npm discourages it, and how npm resolves deep peer
+  conflicts by default are quoted from npm's own documentation — and those are the claims
+  the recommendation rests on. Confidence is medium rather than high because it rests on two
+  sources: the npm 7 enforcement boundary and the workspace-hoisting case are drawn from
+  release history and practice rather than quoted here.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 365
+
+related:
+  - node-err-require-esm

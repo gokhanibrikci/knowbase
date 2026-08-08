@@ -1,0 +1,203 @@
+slug: oauth-redirect-uri-mismatch
+title: "OAuth error redirect_uri_mismatch: redirect URI is not registered"
+summary: >-
+  The authorization server compares the redirect_uri you sent against the registered one
+  with simple string comparison — byte for byte. A trailing slash, a different port, or
+  http instead of https makes two URIs that look the same to a human not equal, and the
+  spec requires the server to reject them.
+domain: security
+tags:
+  - oauth2
+  - openid-connect
+  - authentication
+  - redirect-uri
+  - rfc6749
+  - callback
+
+error:
+  signature: "error=redirect_uri_mismatch"
+  codes:
+    - redirect_uri_mismatch
+    - invalid_request
+  aliases:
+    - "The redirect URI in the request does not match the ones authorized"
+    - "redirect_uri_mismatch google oauth"
+    - "invalid redirect_uri"
+    - "The redirect URI included is not valid"
+
+problem: >-
+  The login flow fails at the authorization server before the user ever reaches the
+  consent screen. The redirect URI in the client configuration looks identical to the one
+  the application sends, yet the server rejects it. It works in one environment and fails
+  in another, which suggests a configuration sync problem when the difference is usually
+  a single character.
+
+rootCauses:
+  - cause: A trailing slash differs between the request and the registration
+    weight: primary
+    detail: >-
+      https://app.example.com/callback and https://app.example.com/callback/ are
+      different strings, therefore different URIs. Comparison is exact, so one extra
+      character is a mismatch.
+    discriminator: >-
+      Copying the exact value from the error or the request log and diffing it against
+      the registered value reveals a slash at one end only
+  - cause: Scheme or host differs
+    weight: primary
+    detail: >-
+      http versus https, localhost versus 127.0.0.1, www versus apex. Each pair is two
+      distinct URIs under string comparison even though they may reach the same server.
+    discriminator: >-
+      The request is over http while the registration is https, or the hostname form
+      differs while resolving to the same address
+  - cause: The port is present in one and absent in the other
+    weight: common
+    detail: >-
+      Registering http://localhost:3000/callback and sending http://localhost/callback —
+      or the reverse — mismatches. A default port is not normalised away before comparison.
+    discriminator: >-
+      One side carries an explicit port and the other relies on the protocol default
+  - cause: The application builds the URI from the incoming request
+    weight: common
+    detail: >-
+      Deriving the callback from Host or X-Forwarded-Host means a proxy, a preview
+      deployment or a custom domain silently changes it. The value then depends on how the
+      user arrived rather than on configuration.
+    discriminator: >-
+      The redirect_uri in the outgoing request varies between deployments or hostnames
+      rather than being a fixed configured string
+  - cause: A query string or fragment was appended
+    weight: common
+    detail: >-
+      State belongs in the state parameter, not in the redirect URI. Extra query
+      parameters make the URI differ from the registration, and a fragment is not
+      permitted in a redirect URI at all.
+    discriminator: >-
+      The sent redirect_uri contains a ? or # that the registered value does not
+  - cause: The registration is on a different client or environment
+    weight: edge
+    detail: >-
+      Staging credentials used against production configuration, or the URI added to a
+      second OAuth client. The client_id and the registration have to belong together.
+    discriminator: >-
+      The URI is present in the provider console but under a different client_id than the
+      one the request sends
+
+solution:
+  steps:
+    - instruction: >-
+        Capture the exact string the application sends, rather than the one you believe it
+        sends. Most mismatches are invisible when read and obvious when diffed.
+      command: "curl -si 'https://your-app.example.com/login' | grep -i '^location:' | tr '&' '\\n' | grep redirect_uri"
+    - instruction: >-
+        Compare the two values byte for byte. Trailing whitespace and percent-encoding
+        differences do not survive a visual check.
+      command: "diff <(printf '%s' \"$SENT_URI\") <(printf '%s' \"$REGISTERED_URI\") && echo identical"
+    - instruction: >-
+        Register the URI exactly as sent, then stop deriving it. Configure it as a fixed
+        value so it cannot vary with the request.
+      code: |
+        // 🔴 depends on how the user reached the app
+        const redirectUri = `${req.protocol}://${req.get("host")}/auth/callback`;
+
+        // ✅ a configured constant, identical to what is registered
+        const redirectUri = process.env.OAUTH_REDIRECT_URI;
+        // OAUTH_REDIRECT_URI=https://app.example.com/auth/callback
+      language: javascript
+      note: >-
+        Register one URI per environment and select by configuration. Do not attempt to
+        cover several with one entry — there is no wildcard in exact comparison.
+    - instruction: >-
+        Put per-request data in the state parameter, which exists for exactly this and is
+        also your CSRF defence.
+      code: |
+        const state = crypto.randomUUID();
+        await store.set(state, { returnTo: "/dashboard" }, { ttl: 600 });
+
+        const url = new URL("https://provider.example.com/authorize");
+        url.searchParams.set("client_id", clientId);
+        url.searchParams.set("redirect_uri", process.env.OAUTH_REDIRECT_URI);
+        url.searchParams.set("state", state);
+      language: javascript
+    - instruction: >-
+        Verify the client_id in the request belongs to the same client where the URI is
+        registered — a URI on the wrong client is invisible to the right one.
+    - instruction: >-
+        For preview or ephemeral deployments, route the callback through one stable
+        registered URI and use state to carry the eventual destination, rather than
+        registering a new URI per deployment.
+  verification: >-
+    The authorization request reaches the consent screen and returns to your callback with
+    a code, and the redirect_uri sent is byte-identical to the registered value in every
+    environment.
+  fallback: >-
+    Where a provider genuinely requires many callbacks — multi-tenant subdomains, for
+    example — front them with a single registered redirect URI on a dedicated host that
+    receives the code and forwards it internally, so only one URI ever needs registering.
+
+appliesTo:
+  technology:
+    - name: OAuth 2.0
+      versions: "RFC 6749"
+      note: >-
+        The authorization server MUST compare a fully registered redirection URI using
+        simple string comparison; there is no normalisation and no wildcard.
+    - name: OpenID Connect
+      versions: "Core 1.0"
+      note: "Inherits the redirect URI matching rules from OAuth 2.0."
+  platforms:
+    - web
+    - mobile
+
+notApplicableTo:
+  - invalid_client, which means the client_id or secret is wrong rather than the callback
+  - access_denied, where the user declined consent and the redirect URI was accepted
+  - invalid_grant on token exchange, which happens after a successful redirect
+  - CORS errors on the token endpoint, which are browser policy rather than URI registration
+
+evidence:
+  - type: specification
+    title: "RFC 6749 — The OAuth 2.0 Authorization Framework, Redirection Endpoint"
+    url: https://datatracker.ietf.org/doc/html/rfc6749
+    publisher: IETF
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That the authorization server must compare a fully registered redirection URI to the
+      one in the request using simple string comparison — the normative rule that makes a
+      trailing slash or a scheme difference a rejection rather than a near match.
+    quote: "the authorization server MUST compare the two URIs using simple string comparison"
+  - type: specification
+    title: "RFC 3986 — URI Generic Syntax, Simple String Comparison"
+    url: https://datatracker.ietf.org/doc/html/rfc3986
+    publisher: IETF
+    retrievedAt: "2026-08-08"
+    supports: >-
+      What simple string comparison means: two URIs are equivalent only if identical as
+      character strings, with no normalisation of case, ports, or trailing separators.
+    quote: "If two URIs, when considered as character strings, are identical, then it is safe to conclude that they are equivalent."
+  - type: vendor-kb
+    title: "Using OAuth 2.0 for Web Server Applications"
+    url: https://developers.google.com/identity/protocols/oauth2/web-server
+    publisher: Google
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That a major provider implements the specification as written — the value must match
+      an authorised redirect URI exactly, and a difference produces this exact error code
+      rather than a warning or a fallback.
+    quote: "match one of the authorized redirect URIs for the OAuth 2.0 client"
+
+confidence: high
+confidenceRationale: >-
+  Both load-bearing claims are quoted from the normative specifications: RFC 6749 requires
+  simple string comparison, and RFC 3986 defines it as character-for-character identity.
+  Together they account for every primary cause. The provider-specific console behaviour
+  and the multi-tenant fallback are practice rather than specification, and are described
+  as such.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 730
+
+related: []

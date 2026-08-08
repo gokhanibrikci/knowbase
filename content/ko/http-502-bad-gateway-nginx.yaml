@@ -1,0 +1,191 @@
+slug: http-502-bad-gateway-nginx
+title: "nginx 502 Bad Gateway: upstream returned an invalid response"
+summary: >-
+  nginx reached your application and did not get a usable answer back. The status says
+  nothing about why — that is in nginx's own error log, which names the upstream, the
+  syscall that failed and the reason, and reading it turns guesswork into one lookup.
+domain: networking
+tags:
+  - nginx
+  - http-502
+  - reverse-proxy
+  - upstream
+  - timeouts
+  - deployment
+
+error:
+  signature: "502 Bad Gateway"
+  codes:
+    - "502"
+  aliases:
+    - "connect() failed (111: Connection refused) while connecting to upstream"
+    - "upstream prematurely closed connection"
+    - "upstream timed out (110: Connection timed out)"
+    - "no live upstreams while connecting to upstream"
+
+problem: >-
+  Requests return 502 while nginx itself is running fine. The application may be up,
+  reachable directly on its own port, and showing nothing unusual in its logs. Restarting
+  nginx changes nothing because nginx is not what failed — it is reporting that whatever
+  sits behind it did.
+
+rootCauses:
+  - cause: The upstream process is not listening
+    weight: primary
+    detail: >-
+      Crashed, still starting, or bound to a different address. Binding to 127.0.0.1 while
+      nginx connects to another interface — or the reverse in a container, where 127.0.0.1
+      is not shared — produces a refused connection.
+    discriminator: >-
+      The error log says connect() failed (111: Connection refused), and ss -ltnp shows
+      nothing listening on the expected address and port
+  - cause: The upstream took longer than proxy_read_timeout
+    weight: primary
+    detail: >-
+      nginx waits 60 seconds by default for a response and then gives up with 502. A slow
+      query or a long export exceeds it while the application is still working normally.
+    discriminator: >-
+      The error log says upstream timed out, and the elapsed request time in the access log
+      is close to 60 seconds
+  - cause: The upstream closed the connection mid-response
+    weight: common
+    detail: >-
+      The worker was killed — OOM, a deploy, or a request timeout inside the application —
+      after nginx had already forwarded the request. nginx receives a truncated response
+      rather than none at all.
+    discriminator: >-
+      The error log says upstream prematurely closed connection, and the application's own
+      log shows a worker restart or OOM kill at the same timestamp
+  - cause: Response headers exceed nginx's buffer
+    weight: common
+    detail: >-
+      A large Set-Cookie or auth header can overflow proxy_buffer_size, and nginx rejects
+      the response as invalid rather than truncating it.
+    discriminator: >-
+      The error log mentions upstream sent too big header, and the failure follows requests
+      carrying unusually large cookies or tokens
+  - cause: The socket exists but nginx cannot use it
+    weight: common
+    detail: >-
+      With a Unix socket, the nginx worker user needs permission on the socket file and
+      every directory above it. SELinux or AppArmor can also deny the connection while
+      permissions look correct.
+    discriminator: >-
+      The error log reports permission denied on the socket path, or the denial appears in
+      audit.log rather than in nginx's log
+  - cause: Every server in the upstream group is marked down
+    weight: edge
+    detail: >-
+      After enough failures nginx takes members out of rotation, and once the last one is
+      out it fails immediately without attempting a connection.
+    discriminator: "The error log says no live upstreams, with no connect() attempt recorded"
+
+solution:
+  steps:
+    - instruction: >-
+        Read nginx's error log. It names the upstream address, the failing syscall and the
+        errno — which identifies the cause without needing to reproduce anything.
+      command: "tail -50 /var/log/nginx/error.log | grep -i upstream"
+      note: >-
+        The distinction between 'Connection refused', 'timed out' and 'prematurely closed'
+        maps directly onto the first three causes; they need different fixes.
+    - instruction: >-
+        Check the upstream is listening where nginx is looking. Address mismatches are the
+        single most common cause in containers.
+      command: "ss -ltnp | grep -E ':(3000|8000|8080)' ; curl -sS -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3000/"
+    - instruction: >-
+        For a refused connection, make the bind address and the proxy_pass target agree.
+        In a container, bind to all interfaces rather than loopback.
+      code: |
+        # 🔴 unreachable from another container
+        app.listen(3000, "127.0.0.1");
+
+        # ✅ reachable on the container network
+        app.listen(3000, "0.0.0.0");
+      language: javascript
+    - instruction: >-
+        For a timeout, raise the proxy timeouts only if the request is legitimately slow —
+        otherwise fix the slow path. The default is 60 seconds.
+      code: |
+        location /api/export {
+          proxy_pass http://app;
+          proxy_connect_timeout 5s;    # reaching the upstream should be fast
+          proxy_read_timeout 300s;     # this endpoint is genuinely slow
+          proxy_send_timeout 300s;
+        }
+      language: nginx
+      note: >-
+        Scope generous timeouts to the endpoint that needs them. Raising them globally
+        turns every stuck request into a held worker.
+    - instruction: >-
+        For a header-too-big error, give nginx room for the response headers.
+      code: |
+        proxy_buffer_size   16k;
+        proxy_buffers       4 16k;
+        proxy_busy_buffers_size 32k;
+      language: nginx
+    - instruction: >-
+        For premature closes, look at why the worker died rather than at nginx. Check the
+        application's memory ceiling and its own request timeout — nginx is the messenger.
+  verification: >-
+    The request succeeds, and nginx's error log records no new upstream entries during a
+    full traffic cycle including the slowest endpoint.
+  fallback: >-
+    While the root cause is being fixed, keep the site partially up by serving a cached or
+    static response for the failing location — proxy_cache_use_stale with error and timeout
+    lets nginx answer from cache instead of returning 502.
+
+appliesTo:
+  technology:
+    - name: nginx
+      versions: "all versions"
+      note: "proxy_read_timeout defaults to 60s; proxy_connect_timeout to 60s."
+    - name: HTTP
+      versions: "RFC 9110"
+      note: "502 means a gateway received an invalid response from an upstream server."
+  platforms:
+    - linux
+
+notApplicableTo:
+  - 504 Gateway Timeout, which some proxies return instead of 502 for the timeout case
+  - 503 Service Unavailable, typically emitted deliberately during maintenance or by rate limiting
+  - 500 from the application itself, which reached nginx as a valid response and is passed through
+  - 413 Request Entity Too Large, which nginx rejects before contacting the upstream at all
+
+evidence:
+  - type: official-docs
+    title: "502 Bad Gateway"
+    url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/502
+    publisher: MDN Web Docs
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That 502 means a proxy received an invalid response from upstream — so the failure is
+      always behind the proxy, which is why restarting nginx does not help.
+    quote: "indicates that a server was acting as a gateway or proxy and that it received an invalid response from the upstream server"
+  - type: official-docs
+    title: "nginx — ngx_http_proxy_module, proxy_read_timeout"
+    url: https://nginx.org/en/docs/http/ngx_http_proxy_module.html
+    publisher: nginx
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That the default read timeout is 60 seconds and is configurable per location, which
+      is why slow endpoints fail at a consistent one-minute boundary.
+    quote: "proxy_read_timeout 60s;"
+
+confidence: medium
+confidenceRationale: >-
+  The meaning of 502 and the 60-second default read timeout are quoted from MDN and
+  nginx's own module reference, and together they explain the two primary causes.
+  Confidence is medium rather than high because it rests on two sources: the specific
+  error-log strings used as discriminators are nginx's runtime messages rather than
+  documented text, and the buffer sizing values are conventional starting points.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 365
+
+related:
+  - nginx-413-request-entity-too-large
+  - container-exit-code-137-oomkilled

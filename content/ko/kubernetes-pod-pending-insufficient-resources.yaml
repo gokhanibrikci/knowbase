@@ -1,0 +1,210 @@
+slug: kubernetes-pod-pending-insufficient-resources
+title: "Kubernetes pod stuck in Pending: no nodes are available"
+summary: >-
+  The scheduler could not find a node that satisfies the pod, so it stays Pending
+  indefinitely. The Events line enumerates exactly why each node was rejected — and
+  that reason, not the Pending status, is the whole diagnosis.
+domain: kubernetes
+tags:
+  - kubernetes
+  - scheduler
+  - pending
+  - resource-requests
+  - taints
+  - affinity
+
+error:
+  signature: "0/3 nodes are available: Insufficient cpu"
+  codes:
+    - Pending
+    - FailedScheduling
+    - Unschedulable
+  aliases:
+    - "pod has unbound immediate PersistentVolumeClaims"
+    - "node(s) had untolerated taint"
+    - "didn't match Pod's node affinity/selector"
+    - "Insufficient memory"
+
+problem: >-
+  A pod is created but never starts. It shows Pending with no container status and no
+  logs, because no node has accepted it yet. Nothing is crashing and nothing is
+  retrying in the usual sense — the scheduler is simply unable to place it, and will
+  keep the pod queued until the cluster changes.
+
+rootCauses:
+  - cause: No node has enough unreserved CPU or memory for the requests
+    weight: primary
+    detail: >-
+      Scheduling is decided by resources.requests, not by actual usage. A node running
+      at 20% CPU can still be unable to accept a pod if existing requests already
+      reserve its capacity — the scheduler counts promises, not consumption.
+    discriminator: >-
+      Events say 'Insufficient cpu' or 'Insufficient memory', and kubectl describe node
+      shows Allocated resources requests near 100% despite low real usage
+  - cause: A node selector or affinity rule matches nothing
+    weight: common
+    detail: >-
+      nodeSelector or requiredDuringSchedulingIgnoredDuringExecution affinity restricts
+      the pod to labels no node carries — often a typo, or a label that exists only in
+      another environment.
+    discriminator: >-
+      Events say node(s) didn't match Pod's node affinity/selector, and kubectl get
+      nodes --show-labels lacks the label the pod requires
+  - cause: Every candidate node carries a taint the pod does not tolerate
+    weight: common
+    detail: >-
+      Control-plane nodes and dedicated pools are tainted deliberately. A pod without
+      the matching toleration is excluded from them, which can leave nothing eligible in
+      a small cluster.
+    discriminator: >-
+      Events mention untolerated taint, and kubectl describe node lists a taint the pod
+      spec has no toleration for
+  - cause: A PersistentVolumeClaim cannot be bound
+    weight: common
+    detail: >-
+      The pod cannot be placed until its volume can be. A missing StorageClass, an
+      exhausted quota, or a zone mismatch between the volume and the candidate nodes all
+      hold the pod in Pending.
+    discriminator: >-
+      Events mention unbound immediate PersistentVolumeClaims, and kubectl get pvc shows
+      the claim Pending rather than Bound
+  - cause: The cluster has no room and no autoscaler
+    weight: common
+    detail: >-
+      Requests genuinely exceed cluster capacity. Without a cluster autoscaler the pod
+      waits forever; with one it waits for a node that may be blocked by quota or
+      instance availability.
+    discriminator: >-
+      Total requests across pending and running pods exceed cluster allocatable, and no
+      scale-up event appears in the autoscaler's log
+  - cause: Topology spread or anti-affinity forbids the remaining nodes
+    weight: edge
+    detail: >-
+      A rule requiring pods to spread across zones or to avoid co-location can make every
+      node with capacity ineligible. Capacity exists; policy forbids using it.
+    discriminator: >-
+      Events cite node(s) didn't satisfy existing pods anti-affinity rules or a topology
+      spread constraint, while nodes still report free capacity
+
+solution:
+  steps:
+    - instruction: >-
+        Read the FailedScheduling event. It lists every node and the specific predicate
+        each one failed, which identifies the cause without further guessing.
+      command: "kubectl describe pod <pod-name> -n <namespace> | tail -20"
+      note: >-
+        The counts matter: '2 Insufficient cpu, 1 node(s) had untolerated taint' means
+        two separate problems, and fixing only one leaves the pod Pending.
+    - instruction: >-
+        Compare what is requested against what is actually reserved on the nodes.
+        Allocated requests, not current utilisation, is what the scheduler reads.
+      command: "kubectl describe nodes | grep -A6 'Allocated resources'"
+    - instruction: >-
+        If requests are simply too large, right-size them to measured usage rather than
+        raising cluster capacity to fit a guess.
+      code: |
+        resources:
+          requests:
+            cpu: "250m"      # what it needs to be scheduled
+            memory: "256Mi"
+          limits:
+            memory: "512Mi"  # ceiling, not a scheduling input
+      language: yaml
+      note: >-
+        Only requests affect scheduling. A large limit with a small request schedules
+        easily and risks eviction later; the two answer different questions.
+    - instruction: >-
+        For selector or affinity failures, check the labels that actually exist before
+        changing the rule.
+      command: "kubectl get nodes --show-labels"
+    - instruction: >-
+        For taints, either tolerate them explicitly or target an untainted pool.
+      code: |
+        tolerations:
+          - key: "dedicated"
+            operator: "Equal"
+            value: "batch"
+            effect: "NoSchedule"
+      language: yaml
+    - instruction: >-
+        For an unbound claim, resolve storage first — the pod cannot be scheduled while
+        its volume cannot be provisioned.
+      command: "kubectl get pvc -n <namespace> && kubectl get storageclass"
+  verification: >-
+    kubectl get pod shows the pod leaving Pending for ContainerCreating and then
+    Running, and kubectl describe pod records a Scheduled event naming the node.
+  fallback: >-
+    To get a workload running while capacity is arranged, lower its requests to the
+    minimum it can actually start with and set a PriorityClass so it can preempt
+    lower-priority pods rather than queueing behind them.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        Scheduling considers resources.requests only; limits play no part in node
+        selection.
+    - name: kube-scheduler
+      versions: "1.20 and later"
+      note: "Filters nodes to feasible ones, then scores them; an empty filter result leaves the pod queued."
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - CrashLoopBackOff, where scheduling succeeded and the container starts then exits
+  - ImagePullBackOff, which happens after scheduling, on the assigned node
+  - Pods evicted under node pressure, which were scheduled and later removed
+  - Init:0/1 status, where the pod is scheduled and an init container is still running
+
+evidence:
+  - type: official-docs
+    title: "Kubernetes Scheduler"
+    url: https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That the scheduler filters nodes to those meeting a pod's requirements and leaves
+      the pod unscheduled when none are suitable — which is exactly the Pending state,
+      rather than an error condition.
+    quote: "If none of the nodes are suitable, the pod remains unscheduled until the scheduler is able to place it."
+  - type: official-docs
+    title: "Resource Management for Pods and Containers"
+    url: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-08"
+    supports: >-
+      The distinction between requests and limits, and that requests are what the
+      scheduler reserves against node capacity — which is why a lightly loaded node can
+      still reject a pod.
+    quote: "memory limits are enforced by the kernel with out of memory (OOM) kills"
+  - type: official-docs
+    title: "Assigning Pods to Nodes"
+    url: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That placement can be constrained by nodeSelector, affinity and anti-affinity —
+      the mechanisms behind the selector-mismatch and topology causes, each of which can
+      leave a pod unschedulable while capacity is still free.
+    quote: "nodeSelector field matching against node labels"
+
+confidence: high
+confidenceRationale: >-
+  The filter-then-score model and the fact that an empty feasible set leaves a pod
+  queued are quoted from the scheduler's own documentation, and the requests/limits
+  distinction from the resource management reference. The specific event strings used as
+  discriminators are the scheduler's own messages rather than documented text, and the
+  PriorityClass fallback is standard practice.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-crashloopbackoff
+  - kubernetes-imagepullbackoff
+  - container-exit-code-137-oomkilled

@@ -1,0 +1,199 @@
+slug: nextjs-dynamic-server-usage
+title: "Next.js DynamicServerError: route couldn't be rendered statically"
+summary: >-
+  A route used a request-time API while Next.js was prerendering it. Normally the
+  framework catches this and quietly switches the route to dynamic rendering — so when
+  you see the error, the call escaped the async context it was supposed to run in.
+domain: framework
+tags:
+  - nextjs
+  - app-router
+  - static-generation
+  - dynamic-rendering
+  - headers
+  - cookies
+
+error:
+  signature: "DynamicServerError: Route couldn't be rendered statically because it used"
+  codes:
+    - DynamicServerError
+  aliases:
+    - "Dynamic server usage"
+    - "couldn't be rendered statically because it used headers"
+    - "used cookies instead of a static value"
+    - "Route couldn't be rendered statically"
+
+problem: >-
+  A build fails on a route that works in development. The message names a request-time
+  API such as headers or cookies, but the route often does not call it directly — a
+  library does, or the call is buried behind an await. Development never prerenders, so
+  the failure appears only at build time, which makes it look like a build-tool problem
+  rather than a rendering one.
+
+rootCauses:
+  - cause: A request-time API is called where the route is expected to be static
+    weight: primary
+    detail: >-
+      Reading headers, cookies, or searchParams makes a route dependent on the request.
+      Next.js normally responds by opting the route into dynamic rendering, so an error
+      means it could not make that switch.
+    discriminator: >-
+      The message names the specific API, and the route or something it imports calls
+      headers(), cookies() or draftMode()
+  - cause: The call escaped its async context
+    weight: primary
+    detail: >-
+      These APIs read from async context bound to the current render. Calling one inside
+      setTimeout or setInterval runs it on a different call stack, where the context no
+      longer exists — this is the case the framework cannot recover from.
+    discriminator: >-
+      The call sits inside a timer, a callback, or an event handler rather than directly
+      in the component or route handler body
+  - cause: The call happens after an unawaited promise
+    weight: common
+    detail: >-
+      A promise that is not awaited lets execution continue past the render, so the
+      later call lands in a fresh execution context with the original one already gone.
+    discriminator: >-
+      An async call in the same function is not awaited, and adding await removes the
+      error
+  - cause: A third-party library reads request state
+    weight: common
+    detail: >-
+      An analytics, auth or feature-flag package calls headers() or cookies() internally.
+      The route looks static; its dependency is not.
+    discriminator: >-
+      The stack trace passes through node_modules, and removing the library's call makes
+      the route prerender
+  - cause: The route is pinned static but needs request data
+    weight: edge
+    detail: >-
+      An explicit force-static declaration forbids the automatic switch to dynamic
+      rendering, turning what would have been a silent opt-in into a hard error.
+    discriminator: >-
+      The segment exports dynamic set to force-static while also reading request state
+
+solution:
+  steps:
+    - instruction: >-
+        Read which API the message names and find where it is called. If it is not in
+        your code, the stack trace will point into a dependency.
+      command: "npm run build 2>&1 | grep -A12 'DynamicServerError'"
+    - instruction: >-
+        Move the call out of any timer or callback and into the render path directly.
+        This is the fix for the case the framework cannot handle for you.
+      code: |
+        // 🔴 runs on a different call stack; the context is gone
+        setTimeout(() => {
+          const h = headers();
+        }, 0);
+
+        // ✅ read it where the context exists, then use the value
+        const h = await headers();
+        setTimeout(() => use(h.get("x-request-id")), 0);
+      language: typescript
+    - instruction: >-
+        Await every promise in the path leading to the call, so execution does not
+        continue past the render that owns the context.
+      code: |
+        // 🔴 the later read happens after this render finished
+        loadSomething();
+        const c = await cookies();
+
+        // ✅
+        await loadSomething();
+        const c = await cookies();
+      language: typescript
+    - instruction: >-
+        If the route genuinely depends on the request, declare that instead of fighting
+        it. Dynamic rendering is a legitimate choice, not a failure.
+      code: |
+        export const dynamic = "force-dynamic";
+      language: typescript
+      note: >-
+        This renders the route per request. Prefer it over force-static when request data
+        is genuinely needed — pinning static and then reading the request is contradictory.
+    - instruction: >-
+        To keep most of the page static, isolate the request-dependent part behind a
+        Suspense boundary so only that subtree is dynamic.
+      code: |
+        import { Suspense } from "react";
+
+        export default function Page() {
+          return (
+            <>
+              <StaticContent />
+              <Suspense fallback={<Skeleton />}>
+                <NeedsHeaders />
+              </Suspense>
+            </>
+          );
+        }
+      language: tsx
+    - instruction: >-
+        For a third-party library, move its call into a Client Component or a route
+        handler where request access is expected, rather than letting it run during
+        prerendering.
+  verification: >-
+    npm run build completes, and the build output lists the route as either static or
+    dynamic deliberately — matching what you intended rather than whatever the framework
+    could manage.
+  fallback: >-
+    Where a dependency reads request state and cannot be isolated, mark the whole segment
+    force-dynamic and accept per-request rendering for it, keeping sibling routes static
+    so the cost stays contained.
+
+appliesTo:
+  technology:
+    - name: Next.js
+      versions: "13.4 and later"
+      note: "Applies to the App Router; the Pages Router has no equivalent prerender-time check."
+    - name: React Server Components
+      versions: "all versions used by Next.js App Router"
+  runtimes:
+    - Node.js
+    - Edge runtime
+
+notApplicableTo:
+  - Hydration mismatches, which occur in the browser after HTML is delivered
+  - Pages Router getStaticProps errors, which have different semantics and messages
+  - Runtime 500s in production, which happen per request rather than during prerendering
+  - Build failures from type or lint errors, which never reach the rendering stage
+
+evidence:
+  - type: official-docs
+    title: "DynamicServerError - Dynamic Server Usage"
+    url: https://nextjs.org/docs/messages/dynamic-server-error
+    publisher: Vercel
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That the framework normally catches this and opts the route into dynamic rendering,
+      that an uncaught occurrence is what surfaces as a build error, and that calls made
+      from a timer or after an unawaited promise lose the async context the APIs depend on.
+    quote: "if it detects usage of a dynamic function, and catch it to automatically opt the page into dynamic rendering"
+  - type: official-docs
+    title: "Next.js — Caching and revalidating, route segment config"
+    url: https://nextjs.org/docs/app/guides/caching-without-cache-components
+    publisher: Vercel
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That a route segment can be pinned to dynamic rendering explicitly, and what that
+      means — rendering per request rather than at build time.
+    quote: "which will result in routes being rendered for each user at request time"
+
+confidence: medium
+confidenceRationale: >-
+  The automatic opt-in behaviour, the async-context requirement and the two escape
+  scenarios are quoted from Next.js's own error documentation, which is the authority for
+  this message. Confidence is medium rather than high because it rests on two sources:
+  the Suspense isolation pattern and the third-party-library case are established
+  practice rather than statements quoted from a primary source here.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 180
+
+related:
+  - nextjs-react-hydration-mismatch

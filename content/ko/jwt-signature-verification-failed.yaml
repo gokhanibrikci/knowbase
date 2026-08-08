@@ -1,0 +1,196 @@
+slug: jwt-signature-verification-failed
+title: "JWT signature verification failed: invalid signature"
+summary: >-
+  The token's signature did not verify against the key you supplied. The specification
+  requires rejecting it outright — there is no partial trust — and the cause is almost
+  always a key mismatch or an algorithm disagreement rather than a tampered token.
+domain: security
+tags:
+  - jwt
+  - jws
+  - authentication
+  - signature
+  - rfc7519
+  - key-rotation
+
+error:
+  signature: "invalid signature"
+  codes:
+    - JsonWebTokenError
+    - SignatureVerificationError
+  aliases:
+    - "JWT signature does not match locally computed signature"
+    - "signature verification failed"
+    - "JWSError JWSInvalidSignature"
+    - "invalid token specified"
+
+problem: >-
+  A token that the issuer produced seconds ago is rejected by the verifier. It decodes
+  correctly — the header and claims are readable and look right — so the token is clearly
+  not corrupt. Tokens work in one environment and fail in another, which points at
+  configuration rather than at the token itself.
+
+rootCauses:
+  - cause: The verifying key is not the one that signed
+    weight: primary
+    detail: >-
+      Different environments, a rotated key, or a JWKS cache holding a retired key. The
+      token is valid and the key is valid; they simply do not belong together.
+    discriminator: >-
+      Decoding the header shows a kid that is absent from the JWKS the verifier fetched, or
+      the two environments use different secrets
+  - cause: The algorithm expected does not match the one used
+    weight: primary
+    detail: >-
+      A token signed with RS256 verified as HS256, or the reverse. Accepting whatever the
+      header declares is also a well-known vulnerability — a verifier must pin the
+      algorithms it will accept rather than trust the token to choose.
+    discriminator: >-
+      The header alg differs from the algorithm passed to the verify call, or the verifier
+      accepts alg from the token instead of from configuration
+  - cause: The secret or key was transformed in transit
+    weight: common
+    detail: >-
+      A trailing newline in an environment variable, a PEM with escaped \n that was never
+      unescaped, or base64 decoding applied once too often. The bytes used to verify differ
+      from the bytes used to sign even though both look correct when printed.
+    discriminator: >-
+      The signing and verifying key material differ in length or hash, even though they
+      appear identical on screen
+  - cause: The token was modified after signing
+    weight: common
+    detail: >-
+      A logging pipeline that trims whitespace, a URL that lost its final characters, or a
+      cookie truncated at a size limit. Any change to the signed input invalidates the
+      signature, which is the mechanism working as designed.
+    discriminator: >-
+      The token does not have exactly two period characters, or its length differs from
+      what the issuer emitted
+  - cause: The wrong key is selected from a key set
+    weight: edge
+    detail: >-
+      With several keys published, the verifier must select by the kid header. Picking the
+      first key in the set works until rotation adds a second one.
+    discriminator: >-
+      Verification succeeds against one specific key in the JWKS but the verifier is not
+      selecting by kid
+  - cause: Encoding differences in the signed input
+    weight: edge
+    detail: >-
+      Signature is computed over the base64url-encoded header and payload exactly as
+      transmitted. Re-serialising the JSON before verifying — reordering keys, changing
+      whitespace — produces different input and therefore a different signature.
+    discriminator: >-
+      The verifier reconstructs the signing input from parsed claims rather than using the
+      original encoded segments
+
+solution:
+  steps:
+    - instruction: >-
+        Decode the header without verifying, to see which key and algorithm the token
+        actually claims. This is safe to read and decides the next step.
+      command: "cut -d. -f1 <<< \"$TOKEN\" | tr '_-' '/+' | base64 -d 2>/dev/null; echo"
+    - instruction: >-
+        Confirm the verifier is using the matching key. For asymmetric tokens, fetch the
+        issuer's JWKS and check the kid is present.
+      command: "curl -s https://issuer.example.com/.well-known/jwks.json | python3 -c \"import sys,json;[print(k['kid'], k['alg']) for k in json.load(sys.stdin)['keys']]\""
+    - instruction: >-
+        Pin the accepted algorithms explicitly. Never let the token's own header decide how
+        it is verified — that is the alg-confusion attack, not merely a bug.
+      code: |
+        // 🔴 trusts the token to say how it should be checked
+        jwt.verify(token, key);
+
+        // ✅ the verifier decides
+        jwt.verify(token, key, { algorithms: ["RS256"], issuer, audience });
+      language: javascript
+    - instruction: >-
+        Select the key by kid rather than taking the first one, so rotation does not break
+        verification.
+      code: |
+        import { createRemoteJWKSet, jwtVerify } from "jose";
+
+        const JWKS = createRemoteJWKSet(new URL("https://issuer.example.com/.well-known/jwks.json"));
+
+        const { payload } = await jwtVerify(token, JWKS, {
+          issuer: "https://issuer.example.com",
+          audience: "my-api",
+        });
+      language: javascript
+      note: >-
+        A remote JWKS helper caches keys and refetches when an unknown kid appears, which is
+        what makes rotation transparent.
+    - instruction: >-
+        Check the key material byte for byte when the key looks right but fails. Hash both
+        sides rather than comparing them visually.
+      command: "printf '%s' \"$JWT_SECRET\" | shasum -a 256"
+      note: >-
+        A trailing newline from a file or a secrets manager changes the hash and is
+        invisible in logs.
+    - instruction: >-
+        Verify against the original encoded segments rather than re-serialising the claims.
+        The signature covers the exact bytes that were transmitted.
+  verification: >-
+    A token freshly minted by the issuer verifies in the failing environment, and a token
+    with one character altered is rejected — proving verification is actually running
+    rather than being bypassed.
+  fallback: >-
+    During a rotation window, accept both the old and new keys by verifying against the
+    full JWKS rather than a single key, and retire the old key only once no tokens signed
+    with it can still be within their lifetime.
+
+appliesTo:
+  technology:
+    - name: JSON Web Token
+      versions: "RFC 7519"
+      note: "A JWT whose validation steps fail must be rejected as invalid input."
+    - name: JSON Web Signature
+      versions: "RFC 7515"
+      note: "Signature validation is defined by JWS; JWT inherits it."
+  platforms:
+    - server
+    - browser
+
+notApplicableTo:
+  - Expired tokens, where the signature verifies and the exp claim is in the past
+  - Audience or issuer mismatches, which are claim checks after a successful signature verification
+  - Malformed tokens that fail to parse before any signature is computed
+  - Opaque or reference tokens, which carry no signature and are validated by introspection
+
+evidence:
+  - type: specification
+    title: "RFC 7519 — JSON Web Token (JWT), Validating a JWT"
+    url: https://datatracker.ietf.org/doc/html/rfc7519
+    publisher: IETF
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That a JWT failing any validation step must be rejected and treated as invalid input
+      — there is no degraded acceptance, which is why a key or algorithm mismatch is fatal
+      rather than a warning.
+    quote: "If any of the listed steps fail, then the JWT MUST be rejected -- that is, treated by the application as an invalid input."
+  - type: specification
+    title: "RFC 7515 — JSON Web Signature (JWS), Message Signature or MAC Validation"
+    url: https://datatracker.ietf.org/doc/html/rfc7515
+    publisher: IETF
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That signature validation is a defined sequence and that failure at any step means
+      the signature cannot be validated — the mechanism JWT relies on for integrity.
+    quote: "If any of the listed steps fails, then the signature or MAC cannot be validated."
+
+confidence: medium
+confidenceRationale: >-
+  The normative requirement to reject on any validation failure is quoted from both
+  relevant RFCs, which establishes the severity and the mechanism. Confidence is medium
+  rather than high because it rests on two sources: the specific causes — key rotation,
+  algorithm pinning against alg confusion, key-material whitespace — are drawn from
+  well-established security practice rather than quoted from a primary source here.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 730
+
+related:
+  - oauth-redirect-uri-mismatch

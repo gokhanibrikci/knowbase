@@ -1,135 +1,31 @@
 {
   "$comment": "Topic queue for reaching 25+ entries. Chosen for search volume, a single identifiable root-cause family, and the existence of primary sources that can be quoted verbatim. Domain balance matters: the corpus started 4/7 kubernetes, which reads as a Kubernetes site rather than an engineering one.",
   "status": {
-    "published": 7,
-    "target": 25
+    "published": 25,
+    "target": 25,
+    "note": "Initial queue fully written. Next batch should be chosen from measured demand \u2014 see the note below."
   },
-  "queue": [
-    {
-      "slug": "cors-no-access-control-allow-origin",
-      "domain": "api",
-      "error": "No 'Access-Control-Allow-Origin' header is present on the requested resource",
-      "why": "Among the highest-volume web errors there is. Almost always misdiagnosed as a frontend bug when it is a server response-header problem.",
-      "sources": ["MDN CORS errors", "Fetch Standard", "MDN CORS guide"]
-    },
-    {
-      "slug": "postgres-53300-too-many-connections",
-      "domain": "database",
-      "error": "FATAL: sorry, too many clients already",
-      "why": "Every Postgres deployment hits it eventually; the fix is usually pooling, not raising max_connections.",
-      "sources": ["PostgreSQL runtime config", "PostgreSQL errcodes", "PgBouncer docs"]
-    },
-    {
-      "slug": "node-err-require-esm",
-      "domain": "language",
-      "error": "ERR_REQUIRE_ESM: require() of ES Module not supported",
-      "why": "The CommonJS/ESM boundary is the single most common Node.js packaging failure.",
-      "sources": ["Node.js ESM docs", "Node.js errors reference", "package.json exports"]
-    },
-    {
-      "slug": "react-maximum-update-depth-exceeded",
-      "domain": "framework",
-      "error": "Maximum update depth exceeded",
-      "why": "setState in render or a bad effect dependency; extremely common and the message does not name the component.",
-      "sources": ["React docs useEffect", "React error decoder", "React docs setState"]
-    },
-    {
-      "slug": "postgres-40p01-deadlock-detected",
-      "domain": "database",
-      "error": "ERROR: deadlock detected",
-      "why": "Lock ordering problem that only appears under concurrency; needs the detail line to diagnose.",
-      "sources": ["PostgreSQL explicit locking", "PostgreSQL errcodes"]
-    },
-    {
-      "slug": "mysql-1205-lock-wait-timeout",
-      "domain": "database",
-      "error": "Lock wait timeout exceeded; try restarting transaction",
-      "why": "InnoDB row-lock contention, routinely confused with a deadlock, which is a different error.",
-      "sources": ["MySQL InnoDB locking", "MySQL error reference"]
-    },
-    {
-      "slug": "http-502-bad-gateway-nginx",
-      "domain": "networking",
-      "error": "502 Bad Gateway",
-      "why": "nginx says the upstream failed; the cause is in the error log, not the status page.",
-      "sources": ["nginx proxy module docs", "RFC 9110"]
-    },
-    {
-      "slug": "jwt-signature-verification-failed",
-      "domain": "security",
-      "error": "JWT signature verification failed / invalid signature",
-      "why": "Key mismatch, algorithm confusion, or clock skew. Security-relevant, so getting it right matters.",
-      "sources": ["RFC 7519", "RFC 7515", "library docs"]
-    },
-    {
-      "slug": "docker-no-space-left-on-device",
-      "domain": "devops",
-      "error": "no space left on device",
-      "why": "Usually image layers and build cache, not the volume people check first.",
-      "sources": ["Docker prune docs", "Docker storage drivers"]
-    },
-    {
-      "slug": "npm-eresolve-peer-dependency",
-      "domain": "language",
-      "error": "ERESOLVE unable to resolve dependency tree",
-      "why": "npm 7+ enforces peer deps strictly; --force and --legacy-peer-deps have different consequences that nobody explains.",
-      "sources": ["npm docs", "npm config reference"]
-    },
-    {
-      "slug": "node-javascript-heap-out-of-memory",
-      "domain": "language",
-      "error": "FATAL ERROR: JavaScript heap out of memory",
-      "why": "V8 heap ceiling versus container limit; interacts with the OOMKilled entry already published.",
-      "sources": ["Node.js CLI options", "V8 docs"]
-    },
-    {
-      "slug": "postgres-42p01-relation-does-not-exist",
-      "domain": "database",
-      "error": "ERROR: relation \"x\" does not exist",
-      "why": "search_path and case-folding, not a missing table. The real cause surprises people.",
-      "sources": ["PostgreSQL schemas", "PostgreSQL identifiers"]
-    },
-    {
-      "slug": "kubernetes-pod-pending-insufficient-resources",
-      "domain": "kubernetes",
-      "error": "0/n nodes are available: Insufficient cpu",
-      "why": "Named in crashloopbackoff's notApplicableTo as out of scope — another declared gap.",
-      "sources": ["Kubernetes scheduling", "Kubernetes resource management"]
-    },
-    {
-      "slug": "ssl-certificate-verify-failed",
-      "domain": "security",
-      "error": "certificate verify failed: unable to get local issuer certificate",
-      "why": "Missing CA bundle or an intermediate the server never sent. Cross-language.",
-      "sources": ["OpenSSL docs", "Python ssl docs", "Mozilla CA policy"]
-    },
-    {
-      "slug": "python-modulenotfounderror",
-      "domain": "language",
-      "error": "ModuleNotFoundError: No module named 'x'",
-      "why": "sys.path, virtualenv and editable installs. Highest-volume Python error.",
-      "sources": ["Python import system", "Python venv docs"]
-    },
-    {
-      "slug": "nextjs-dynamic-server-usage",
-      "domain": "framework",
-      "error": "Dynamic server usage: Route couldn't be rendered statically",
-      "why": "Directly relevant to what we just hit shipping this site.",
-      "sources": ["Next.js docs", "Next.js error reference"]
-    },
-    {
-      "slug": "oauth-redirect-uri-mismatch",
-      "domain": "security",
-      "error": "redirect_uri_mismatch",
-      "why": "Exact-match rule in the OAuth spec; trailing slashes and schemes break it.",
-      "sources": ["RFC 6749", "provider docs"]
-    },
-    {
-      "slug": "nginx-413-request-entity-too-large",
-      "domain": "networking",
-      "error": "413 Request Entity Too Large",
-      "why": "client_max_body_size, and the layer that rejects it is often not the one people edit.",
-      "sources": ["nginx core module docs", "RFC 9110"]
-    }
-  ]
+  "queue": [],
+  "nextCandidates": {
+    "$comment": "Not yet researched. Picked on the same criteria: high search volume, one identifiable root-cause family, quotable primary sources. Registry sweeps are the cheapest source of candidates \u2014 enumerate an error-code catalogue and write the ones that carry a real diagnosis.",
+    "registries": [
+      "PostgreSQL SQLSTATE classes 22, 23, 40, 42, 53 \u2014 roughly 270 codes, a minority worth an entry",
+      "Node.js error codes (ERR_*) \u2014 ~200, many are internal",
+      "Kubernetes pod/container reason strings \u2014 ImagePullBackOff and friends are done; Evicted, NodeAffinity, DeadlineExceeded remain",
+      "HTTP status codes with a non-obvious cause \u2014 502 and 413 done; 499, 504, 431 remain",
+      "Linux errno (ENOSPC done as Docker; EMFILE, EADDRINUSE, ECONNRESET remain)"
+    ],
+    "shortlist": [
+      "node-eaddrinuse-port-already-in-use",
+      "linux-emfile-too-many-open-files",
+      "econnreset-socket-hang-up",
+      "mysql-1213-deadlock-found",
+      "postgres-23505-unique-violation",
+      "kubernetes-pod-evicted-node-pressure",
+      "http-504-gateway-timeout",
+      "git-merge-conflict-resolution",
+      "terraform-state-lock",
+      "aws-s3-accessdenied"
+    ]
+  }
 }

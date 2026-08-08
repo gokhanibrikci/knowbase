@@ -1,0 +1,216 @@
+slug: mysql-1205-lock-wait-timeout
+title: "MySQL error 1205: Lock wait timeout exceeded; try restarting transaction"
+summary: >-
+  A transaction waited 50 seconds for a row lock and gave up. This is not a deadlock —
+  nothing is circular, someone is simply holding the lock too long. The transaction that
+  reports the error is the victim; the one to find is the one that never committed.
+domain: database
+tags:
+  - mysql
+  - innodb
+  - locking
+  - transactions
+  - error-1205
+  - concurrency
+
+error:
+  signature: "Lock wait timeout exceeded; try restarting transaction"
+  codes:
+    - "1205"
+    - ER_LOCK_WAIT_TIMEOUT
+    - HY000
+  aliases:
+    - "SQLSTATE HY000 1205"
+    - "lock wait timeout exceeded mysql"
+    - "Deadlock found when trying to get lock"
+    - "innodb_lock_wait_timeout"
+
+problem: >-
+  A write fails after a long pause rather than immediately, and retrying often succeeds.
+  It appears under load and never in isolation. The statement in the error is the one that
+  waited, which sends people to optimise it — while the actual problem is a different
+  transaction that held a lock and did not release it.
+
+rootCauses:
+  - cause: Another transaction holds the lock and has not committed
+    weight: primary
+    detail: >-
+      A transaction opened, wrote a row, and then did something slow — an HTTP call, a
+      queue publish, waiting on user input — before committing. Its locks are held for the
+      whole duration, and everything touching those rows queues behind it.
+    discriminator: >-
+      information_schema.innodb_trx shows a transaction in a running state with a
+      trx_started timestamp many seconds old and few rows modified
+  - cause: A transaction was left open by the application
+    weight: primary
+    detail: >-
+      Autocommit disabled and no explicit commit, or an error path that returns without
+      rollback. The connection sits idle holding locks until it is reused or closed —
+      indefinitely, from the database's point of view.
+    discriminator: >-
+      The blocking thread's state is idle or sleeping while its transaction is still active
+      in innodb_trx
+  - cause: The statement locks far more rows than it changes
+    weight: common
+    detail: >-
+      Without a usable index, InnoDB locks index records across the range it has to scan,
+      not just the rows that match. A poorly indexed UPDATE serialises writers that would
+      otherwise not conflict at all.
+    discriminator: >-
+      EXPLAIN on the blocking statement shows a full scan or a large rows estimate, and
+      adding an index reduces both the scan and the contention
+  - cause: Genuine contention on the same rows
+    weight: common
+    detail: >-
+      A counter row, a job queue head, or a single settings row updated by every request.
+      Every writer is correct and short; there are simply too many of them for one row.
+    discriminator: >-
+      The waiting and blocking statements target the same primary key, and wait time scales
+      with request rate rather than with statement duration
+  - cause: The timeout is shorter than the workload needs
+    weight: edge
+    detail: >-
+      innodb_lock_wait_timeout defaults to 50 seconds. A batch job that legitimately holds
+      locks for longer will time out other work regardless of how well written it is.
+    discriminator: >-
+      The wait fails at a consistent boundary matching the configured timeout, and the
+      blocking transaction is a known long-running job
+  - cause: A schema change is holding a metadata lock
+    weight: edge
+    detail: >-
+      DDL takes metadata locks that block writes to the table. An ALTER waiting behind an
+      open transaction blocks everything behind itself in turn.
+    discriminator: >-
+      SHOW PROCESSLIST includes a thread in 'Waiting for table metadata lock', and a DDL
+      statement is present
+
+solution:
+  steps:
+    - instruction: >-
+        Find who is blocking whom while it is happening. This is the whole diagnosis — the
+        error names the victim, this names the culprit.
+      command: "mysql -e \"SELECT waiting_pid, waiting_query, blocking_pid, blocking_query, wait_age FROM sys.innodb_lock_waits\\G\""
+      note: >-
+        On MySQL without the sys schema, use information_schema.innodb_trx joined against
+        performance_schema.data_lock_waits.
+    - instruction: >-
+        List long-running transactions, including ones whose connection looks idle. An idle
+        connection with an open transaction is the classic cause.
+      command: "mysql -e \"SELECT trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS age_s, trx_rows_locked, trx_query FROM information_schema.innodb_trx ORDER BY trx_started\\G\""
+    - instruction: >-
+        Shorten the transaction so locks are held for as little time as possible. Do slow
+        work before opening it, not inside it.
+      code: |
+        // 🔴 the lock is held across a network call
+        await db.begin();
+        await db.query("UPDATE orders SET status='paid' WHERE id=?", [id]);
+        await paymentProvider.capture(id);   // seconds, holding the row lock
+        await db.commit();
+
+        // ✅ external work first, transaction last and brief
+        const receipt = await paymentProvider.capture(id);
+        await db.begin();
+        await db.query("UPDATE orders SET status='paid', receipt=? WHERE id=?", [receipt, id]);
+        await db.commit();
+      language: javascript
+    - instruction: >-
+        Make sure every path commits or rolls back, including error paths. A returned
+        connection with an open transaction keeps its locks.
+      code: |
+        const conn = await pool.getConnection();
+        try {
+          await conn.beginTransaction();
+          await work(conn);
+          await conn.commit();
+        } catch (err) {
+          await conn.rollback();
+          throw err;
+        } finally {
+          conn.release();
+        }
+      language: javascript
+    - instruction: >-
+        Index the columns the blocking statement filters on, so it locks the rows it
+        changes rather than everything it scans.
+      command: "mysql -e \"EXPLAIN UPDATE orders SET status='x' WHERE customer_id=42;\""
+    - instruction: >-
+        Retry the victim with backoff. A lock wait timeout is transient by nature, and the
+        statement is safe to re-run after a rollback.
+      code: |
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try { return await runTransaction(); }
+          catch (e) {
+            if (e.errno !== 1205 || attempt === 2) throw e;
+            await sleep(100 * 2 ** attempt * (0.5 + Math.random()));
+          }
+        }
+      language: javascript
+    - instruction: >-
+        Adjust innodb_lock_wait_timeout only after the above. Raising it makes callers wait
+        longer rather than reducing contention; lowering it fails faster, which is
+        sometimes the better trade for interactive requests.
+  verification: >-
+    Under the load that produced them, sys.innodb_lock_waits stays empty and no 1205
+    reaches the application, with any residual occurrences retried transparently.
+  fallback: >-
+    To clear an incident already in progress, kill the blocking transaction rather than the
+    waiters — KILL on the blocking_pid from innodb_lock_waits releases its locks and lets
+    the queue drain immediately.
+
+appliesTo:
+  technology:
+    - name: MySQL
+      versions: "5.7 and later"
+      note: "innodb_lock_wait_timeout defaults to 50 seconds and is settable per session."
+    - name: InnoDB
+      versions: "all versions"
+      note: >-
+        Locks are taken on index records, so a statement without a usable index locks more
+        rows than it modifies.
+  platforms:
+    - self-hosted
+    - managed MySQL
+
+notApplicableTo:
+  - MySQL error 1213 deadlock found, which is a detected cycle aborted immediately rather than a wait that expired
+  - PostgreSQL 40P01, the equivalent deadlock condition in a different engine
+  - Connection pool acquisition timeouts, which occur before any database lock is requested
+  - Query timeouts such as max_execution_time, where the statement is slow rather than blocked
+
+evidence:
+  - type: official-docs
+    title: "MySQL Server Error Reference — ER_LOCK_WAIT_TIMEOUT"
+    url: https://dev.mysql.com/doc/mysql-errors/8.4/en/server-error-reference.html
+    publisher: Oracle
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That error 1205 is ER_LOCK_WAIT_TIMEOUT with SQLSTATE HY000, reported by InnoDB when
+      a lock wait expires — distinct from the deadlock error, which is 1213.
+    quote: "Lock wait timeout exceeded; try restarting transaction"
+  - type: official-docs
+    title: "MySQL — InnoDB Locking"
+    url: https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html
+    publisher: Oracle
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That InnoDB locks index records rather than rows in the abstract, which is why a
+      statement without a usable index locks far more than it changes and serialises
+      writers unnecessarily.
+    quote: "A record lock is a lock on an index record."
+
+confidence: medium
+confidenceRationale: >-
+  The error's identity and SQLSTATE, and the fact that InnoDB locks index records, are
+  quoted from MySQL's own reference — and the index-scope claim is the least obvious of the
+  causes. Confidence is medium rather than high because it rests on two sources: the
+  50-second default and the diagnostic queries against sys and information_schema are
+  standard practice rather than statements quoted here.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 365
+
+related:
+  - postgres-40p01-deadlock-detected

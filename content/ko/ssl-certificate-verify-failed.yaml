@@ -1,0 +1,211 @@
+slug: ssl-certificate-verify-failed
+title: "SSL certificate verify failed: unable to get local issuer certificate"
+summary: >-
+  The client could not build a trust chain from the server's certificate to a CA it
+  trusts. Usually the server is not sending its intermediate certificate, or the client
+  has no CA store at all — and the two look identical from the error message while needing
+  opposite fixes.
+domain: security
+tags:
+  - tls
+  - ssl
+  - certificates
+  - ca-bundle
+  - openssl
+  - containers
+
+error:
+  signature: "certificate verify failed: unable to get local issuer certificate"
+  codes:
+    - CERTIFICATE_VERIFY_FAILED
+    - UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+    - SELF_SIGNED_CERT_IN_CHAIN
+  aliases:
+    - "SSL: CERTIFICATE_VERIFY_FAILED"
+    - "unable to verify the first certificate"
+    - "x509: certificate signed by unknown authority"
+    - "self signed certificate in certificate chain"
+
+problem: >-
+  An HTTPS request fails from one client while a browser loads the same URL without
+  complaint. It works on a developer machine and fails inside a container, or works from
+  curl and fails from the application. Disabling verification makes it work, which is
+  tempting and removes the protection the connection existed to provide.
+
+rootCauses:
+  - cause: The server does not send its intermediate certificate
+    weight: primary
+    detail: >-
+      A chain is valid only if the client can link the leaf to a trusted root. Browsers
+      often paper over a missing intermediate by fetching or caching it; other clients do
+      not, which is exactly why the browser succeeds and curl does not.
+    discriminator: >-
+      openssl s_client shows a chain of depth 0 only, or reports the verify error while the
+      same host loads in a browser
+  - cause: The client has no CA store, or an outdated one
+    weight: primary
+    detail: >-
+      Minimal container images ship without ca-certificates. The client then trusts nothing
+      at all, so every public certificate fails — not just one host.
+    discriminator: >-
+      Every HTTPS host fails rather than one, and /etc/ssl/certs is missing or nearly empty
+      inside the container
+  - cause: A corporate proxy re-signs traffic with its own CA
+    weight: common
+    detail: >-
+      TLS-inspecting middleboxes present a certificate signed by an internal CA. Machine
+      trust stores are provisioned with it; language runtimes and containers with their own
+      bundles are not.
+    discriminator: >-
+      The issuer shown by openssl s_client is an internal or vendor name rather than a public
+      CA, and only happens on the corporate network
+  - cause: The certificate is self-signed
+    weight: common
+    detail: >-
+      Development environments, internal services and appliances often use one. Nothing in
+      any public CA store can vouch for it, by design.
+    discriminator: >-
+      The subject and issuer of the certificate are the same, and the error mentions a
+      self-signed certificate
+  - cause: The system clock is wrong
+    weight: edge
+    detail: >-
+      Validation includes the notBefore and notAfter dates. A container or VM whose clock
+      has drifted far enough sees a valid certificate as not yet valid or expired.
+    discriminator: >-
+      date on the failing host differs materially from real time, and the error mentions
+      expiry or a not-yet-valid certificate
+  - cause: A pinned or custom bundle omits the needed root
+    weight: edge
+    detail: >-
+      An application pointed at its own CA file via REQUESTS_CA_BUNDLE, SSL_CERT_FILE or a
+      language-specific setting uses that file exclusively — the system store is then
+      irrelevant.
+    discriminator: >-
+      An environment variable naming a CA file is set, and unsetting it changes the outcome
+
+solution:
+  steps:
+    - instruction: >-
+        Inspect the chain the server actually presents. This distinguishes a missing
+        intermediate from a missing client trust store in one command.
+      command: "openssl s_client -connect example.com:443 -servername example.com -showcerts </dev/null 2>&1 | grep -E 'depth=|verify (error|return)|s:|i:'"
+      note: >-
+        Read the depths: a chain ending at depth 0 means the server sent only its leaf. A
+        chain reaching a root that your client does not recognise means the trust store is
+        the problem.
+    - instruction: >-
+        If the server is yours and the intermediate is missing, fix the server. This is the
+        correct place — every client benefits, and none needs configuring.
+      code: |
+        # nginx: the file must contain leaf + intermediates, in that order
+        ssl_certificate     /etc/ssl/certs/fullchain.pem;
+        ssl_certificate_key /etc/ssl/private/privkey.pem;
+      language: nginx
+      note: >-
+        Use fullchain.pem, not cert.pem. This single mistake accounts for most
+        missing-intermediate cases.
+    - instruction: >-
+        If the client has no trust store, install one. In a minimal image this is a
+        one-line fix.
+      code: |
+        # Debian/Ubuntu
+        RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+         && rm -rf /var/lib/apt/lists/*
+
+        # Alpine
+        RUN apk add --no-cache ca-certificates
+      language: dockerfile
+    - instruction: >-
+        For a corporate CA or an internal service, add that CA to the trust store rather
+        than disabling verification. Trusting one more issuer keeps every other check
+        intact.
+      code: |
+        # system-wide, Debian/Ubuntu
+        cp corporate-ca.crt /usr/local/share/ca-certificates/
+        update-ca-certificates
+
+        # per-process, when the system store cannot be changed
+        export SSL_CERT_FILE=/path/to/ca-bundle.pem
+        export REQUESTS_CA_BUNDLE=/path/to/ca-bundle.pem
+        export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.crt
+      language: bash
+    - instruction: >-
+        Check the clock before assuming the certificate or the store is at fault.
+      command: "date -u && openssl s_client -connect example.com:443 -servername example.com </dev/null 2>/dev/null | openssl x509 -noout -dates"
+    - instruction: >-
+        Never ship disabled verification. If you must bypass it to isolate the cause, do so
+        in a throwaway command and not in code — an unverified TLS connection provides
+        encryption without authentication, which is the property that made it worth having.
+      command: "curl -vk https://example.com   # diagnosis only, never in an application"
+  verification: >-
+    openssl s_client reports 'Verify return code: 0 (ok)' from the same host and container
+    that failed, and the application's request succeeds with verification enabled.
+  fallback: >-
+    Where a third-party endpoint genuinely presents an incomplete chain and cannot be fixed,
+    add the specific missing intermediate to your own trust bundle for that host rather than
+    disabling verification globally — the trust decision then stays explicit and auditable.
+
+appliesTo:
+  technology:
+    - name: OpenSSL
+      versions: "1.1.1 and later"
+      note: "Verification requires a complete chain to a locally trusted root."
+    - name: Python ssl / requests
+      versions: "3.6 and later"
+      note: >-
+        Client contexts default to CERT_REQUIRED and load default CA certificates unless a
+        bundle is supplied.
+    - name: curl
+      versions: "all versions"
+      note: "Performs certificate verification by default, including hostname matching."
+  platforms:
+    - linux
+    - macos
+    - containers
+
+notApplicableTo:
+  - Hostname mismatch errors, where a chain verified but the certificate does not cover the name requested
+  - Expired certificates, which report expiry rather than a missing issuer
+  - TLS version or cipher negotiation failures, which fail before any certificate is examined
+  - Client-certificate authentication failures, where the server rejects the client's certificate rather than the reverse
+
+evidence:
+  - type: official-docs
+    title: "curl — SSL CA Certificates"
+    url: https://curl.se/docs/sslcerts.html
+    publisher: curl
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That verification is on by default and checks both signature and server name, and that
+      a self-signed certificate, a missing CA store, or a CA absent from the store used all
+      produce the same verification failure — which is why the error text alone does not
+      identify the cause.
+    quote: "if you do not install a CA cert store, if the server uses a certificate signed by a CA that is not included in the store you use"
+  - type: official-docs
+    title: "Python — ssl, TLS/SSL wrapper for socket objects"
+    url: https://docs.python.org/3/library/ssl.html
+    publisher: Python Software Foundation
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That a client-purpose context requires certificate validation and loads default CA
+      certificates unless an explicit bundle is given — so a supplied bundle replaces the
+      system store rather than supplementing it.
+    quote: "sets verify_mode to CERT_REQUIRED"
+
+confidence: medium
+confidenceRationale: >-
+  That verification is on by default and that a missing CA store, an unknown CA and a
+  self-signed certificate produce the same failure are quoted from curl's own documentation;
+  the client-side trust behaviour from Python's ssl reference. Confidence is medium rather
+  than high because it rests on two sources: the missing-intermediate diagnosis via
+  s_client depths, the corporate-proxy case and the per-runtime environment variables are
+  operational practice rather than statements quoted here.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 365
+
+related: []

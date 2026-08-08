@@ -1,0 +1,203 @@
+slug: node-javascript-heap-out-of-memory
+title: "Node.js FATAL ERROR: JavaScript heap out of memory"
+summary: >-
+  V8 hit its heap ceiling and gave up. Two different ceilings can cause it — V8's own
+  --max-old-space-size and the container's memory limit — and they fail differently.
+  Raising the wrong one either does nothing or gets the process killed instead.
+domain: language
+tags:
+  - nodejs
+  - v8
+  - memory
+  - heap
+  - containers
+  - performance
+
+error:
+  signature: "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"
+  codes:
+    - ERR_WORKER_OUT_OF_MEMORY
+  aliases:
+    - "Reached heap limit Allocation failed"
+    - "JavaScript heap out of memory"
+    - "Last few GCs"
+    - "ineffective mark-compacts near heap limit"
+
+problem: >-
+  A process that works on a developer machine dies in CI or production, or a long-running
+  service crashes after hours of normal operation. The stack trace is V8's rather than the
+  application's, so it names no useful line. Raising the memory limit sometimes helps and
+  sometimes changes nothing, which makes the boundary look arbitrary.
+
+rootCauses:
+  - cause: The workload legitimately needs more heap than V8 allows
+    weight: primary
+    detail: >-
+      A large build, a bulk import, or a sizeable JSON parse. V8's old-space limit is a
+      deliberate ceiling rather than a reflection of available RAM, and it is often smaller
+      than the machine's memory.
+    discriminator: >-
+      The failure is reproducible at a specific input size, and raising
+      --max-old-space-size moves the boundary rather than merely delaying it
+  - cause: A genuine leak retains objects across requests
+    weight: primary
+    detail: >-
+      A module-level cache without eviction, listeners added per request and never removed,
+      or a closure holding a large buffer. Heap usage grows with uptime rather than with
+      the current request, so any ceiling is reached eventually.
+    discriminator: >-
+      Heap after a forced GC grows monotonically over hours, and two heap snapshots taken
+      an hour apart show the same constructor growing
+  - cause: Data is loaded whole instead of streamed
+    weight: common
+    detail: >-
+      Reading a file, an HTTP response, or a query result into memory at once. Memory then
+      scales with the input rather than with concurrency, which works fine until the input
+      grows.
+    discriminator: >-
+      Peak memory tracks input size almost exactly, and the code uses readFile, res.json or
+      an unpaginated query rather than a stream or cursor
+  - cause: The container limit is below the V8 heap setting
+    weight: common
+    detail: >-
+      Telling V8 it may use 4 GB inside a 1 GB container means the kernel kills the process
+      before V8 ever reaches its own limit. The symptom then changes from a heap error to
+      exit code 137, which sends you looking in the wrong place.
+    discriminator: >-
+      The container reports OOMKilled with exit code 137 rather than printing the V8 fatal
+      error, and --max-old-space-size exceeds the memory limit
+  - cause: Many small objects rather than a few large ones
+    weight: edge
+    detail: >-
+      Millions of small objects, strings or closures can exhaust the heap while no single
+      allocation looks large, and they make garbage collection progressively more expensive
+      before the failure.
+    discriminator: >-
+      The log shows repeated ineffective mark-compacts and rising GC pause times before the
+      fatal error
+
+solution:
+  steps:
+    - instruction: >-
+        Determine which ceiling you hit. A printed V8 fatal error means V8's limit; a silent
+        death with exit code 137 means the kernel or container limit.
+      command: "node -e \"console.log(require('v8').getHeapStatistics().heap_size_limit / 1024 / 1024, 'MiB heap limit')\""
+    - instruction: >-
+        If the workload genuinely needs more heap, raise V8's limit — but keep it below the
+        container's memory limit, with room for everything outside the heap.
+      code: |
+        # V8 heap ceiling in MiB
+        NODE_OPTIONS=--max-old-space-size=3072 node app.js
+      language: bash
+      note: >-
+        On a 4 GiB container, 3072 leaves headroom for buffers, native memory and the
+        runtime itself. Setting it at or above the container limit converts a recoverable
+        heap error into a SIGKILL.
+    - instruction: >-
+        Make the two limits agree in the container definition, so neither surprises the
+        other.
+      code: |
+        resources:
+          limits:
+            memory: "4Gi"
+        env:
+          - name: NODE_OPTIONS
+            value: "--max-old-space-size=3072"
+      language: yaml
+    - instruction: >-
+        If memory grows with uptime, take heap snapshots and compare rather than guessing.
+        The retained-size delta names the leak.
+      command: "node --heapsnapshot-signal=SIGUSR2 app.js   # then: kill -USR2 <pid>"
+      note: >-
+        Take one after warm-up and one an hour later, then load both into Chrome DevTools
+        and compare by constructor.
+    - instruction: >-
+        Stream data instead of buffering it whole, so memory scales with concurrency rather
+        than input size.
+      code: |
+        // 🔴 whole file in memory
+        const data = await fs.readFile("huge.ndjson", "utf8");
+        for (const line of data.split("\n")) process(line);
+
+        // ✅ constant memory regardless of size
+        const rl = readline.createInterface({ input: createReadStream("huge.ndjson") });
+        for await (const line of rl) process(line);
+      language: javascript
+    - instruction: >-
+        Bound every cache. An unbounded Map at module scope is a leak with extra steps.
+      code: |
+        // 🔴 grows forever
+        const cache = new Map();
+
+        // ✅ bounded, with eviction
+        import { LRUCache } from "lru-cache";
+        const cache = new LRUCache({ max: 5000, ttl: 60_000 });
+      language: javascript
+  verification: >-
+    The process completes the workload that previously failed, and over a sustained run
+    heap_used_size after garbage collection returns to a stable baseline rather than
+    climbing.
+  fallback: >-
+    For a genuinely large one-off job that cannot be streamed, move it out of the request
+    path into a worker or a separate process with its own generous limit, so an
+    out-of-memory failure there cannot take the service down with it.
+
+appliesTo:
+  technology:
+    - name: Node.js
+      versions: "12 and later"
+      note: >-
+        --max-old-space-size sets V8's old-space ceiling in MiB; it is independent of, and
+        can exceed, the memory actually available.
+    - name: V8
+      versions: "all versions shipped with Node.js"
+  runtimes:
+    - Node.js
+    - containers
+
+notApplicableTo:
+  - Exit code 137 with no V8 error printed, which is the kernel OOM killer rather than V8's own limit
+  - Native or off-heap memory growth such as Buffers, which is not governed by the heap limit
+  - Browser tab crashes, where the limit is set by the browser rather than by a flag
+  - Slow performance from garbage-collection pressure without an actual failure
+
+evidence:
+  - type: official-docs
+    title: "Node.js CLI — --max-old-space-size"
+    url: https://nodejs.org/api/cli.html
+    publisher: OpenJS Foundation
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That the flag sets V8's old-space ceiling, that approaching it makes V8 spend
+      increasing time in garbage collection before failing, and that the value should be set
+      below available memory to leave room for other uses — which is exactly why it must
+      stay under a container limit.
+    quote: "Sets the max memory size of V8's old memory section. As memory consumption approaches the limit, V8 will spend more time on garbage collection in an effort to free unused memory."
+  - type: official-docs
+    title: "Resource Management for Pods and Containers"
+    url: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-08"
+    supports: >-
+      That a container exceeding its memory limit is killed by the kernel OOM killer — the
+      reason a V8 heap ceiling set above the container limit produces a SIGKILL instead of a
+      catchable heap error.
+    quote: "memory limits are enforced by the kernel with out of memory (OOM) kills"
+
+confidence: medium
+confidenceRationale: >-
+  The flag's meaning, V8's escalating garbage collection near the limit, and the guidance to
+  stay below available memory are quoted from Node's own CLI reference; the container
+  interaction is quoted from Kubernetes. Confidence is medium rather than high because it
+  rests on two sources: the snapshot-comparison workflow and the streaming and cache
+  remedies are established practice rather than statements quoted here.
+
+freshness:
+  created: "2026-08-08"
+  updated: "2026-08-08"
+  verifiedAt: "2026-08-08"
+  reviewIntervalDays: 365
+
+related:
+  - container-exit-code-137-oomkilled
+  - node-err-require-esm
