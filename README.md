@@ -84,6 +84,8 @@ loader — a corpus that fails its own rules must not build.
 | `/search.json?q=`    | Lookup for agents: paste an error, get matching entries   |
 | `/diagnose.json`     | POST: which of an entry's causes your observations identify |
 | `/outcome.json`      | POST: whether the fix held                                |
+| `/mcp`               | The same three calls as an MCP server, dual-era            |
+| `/agents`            | The interface, written for a human evaluating it           |
 | `/llms.txt`          | Index for models, llmstxt.org format                      |
 | `/llms-full.txt`     | Whole corpus in one fetch                                 |
 | `/about`             | Method: sourcing, evidence rules, confidence definitions  |
@@ -150,6 +152,29 @@ the re-verification queue and nothing else. Its schema is the part of this desig
 likely to be wrong, which is why it is three fields.
 
 **Neither report can move `confidence`.** Usage is popularity, not evidence.
+
+### MCP
+
+`/mcp` exposes the same three calls as tools, so a client can be pointed at knowbase
+once instead of someone writing HTTP code:
+
+```bash
+claude mcp add --transport http knowbase https://knowbase.sh/mcp
+```
+
+It is a thin wrapper over [lib/mcp/tools.ts](lib/mcp/tools.ts), which calls the same
+functions the JSON endpoints do — the two surfaces cannot drift into disagreeing about
+what the corpus says because there is only one of them.
+
+It speaks **both eras of the protocol**. Revision `2026-07-28` removed the `initialize`
+handshake and protocol-level sessions in favour of per-request `_meta`, and most clients
+have not moved yet; serving only the new shape would mean nothing connects today, and
+serving only the old one would mean building on something already superseded. A dual-era
+server picks its behaviour from how the client opens, which the specification allows on
+a single endpoint.
+
+Tool *descriptions* carry the workflow, because nothing else can: a client sees three
+strings and no indication of how they relate, so each one names what comes next.
 
 ## Architecture
 

@@ -64,7 +64,7 @@ const nextConfig: NextConfig = {
         // its own Response. Caching /search.json would drop repeat queries at the
         // edge — and repeat queries are exactly the frequency signal that ranks what
         // to write next.
-        source: "/:path((?!_next/static|search\\.json|diagnose\\.json|outcome\\.json).*)",
+        source: "/:path((?!_next/static|search\\.json|diagnose\\.json|outcome\\.json|mcp).*)",
         headers: [
           {
             key: "cache-control",

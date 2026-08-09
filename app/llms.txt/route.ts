@@ -45,6 +45,13 @@ export function GET() {
     "Neither report can change what an entry claims. Confidence here is gated on",
     "evidence, never on use, so these only decide what gets re-checked and written next.",
     "",
+    "The same three calls are available as an MCP server over Streamable HTTP:",
+    `${absoluteUrl("/mcp")}`,
+    "",
+    "Tools: knowbase_lookup, knowbase_diagnose, knowbase_report_outcome. No auth.",
+    "Both protocol eras are supported — per-request metadata (2026-07-28) and the",
+    "older initialize handshake.",
+    "",
     "License: CC-BY-4.0. Attribution is the canonical URL of the entry.",
     "",
   );

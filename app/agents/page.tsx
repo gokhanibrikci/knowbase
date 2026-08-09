@@ -37,13 +37,18 @@ export default function AgentsPage() {
         For agents
       </h1>
       <p className="mt-3 text-ink">
-        Three endpoints. Find the entry that covers an error, narrow it to the one cause you
-        actually have, and say what happened. No key, no rate limit, no signup — the corpus is
-        CC-BY-4.0 and the point of it is to be used.
+        Three calls. Find the entry that covers an error, narrow it to the one cause you actually
+        have, and say what happened. Over plain HTTP below, or as an{" "}
+        <Link href="#mcp" className="text-accent hover:text-ink-bright">
+          MCP server
+        </Link>
+        . No key, no rate limit, no signup — the corpus is CC-BY-4.0 and the point of it is to be
+        used.
       </p>
 
       <SummaryTable caption="Interface at a glance">
         <SummaryRow label="Base">{site.url}</SummaryRow>
+        <SummaryRow label="MCP">{site.url}/mcp</SummaryRow>
         <SummaryRow label="Auth">None</SummaryRow>
         <SummaryRow label="Entries">{objects.length}</SummaryRow>
         <SummaryRow label="Index for models">
@@ -164,11 +169,44 @@ export default function AgentsPage() {
             </Link>
             .
           </p>
+        </div>
+      </Section>
+
+      <Section id="mcp" title="MCP" hint="knowbase.sh/mcp">
+        <div className="space-y-3 text-sm">
+          <p>
+            The same three calls are exposed as an MCP server, so a client can be pointed at
+            knowbase once and use it without anyone writing HTTP code. Nothing to install and no
+            key — it is a remote server over Streamable HTTP.
+          </p>
+          <CodeBox language="bash">{`claude mcp add --transport http knowbase ${site.url}/mcp`}</CodeBox>
+          <p>
+            In a client with a connector UI, add{" "}
+            <code className="text-accent">{site.url}/mcp</code> as a custom remote MCP server. It
+            exposes three tools:
+          </p>
+          <ul className="space-y-1.5 pl-1">
+            <li>
+              <code className="text-accent">knowbase_lookup</code>{" "}
+              <span className="text-ink-dim">— paste an error, get the entries that cover it</span>
+            </li>
+            <li>
+              <code className="text-accent">knowbase_diagnose</code>{" "}
+              <span className="text-ink-dim">
+                — narrow to the one cause your observations identify
+              </span>
+            </li>
+            <li>
+              <code className="text-accent">knowbase_report_outcome</code>{" "}
+              <span className="text-ink-dim">— optional, whether the fix held</span>
+            </li>
+          </ul>
           <p className="text-ink-dim">
-            An MCP server is not published yet. It would be a thin wrapper over these three calls,
-            so nothing here changes when it lands — code written against this interface keeps
-            working. Until then any agent with HTTP can use knowbase, which is why the endpoints
-            came first.
+            The server speaks both eras of the protocol. Revision{" "}
+            <code>2026-07-28</code> dropped the <code>initialize</code> handshake in favour of
+            per-request metadata, and most clients in the field have not moved yet, so it answers
+            either shape on the one endpoint. If yours sends a version we do not speak, the error
+            names the ones we do.
           </p>
         </div>
       </Section>
