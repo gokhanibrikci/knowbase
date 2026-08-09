@@ -1,7 +1,7 @@
 import { matchKnowledgeObjects, type MatchVerdict } from "@/lib/ko/match";
 import { SCHEMA_VERSION } from "@/lib/ko/serialize";
 import { freshnessOf, getAllKnowledgeObjects } from "@/lib/ko/store";
-import { logQuery } from "@/lib/query-log";
+import { logQuery, newLookupId } from "@/lib/query-log";
 import { absoluteUrl, site } from "@/lib/site";
 
 /**
@@ -77,8 +77,9 @@ export async function GET(request: Request) {
 
   const all = getAllKnowledgeObjects();
   const report = matchKnowledgeObjects(all, query);
+  const lookupId = newLookupId();
 
-  logQuery(query, report, request.headers.get("user-agent") ?? "");
+  logQuery(query, report, request.headers.get("user-agent") ?? "", lookupId);
 
   // On "none" the ranked list is noise by definition — withholding it is the point.
   const results = report.verdict === "none" ? [] : report.results.slice(0, limit);
@@ -87,8 +88,24 @@ export async function GET(request: Request) {
     {
       schemaVersion: SCHEMA_VERSION,
       query,
+      lookupId,
       match: report.verdict,
       guidance: GUIDANCE[report.verdict],
+      /**
+       * Named here rather than left to be discovered: an entry lists several causes,
+       * and telling them apart is the work. Reporting what the discriminators
+       * returned costs the caller nothing it was not already doing, and it is the
+       * only way anyone learns which cause actually fires in the field.
+       */
+      nextStep:
+        report.verdict === "none"
+          ? null
+          : {
+              endpoint: absoluteUrl("/diagnose.json"),
+              method: "POST",
+              body: { lookupId, slug: "<id of the result you are working>", observations: "<what the discriminators returned>" },
+              returns: "the cause your observations identify, and why the others are ruled out",
+            },
       /** The informative terms we searched on, after dropping filler. */
       terms: report.terms,
       /** Query terms occurring nowhere in the corpus — why a miss is a miss. */
@@ -106,6 +123,15 @@ export async function GET(request: Request) {
           domain: ko.domain,
           errorSignature: ko.error.signature,
           appliesTo: ko.appliesTo.technology.map((t) => `${t.name} ${t.versions}`),
+          // The discriminators are the actionable part of an entry — the cheap checks
+          // that say which cause you have. Inlining them is what makes /diagnose.json
+          // usable without a second fetch, and running them is the work an agent was
+          // going to do anyway.
+          rootCauses: ko.rootCauses.map((c) => ({
+            cause: c.cause,
+            weight: c.weight,
+            discriminator: c.discriminator,
+          })),
           // Inlined rather than left to a follow-up fetch: this is the endpoint where
           // the risk of applying a near-miss is highest, and ruling an entry out
           // should not cost a second request.

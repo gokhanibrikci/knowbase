@@ -53,7 +53,17 @@ export async function cf<T>(url: string, token: string, init?: RequestInit): Pro
     ...init,
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
   });
-  return (await res.json()) as T;
+
+  const body = await res.text();
+
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    // The Analytics Engine SQL API reports query errors as plain text, so parsing
+    // first and asking questions later turns "unknown function call: ANY" into a
+    // JSON syntax error about the letter I. Hand back what the API actually said.
+    throw new Error(body.trim() || `${res.status} ${res.statusText}`);
+  }
 }
 
 /** The zone, and the account it belongs to — the Analytics Engine API needs the latter. */

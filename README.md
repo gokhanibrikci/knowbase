@@ -24,6 +24,7 @@ npm run dev
 | `npm run source -- <url>` | Reads a source the way the gate reads it. `--grep`, `--md`.         |
 | `npm run crawlers`  | Who fetched the live site in the last 24h, and in which format            |
 | `npm run misses`    | Queries `/search.json` could not answer — the authoring queue              |
+| `npm run causes`    | Which root cause actually fires in the field, and whether fixes held      |
 
 The two `verify:*` commands are deliberately not part of `build` — the network is not
 a build dependency. Run them in CI on a schedule.
@@ -81,6 +82,8 @@ loader — a corpus that fails its own rules must not build.
 | `/d/<domain>`        | Entries in one domain                                     |
 | `/search?q=`         | Server-rendered search, `noindex`                         |
 | `/search.json?q=`    | Lookup for agents: paste an error, get matching entries   |
+| `/diagnose.json`     | POST: which of an entry's causes your observations identify |
+| `/outcome.json`      | POST: whether the fix held                                |
 | `/llms.txt`          | Index for models, llmstxt.org format                      |
 | `/llms-full.txt`     | Whole corpus in one fetch                                 |
 | `/about`             | Method: sourcing, evidence rules, confidence definitions  |
@@ -120,6 +123,34 @@ Note that this log can only decide *what to research*. It never touches a publis
 `confidence`, which is gated on evidence alone — a second, weaker path to the same
 label would make the label mean nothing.
 
+### Closing the loop
+
+An entry names four to six possible causes, each with a `discriminator` — the cheap
+check that tells it apart. An agent working the failure runs those checks anyway, so
+posting what they returned costs it nothing:
+
+```
+POST /diagnose.json   {lookupId, slug, observations}
+```
+
+and it gets back something the lookup cannot give: the one cause its observations
+identify, and the ruled-out causes each paired with the check that rules it out.
+Scoring is the idea in `match.ts` one level down — IDF over that entry's own causes,
+so vocabulary they all share cannot separate them. When nothing leads clearly the
+answer is `identified: null`, because naming a winner the evidence does not support
+is the failure this whole project is arranged against.
+
+The by-product is the part no document contains. Docs list what *can* cause an error;
+nothing records which cause actually fires, or how often. `npm run causes` reports it,
+and an entry whose `edge` cause keeps firing is telling you its own weighting is wrong.
+
+`POST /outcome.json {lookupId, slug, worked}` is deliberately thin. The signal is weak
+— no attribution, successes over-report, nothing is verifiable — so it buys a place in
+the re-verification queue and nothing else. Its schema is the part of this design most
+likely to be wrong, which is why it is three fields.
+
+**Neither report can move `confidence`.** Usage is popularity, not evidence.
+
 ## Architecture
 
 Content is YAML in git, not a database. Version history, diffs, and review come free,
@@ -133,11 +164,13 @@ lib/ko/schema.ts        zod schema + editorial rules
 lib/ko/store.ts         load, validate, freshness
 lib/ko/serialize.ts     JSON / Markdown / plain-text renditions
 lib/ko/match.ts         error-to-entry matching, and what counts as a miss
+lib/ko/diagnose.ts      which of an entry's causes the observations identify
 lib/ko/jsonld.ts        TechArticle + FAQPage structured data
-lib/query-log.ts        one row per lookup, to Analytics Engine
+lib/query-log.ts        lookups and reports, to Analytics Engine
 scripts/validate.ts     build gate
 scripts/verify-links.ts evidence reachability check
 scripts/misses.ts       the authoring queue, read back out of the log
+scripts/causes.ts       which cause fires in the field, and whether fixes held
 ```
 
 ## Deploying

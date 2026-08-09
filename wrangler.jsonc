@@ -25,5 +25,13 @@
   //
   // Analytics Engine rather than D1 because this is write-only from the Worker's
   // side — nothing on the site reads it back, and aggregation happens offline.
-  "analytics_engine_datasets": [{ "binding": "QUERY_LOG", "dataset": "knowbase_queries" }]
+  //
+  // REPORT_LOG is the other half: what an agent found when it went and checked.
+  // Kept as its own dataset rather than a column on the first because the two are
+  // written at different times by different calls and are only ever read joined on
+  // lookupId — one wide table would be mostly nulls.
+  "analytics_engine_datasets": [
+    { "binding": "QUERY_LOG", "dataset": "knowbase_queries" },
+    { "binding": "REPORT_LOG", "dataset": "knowbase_reports" }
+  ]
 }

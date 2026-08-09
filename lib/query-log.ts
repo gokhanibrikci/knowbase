@@ -47,9 +47,11 @@ function clip(text: string, maxBytes: number): string {
  * Blob and double positions are the schema — the SQL in scripts/misses.ts reads them
  * by index, so append rather than reorder.
  *
- *   blob1 query   blob2 verdict   blob3 top slug   blob4 user agent   blob5 misses
- *   double1 top score   double2 results   double3 terms   double4 unmatched terms
+ *   blob1 query  blob2 verdict  blob3 top slug  blob4 user agent  blob5 misses
+ *   blob6 lookup id
+ *   double1 top score  double2 results  double3 terms  double4 unmatched terms
  */
+
 /**
  * A missing binding drops every row silently, which is the one failure mode that
  * looks exactly like "no agent has called us yet". Say it once per isolate so a
@@ -58,31 +60,49 @@ function clip(text: string, maxBytes: number): string {
  */
 let warnedMissingBinding = false;
 
-export function logQuery(query: string, report: MatchReport, userAgent: string): void {
-  let dataset: AnalyticsEngineDataset | undefined;
+function sinkFor(name: "QUERY_LOG" | "REPORT_LOG"): AnalyticsEngineDataset | undefined {
+  let binding: AnalyticsEngineDataset | undefined;
 
   try {
-    dataset = getCloudflareContext().env.QUERY_LOG;
+    binding = getCloudflareContext().env[name];
   } catch {
     // No Cloudflare context: `next dev`, or a build-time render. Nothing to log to.
-    return;
+    return undefined;
   }
 
-  if (!dataset) {
-    if (!warnedMissingBinding) {
-      warnedMissingBinding = true;
-      console.warn(
-        "QUERY_LOG binding missing — /search.json telemetry is being discarded. " +
-          "Check analytics_engine_datasets in wrangler.jsonc.",
-      );
-    }
-    return;
+  if (!binding && !warnedMissingBinding) {
+    warnedMissingBinding = true;
+    console.warn(
+      `${name} binding missing — telemetry is being discarded. ` +
+        "Check analytics_engine_datasets in wrangler.jsonc.",
+    );
   }
+
+  return binding;
+}
+
+/**
+ * Ties a later report back to the question that produced it without needing to know
+ * who is asking. An id that was never issued joins to nothing, which is what lets
+ * the reporting endpoints stay open: forging one buys the sender no effect.
+ */
+export function newLookupId(): string {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+}
+
+export function logQuery(
+  query: string,
+  report: MatchReport,
+  userAgent: string,
+  lookupId: string,
+): void {
+  const sink = sinkFor("QUERY_LOG");
+  if (!sink) return;
 
   const top = report.results[0];
 
   try {
-    dataset.writeDataPoint({
+    sink.writeDataPoint({
       // The index is what Analytics Engine samples and groups on. Verdict keeps the
       // three buckets we actually report separable at any volume.
       indexes: [report.verdict],
@@ -92,6 +112,7 @@ export function logQuery(query: string, report: MatchReport, userAgent: string):
         top?.ko.slug ?? "",
         clip(userAgent, MAX_UA_BYTES),
         clip(report.unmatchedTerms.join(" "), 256),
+        lookupId,
       ],
       doubles: [
         top?.score ?? 0,
@@ -99,6 +120,61 @@ export function logQuery(query: string, report: MatchReport, userAgent: string):
         report.terms.length,
         report.unmatchedTerms.length,
       ],
+    });
+  } catch {
+    // Telemetry must never take the endpoint down with it.
+  }
+}
+
+export type Report =
+  | {
+      kind: "diagnosis";
+      lookupId: string;
+      slug: string;
+      /** The identified cause, or "" when the observations did not discriminate. */
+      cause: string;
+      /** How far clear of the runner-up that cause was, 0..1. */
+      lead: number;
+      observations: string;
+    }
+  | {
+      kind: "outcome";
+      lookupId: string;
+      slug: string;
+      worked: boolean;
+      note: string;
+    };
+
+/**
+ * What an agent found when it went and checked.
+ *
+ *   blob1 kind  blob2 lookup id  blob3 slug  blob4 cause
+ *   blob5 observations or note  blob6 user agent
+ *   double1 lead (diagnosis) or worked as 0/1 (outcome)
+ *
+ * Same boundary as the query log, restated because this is the file where it would
+ * be tempting to cross: nothing written here can raise or lower a published
+ * `confidence`. That label is gated on evidence. These rows decide what to
+ * re-research, never what the site claims.
+ */
+export function logReport(report: Report, userAgent: string): void {
+  const sink = sinkFor("REPORT_LOG");
+  if (!sink) return;
+
+  try {
+    sink.writeDataPoint({
+      indexes: [report.kind],
+      blobs: [
+        report.kind,
+        report.lookupId,
+        report.slug,
+        report.kind === "diagnosis" ? clip(report.cause, 256) : "",
+        report.kind === "diagnosis"
+          ? clip(redact(report.observations), MAX_QUERY_BYTES)
+          : clip(redact(report.note), MAX_QUERY_BYTES),
+        clip(userAgent, MAX_UA_BYTES),
+      ],
+      doubles: [report.kind === "diagnosis" ? report.lead : report.worked ? 1 : 0],
     });
   } catch {
     // Telemetry must never take the endpoint down with it.

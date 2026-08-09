@@ -100,7 +100,7 @@ const MIN_TERM_LENGTH = 3;
  * the wild: an entry may cite `ORA-00933` while a log line carries `ora` and `00933`
  * separately, and `40P01` should be findable inside `sqlstate=40P01`.
  */
-function tokenize(query: string): string[] {
+export function tokenize(query: string): string[] {
   const raw = query.toLowerCase().match(/[a-z0-9][a-z0-9._-]*/g) ?? [];
   const out = new Set<string>();
 

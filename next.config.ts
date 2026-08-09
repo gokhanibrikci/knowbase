@@ -59,11 +59,12 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        // /search.json is excluded because it must not be cached at all, and a rule
-        // here silently overrides the one a route handler sets on its own Response.
-        // Caching it would drop repeat queries at the edge — and repeat queries are
-        // exactly the frequency signal that ranks what to write next.
-        source: "/:path((?!_next/static|search\\.json).*)",
+        // The three agent endpoints are excluded because they must not be cached at
+        // all, and a rule here silently overrides the one a route handler sets on
+        // its own Response. Caching /search.json would drop repeat queries at the
+        // edge — and repeat queries are exactly the frequency signal that ranks what
+        // to write next.
+        source: "/:path((?!_next/static|search\\.json|diagnose\\.json|outcome\\.json).*)",
         headers: [
           {
             key: "cache-control",

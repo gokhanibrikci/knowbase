@@ -25,6 +25,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "monthly",
       priority: 0.5,
     },
+    {
+      url: absoluteUrl("/agents"),
+      lastModified: newest,
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
     ...domains.map((domain) => ({
       url: absoluteUrl(`/d/${domain}`),
       lastModified: newest,

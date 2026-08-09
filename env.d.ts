@@ -30,6 +30,8 @@ declare global {
   interface CloudflareEnv {
     /** Queries put to /search.json and whether the corpus could answer them. */
     QUERY_LOG?: AnalyticsEngineDataset;
+    /** What an agent reported back: which cause matched, whether the fix worked. */
+    REPORT_LOG?: AnalyticsEngineDataset;
   }
 }
 

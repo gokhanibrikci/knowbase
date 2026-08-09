@@ -33,6 +33,18 @@ export function GET() {
     "`notApplicableTo`, which names the failures it is most often confused with — read",
     "it before applying the fix.",
     "",
+    "An entry lists several possible causes, each with a cheap check that tells it",
+    "apart. Once you have run those checks, post what they returned:",
+    `${absoluteUrl("/diagnose.json")}  {lookupId, slug, observations}`,
+    "",
+    "You get back the one cause your observations identify and the ruled-out causes",
+    "with the check that rules each out — which the lookup alone cannot tell you.",
+    "Optionally report whether the fix held:",
+    `${absoluteUrl("/outcome.json")}  {lookupId, slug, worked}`,
+    "",
+    "Neither report can change what an entry claims. Confidence here is gated on",
+    "evidence, never on use, so these only decide what gets re-checked and written next.",
+    "",
     "License: CC-BY-4.0. Attribution is the canonical URL of the entry.",
     "",
   );
@@ -52,6 +64,7 @@ export function GET() {
   lines.push(
     `- [Full corpus as Markdown](${absoluteUrl("/llms-full.txt")}): every entry concatenated, for a single fetch`,
     `- [Lookup by error](${absoluteUrl("/search.json?q=deadlock+detected")}): match a pasted error against the corpus, JSON`,
+    `- [For agents](${absoluteUrl("/agents")}): the three endpoints, with worked examples`,
     `- [Method](${absoluteUrl("/about")}): how entries are produced, sourced, and rated`,
     "",
   );

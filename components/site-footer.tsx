@@ -11,6 +11,9 @@ export function SiteFooter() {
           <Link href="/about" className="hover:text-accent">
             about
           </Link>
+          <Link href="/agents" className="hover:text-accent">
+            for agents
+          </Link>
           <Link href="/llms.txt" className="hover:text-accent">
             llms.txt
           </Link>
