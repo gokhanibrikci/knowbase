@@ -17,7 +17,8 @@
     "predev": "npm run content",
     "prebuild": "npm run content",
     "indexnow": "tsx scripts/indexnow.ts",
-    "crawlers": "tsx scripts/crawlers.ts"
+    "crawlers": "tsx scripts/crawlers.ts",
+    "misses": "tsx scripts/misses.ts"
   },
   "dependencies": {
     "@opennextjs/cloudflare": "^1.20.2",

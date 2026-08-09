@@ -23,6 +23,16 @@ export function GET() {
     "Any entry is available as JSON, Markdown, or plain text by appending an extension:",
     `${absoluteUrl("/k/<slug>.json")} · .md · .txt`,
     "",
+    "To find an entry from an error you are holding, rather than by reading this index:",
+    `${absoluteUrl("/search.json?q=<error text>")}`,
+    "",
+    "Paste the error message, the error code, or the whole stack trace. The response",
+    "carries a `match` field of strong, partial or none. On `none` the result list is",
+    "empty on purpose: this corpus does not cover that failure, and a near-miss answer",
+    "to a production error is worse than no answer. Every result also carries",
+    "`notApplicableTo`, which names the failures it is most often confused with — read",
+    "it before applying the fix.",
+    "",
     "License: CC-BY-4.0. Attribution is the canonical URL of the entry.",
     "",
   );
@@ -41,6 +51,7 @@ export function GET() {
   lines.push("## Optional", "");
   lines.push(
     `- [Full corpus as Markdown](${absoluteUrl("/llms-full.txt")}): every entry concatenated, for a single fetch`,
+    `- [Lookup by error](${absoluteUrl("/search.json?q=deadlock+detected")}): match a pasted error against the corpus, JSON`,
     `- [Method](${absoluteUrl("/about")}): how entries are produced, sourced, and rated`,
     "",
   );

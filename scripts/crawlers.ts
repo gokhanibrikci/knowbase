@@ -12,17 +12,17 @@
  * Reads the Cloudflare OAuth token that `wrangler login` already stored, or
  * CLOUDFLARE_API_TOKEN if set. The token value is never printed.
  */
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import path from "node:path";
-
-const RESET = "\x1b[0m";
-const DIM = "\x1b[2m";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const CYAN = "\x1b[36m";
-
-const ZONE_NAME = "knowbase.sh";
+import {
+  CYAN,
+  DIM,
+  GREEN,
+  RESET,
+  YELLOW,
+  ZONE_NAME,
+  cf,
+  readToken,
+  resolveZone,
+} from "./lib/cloudflare";
 
 /**
  * The distinction that actually matters.
@@ -51,51 +51,6 @@ const BOT_PATTERNS: [string, RegExp][] = [
   ["SEO tools", /SemrushBot|AhrefsBot|MJ12bot|DotBot/i],
 ];
 
-function readToken(): string {
-  if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
-
-  const candidates = [
-    path.join(homedir(), "Library", "Preferences", ".wrangler", "config", "default.toml"),
-    path.join(homedir(), ".config", ".wrangler", "config", "default.toml"),
-    path.join(homedir(), ".wrangler", "config", "default.toml"),
-  ];
-
-  for (const file of candidates) {
-    try {
-      const toml = readFileSync(file, "utf8");
-      const match = toml.match(/^oauth_token\s*=\s*"([^"]+)"/m);
-      if (!match) continue;
-
-      // wrangler refreshes the OAuth token lazily, so a stale one on disk fails with
-      // a confusing "zone not visible" rather than an auth error. Say so plainly.
-      const expiry = toml.match(/^expiration_time\s*=\s*"([^"]+)"/m)?.[1];
-      if (expiry && new Date(expiry).getTime() < Date.now()) {
-        throw new Error(
-          `the stored Cloudflare token expired at ${expiry}\n` +
-            "run `npx wrangler whoami` once to refresh it, then try again",
-        );
-      }
-
-      return match[1];
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("expired")) throw error;
-      // otherwise try the next location
-    }
-  }
-
-  throw new Error(
-    "no Cloudflare credentials found — run `npx wrangler login` or set CLOUDFLARE_API_TOKEN",
-  );
-}
-
-async function cf<T>(url: string, token: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-  });
-  return (await res.json()) as T;
-}
-
 type Row = { count: number; dimensions: { userAgent: string; clientRequestPath: string } };
 
 /** Which rendition a path represents — the split this whole site is a bet on. */
@@ -120,13 +75,7 @@ async function main() {
   const hours = Math.min(24, Math.max(1, hoursAt >= 0 ? Number(args[hoursAt + 1]) : 24));
 
   const token = readToken();
-
-  const zones = await cf<{ result?: { id: string }[] }>(
-    `https://api.cloudflare.com/client/v4/zones?name=${ZONE_NAME}`,
-    token,
-  );
-  const zoneId = zones.result?.[0]?.id;
-  if (!zoneId) throw new Error(`zone ${ZONE_NAME} not visible to this token`);
+  const { zoneId } = await resolveZone(token);
 
   // The adaptive dataset caps queries at 24h, which is also a sensible reporting window.
   const since = new Date(Date.now() - hours * 3600_000 + 60_000).toISOString();
@@ -148,7 +97,7 @@ async function main() {
   const rows = res.data?.viewer.zones[0]?.httpRequestsAdaptiveGroups ?? [];
 
   const total = rows.reduce((n, r) => n + r.count, 0);
-  console.log(`${CYAN}knowbase.sh${RESET} — last ${hours}h · ${total} requests\n`);
+  console.log(`${CYAN}${ZONE_NAME}${RESET} — last ${hours}h · ${total} requests\n`);
 
   // Per operator: how many requests, and which renditions they took.
   const byOperator = new Map<string, { count: number; formats: Map<string, number>; paths: Map<string, number> }>();

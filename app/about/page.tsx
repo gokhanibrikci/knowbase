@@ -178,6 +178,19 @@ export default function AboutPage() {
             the current renditions do not give you, the JSON body is versioned so it can grow
             without breaking you.
           </p>
+          <p>
+            Agents holding an error rather than a slug can look it up directly:{" "}
+            <code className="text-accent">/search.json?q=&lt;error text&gt;</code> takes a message,
+            a code, or a whole pasted stack trace. It answers <code>strong</code>,{" "}
+            <code>partial</code> or <code>none</code>, and on <code>none</code> it returns nothing
+            rather than the closest entry — a near-miss answer to a production failure is worse
+            than no answer.
+          </p>
+          <p className="text-ink-dim">
+            Queries that find nothing are logged, and they are what decides which entry gets
+            written next. They cannot change what an existing entry claims: confidence is gated on
+            evidence, and popularity is not evidence.
+          </p>
         </div>
       </Section>
     </div>

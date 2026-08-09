@@ -22,6 +22,8 @@ npm run dev
 | `npm run verify:links` | HTTP-checks every cited source URL. Exits non-zero on dead evidence.   |
 | `npm run verify:quotes` | Refetches every source and confirms each quote is still on the page.  |
 | `npm run source -- <url>` | Reads a source the way the gate reads it. `--grep`, `--md`.         |
+| `npm run crawlers`  | Who fetched the live site in the last 24h, and in which format            |
+| `npm run misses`    | Queries `/search.json` could not answer — the authoring queue              |
 
 The two `verify:*` commands are deliberately not part of `build` — the network is not
 a build dependency. Run them in CI on a schedule.
@@ -78,6 +80,7 @@ loader — a corpus that fails its own rules must not build.
 | `/k/<slug>.txt`      | Plain text                                                |
 | `/d/<domain>`        | Entries in one domain                                     |
 | `/search?q=`         | Server-rendered search, `noindex`                         |
+| `/search.json?q=`    | Lookup for agents: paste an error, get matching entries   |
 | `/llms.txt`          | Index for models, llmstxt.org format                      |
 | `/llms-full.txt`     | Whole corpus in one fetch                                 |
 | `/about`             | Method: sourcing, evidence rules, confidence definitions  |
@@ -86,6 +89,36 @@ loader — a corpus that fails its own rules must not build.
 The extension forms are rewrites onto `/k/<slug>/<format>` — see
 [next.config.ts](next.config.ts). Every page also advertises them via
 `<link rel="alternate">`.
+
+### Lookup, and the queue it produces
+
+Everything above is reachable only by knowing a slug or by crawling the index, which
+makes the site readable at crawl time but not consultable mid-task. `/search.json?q=`
+closes that: it takes an error message, a code, or a whole pasted stack trace, and
+returns the entries that cover it.
+
+It answers with a `match` of `strong`, `partial` or `none`, and on `none` the result
+list is **empty on purpose**. Returning whatever ranked least badly is how a knowledge
+base starts answering the wrong question confidently, and `notApplicableTo` is inlined
+on every result for the same reason — ruling an entry out should not cost a second
+fetch. Scoring lives in [lib/ko/match.ts](lib/ko/match.ts): terms are weighted by
+inverse document frequency, so the boilerplate in a pasted traceback discounts itself,
+and the score is scaled by how much of the query's distinctive vocabulary the corpus
+knows at all. Without that last part, "terraform state lock could not be acquired"
+scores as a confident hit on a MySQL lock-timeout entry.
+
+The queries it *fails* are the reason it exists. Each call writes one row to
+Cloudflare Analytics Engine — query, verdict, score, the terms found nowhere in the
+corpus — and `npm run misses` ranks them by frequency. That list is the authoring
+queue: it is the only evidence of demand that nobody had to guess at.
+
+```bash
+npm run misses -- --days 7
+```
+
+Note that this log can only decide *what to research*. It never touches a published
+`confidence`, which is gated on evidence alone — a second, weaker path to the same
+label would make the label mean nothing.
 
 ## Architecture
 
@@ -99,9 +132,12 @@ content/ko/*.yaml       source of truth
 lib/ko/schema.ts        zod schema + editorial rules
 lib/ko/store.ts         load, validate, freshness
 lib/ko/serialize.ts     JSON / Markdown / plain-text renditions
+lib/ko/match.ts         error-to-entry matching, and what counts as a miss
 lib/ko/jsonld.ts        TechArticle + FAQPage structured data
+lib/query-log.ts        one row per lookup, to Analytics Engine
 scripts/validate.ts     build gate
 scripts/verify-links.ts evidence reachability check
+scripts/misses.ts       the authoring queue, read back out of the log
 ```
 
 ## Deploying

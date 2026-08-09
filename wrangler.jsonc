@@ -18,5 +18,12 @@
   // that log is the only honest measure of whether agents are finding us.
   "observability": {
     "enabled": true
-  }
+  },
+  // What /search.json was asked and whether we could answer it. The queries we
+  // *fail* are the point: they are the only unfaked signal of what the corpus is
+  // missing, and they rank the authoring queue. Read with `npm run misses`.
+  //
+  // Analytics Engine rather than D1 because this is write-only from the Worker's
+  // side — nothing on the site reads it back, and aggregation happens offline.
+  "analytics_engine_datasets": [{ "binding": "QUERY_LOG", "dataset": "knowbase_queries" }]
 }

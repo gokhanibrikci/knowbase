@@ -3,7 +3,7 @@ import Link from "next/link";
 
 import { KoList } from "@/components/ko/ko-list";
 import { Section } from "@/components/ko/parts";
-import { searchKnowledgeObjects } from "@/lib/ko/search";
+import { searchKnowledgeObjects } from "@/lib/ko/match";
 import { getAllKnowledgeObjects } from "@/lib/ko/store";
 import { site } from "@/lib/site";
 
