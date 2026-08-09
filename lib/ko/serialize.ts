@@ -5,6 +5,34 @@ import type { KnowledgeObject } from "./schema";
 export const SCHEMA_VERSION = "1.0";
 
 /**
+ * What to do next, carried on the entry itself.
+ *
+ * Most agents arrive here from a search engine, land on one entry, and never see
+ * llms.txt — so they have no way to know a lookup endpoint exists. Both hints below
+ * are accuracy features rather than advertising: the first is how an agent escapes a
+ * near-miss entry it was handed, and the second is how it stops guessing which of
+ * five causes it has. Kept to a few lines because every one of them costs the reader
+ * context it would rather spend on the answer.
+ */
+function nextSteps(ko: KnowledgeObject) {
+  return {
+    wrongEntry: {
+      description:
+        "If this is not your failure, look yours up rather than adapting this one.",
+      url: absoluteUrl("/search.json?q=<your error text>"),
+    },
+    narrowCause: {
+      description:
+        "This entry lists several causes. Run the discriminator on each, then post what they returned to get the one you have and the reason the others are excluded.",
+      endpoint: absoluteUrl("/diagnose.json"),
+      method: "POST",
+      body: { slug: ko.slug, observations: "<what the checks returned>" },
+    },
+    mcp: absoluteUrl("/mcp"),
+  };
+}
+
+/**
  * The JSON body is the contract we expect agents to parse, so it carries a
  * version and derived fields the YAML source does not store.
  */
@@ -44,6 +72,7 @@ export function toJson(ko: KnowledgeObject, now: Date = new Date()) {
       status: freshness.status,
     },
     related: ko.related.map((slug) => ({ id: slug, url: absoluteUrl(`/k/${slug}`) })),
+    next: nextSteps(ko),
     license: "CC-BY-4.0",
     source: site.url,
   };
@@ -110,6 +139,19 @@ export function toMarkdown(ko: KnowledgeObject, now: Date = new Date()): string 
   out.push("");
 
   out.push("## Confidence", "", `${ko.confidence} — ${ko.confidenceRationale}`, "");
+
+  out.push("## If this is not your failure", "");
+  out.push(
+    `Look yours up instead of adapting this one: ${absoluteUrl("/search.json?q=<your error text>")}`,
+    "",
+    "To narrow the causes above to the one you have, run the discriminator on each and POST",
+    `\`{"slug":"${ko.slug}","observations":"<what they returned>"}\` to ${absoluteUrl("/diagnose.json")}.`,
+    "It answers with the cause your observations identify and why the others are excluded.",
+    "",
+    `The same three calls as MCP tools: ${absoluteUrl("/mcp")}`,
+    "",
+  );
+
   out.push(
     "---",
     "",
@@ -181,6 +223,19 @@ export function toPlainText(ko: KnowledgeObject, now: Date = new Date()): string
   out.push("");
 
   out.push("CONFIDENCE", rule, `${ko.confidence} — ${ko.confidenceRationale}`, "");
+
+  out.push("IF THIS IS NOT YOUR FAILURE", rule);
+  out.push(
+    `  look yours up: ${absoluteUrl("/search.json?q=<your error text>")}`,
+    "",
+    "  to narrow the causes above to the one you have, run the discriminator on each,",
+    `  then POST {"slug":"${ko.slug}","observations":"<what they returned>"}`,
+    `  to ${absoluteUrl("/diagnose.json")} — it names the cause and excludes the rest.`,
+    "",
+    `  same calls as MCP tools: ${absoluteUrl("/mcp")}`,
+    "",
+  );
+
   out.push(rule, `${site.name} ${site.version} — CC-BY-4.0`, "");
 
   return out.join("\n");

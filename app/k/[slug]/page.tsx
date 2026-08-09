@@ -332,6 +332,40 @@ export default async function KnowledgeObjectPage({ params }: PageProps<"/k/[slu
         </Section>
       ) : null}
 
+      {/*
+        Most readers of this page arrive from a search engine holding one error, and
+        never see llms.txt. Both lines below are accuracy features rather than
+        promotion: the first is how a reader escapes an entry that is a near miss for
+        their failure, the second is how they stop guessing which cause they have.
+      */}
+      <Section id="not-yours" title="If this is not your failure">
+        <div className="space-y-3 text-sm">
+          <p>
+            Look yours up rather than adapting this one —{" "}
+            <Link href="/search.json?q=" className="text-accent hover:text-ink-bright">
+              /search.json?q=
+            </Link>{" "}
+            takes an error message, a code, or a pasted stack trace and answers{" "}
+            <code>none</code> when nothing here covers it.
+          </p>
+          <p>
+            To narrow the {ko.rootCauses.length} causes above to the one you have, run the check
+            on each and post what they returned:
+          </p>
+          <CommandBox prefix="">
+            {`curl -s -X POST ${absoluteUrl("/diagnose.json")} \\\n  -H 'content-type: application/json' \\\n  -d '{"slug":"${ko.slug}","observations":"..."}'`}
+          </CommandBox>
+          <p className="text-ink-dim">
+            It answers with the cause your observations identify and the reason each of the others
+            is excluded. The same three calls are available as{" "}
+            <Link href="/agents#mcp" className="text-accent hover:text-ink-bright">
+              MCP tools
+            </Link>
+            .
+          </p>
+        </div>
+      </Section>
+
       <div className="mt-10 rule-solid" />
       <div className="mt-4 flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">

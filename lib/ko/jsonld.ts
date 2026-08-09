@@ -8,6 +8,34 @@ import type { KnowledgeObject } from "./schema";
  * first-class node, which is the machine-readable form of the claim the site
  * makes in prose ("this answer is backed by these documents").
  */
+/**
+ * The site node, carrying the lookup endpoint as a declared action.
+ *
+ * `potentialAction` is the standard way to say "here is where a query goes" in a
+ * form a machine can act on without reading prose. The target is the JSON endpoint
+ * rather than the HTML search page, because the caller this exists for is not a
+ * browser — and the HTML one is `noindex` anyway.
+ */
+function webSite() {
+  return {
+    "@type": "WebSite",
+    "@id": `${site.url}/#website`,
+    name: site.name,
+    url: site.url,
+    description: site.description,
+    license: "https://creativecommons.org/licenses/by/4.0/",
+    potentialAction: {
+      "@type": "SearchAction",
+      target: {
+        "@type": "EntryPoint",
+        urlTemplate: absoluteUrl("/search.json?q={search_term_string}"),
+        contentType: "application/json",
+      },
+      "query-input": "required name=search_term_string",
+    },
+  };
+}
+
 export function koJsonLd(ko: KnowledgeObject) {
   const url = absoluteUrl(`/k/${ko.slug}`);
 
@@ -92,23 +120,29 @@ export function koJsonLd(ko: KnowledgeObject) {
 
   return {
     "@context": "https://schema.org",
-    "@graph": [techArticle, faqPage, breadcrumbs],
+    "@graph": [webSite(), techArticle, faqPage, breadcrumbs],
   };
 }
 
 export function collectionJsonLd(objects: KnowledgeObject[]) {
   return {
     "@context": "https://schema.org",
-    "@type": "CollectionPage",
-    "@id": `${site.url}/#collection`,
-    name: site.name,
-    description: site.description,
-    url: site.url,
-    hasPart: objects.map((ko) => ({
-      "@type": "TechArticle",
-      headline: ko.title,
-      url: absoluteUrl(`/k/${ko.slug}`),
-      dateModified: ko.freshness.updated,
-    })),
+    "@graph": [
+      webSite(),
+      {
+        "@type": "CollectionPage",
+        "@id": `${site.url}/#collection`,
+        name: site.name,
+        description: site.description,
+        url: site.url,
+        isPartOf: { "@id": `${site.url}/#website` },
+        hasPart: objects.map((ko) => ({
+          "@type": "TechArticle",
+          headline: ko.title,
+          url: absoluteUrl(`/k/${ko.slug}`),
+          dateModified: ko.freshness.updated,
+        })),
+      },
+    ],
   };
 }

@@ -52,7 +52,15 @@ export async function GET(_request: Request, ctx: RouteContext<"/k/[slug]/[forma
       // Public knowledge, meant to be fetched by anything, including from a browser.
       "access-control-allow-origin": "*",
       "cache-control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
-      link: `<${absoluteUrl(`/k/${ko.slug}`)}>; rel="canonical"`,
+      // Costs the reader no context at all, which is why the lookup endpoint is
+      // named here as well as in the body: a client that fetched one entry from a
+      // search result otherwise has no way to learn it could have asked for the
+      // right one. `service-desc` points at the page describing all of it.
+      link: [
+        `<${absoluteUrl(`/k/${ko.slug}`)}>; rel="canonical"`,
+        `<${absoluteUrl("/search.json")}>; rel="search"; type="application/json"`,
+        `<${absoluteUrl("/agents")}>; rel="service-desc"`,
+      ].join(", "),
       "x-knowbase-confidence": ko.confidence,
       "x-knowbase-verified-at": ko.freshness.verifiedAt,
     },
