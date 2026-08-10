@@ -19,7 +19,12 @@ function nextSteps(ko: KnowledgeObject) {
     wrongEntry: {
       description:
         "If this is not your failure, look yours up rather than adapting this one.",
-      url: absoluteUrl("/search.json?q=<your error text>"),
+      // Given as endpoint plus parameter rather than one URL with a placeholder in
+      // it: a crawler that harvests URL-shaped strings will fetch the assembled form
+      // verbatim, placeholder and all, and ask us to match on the placeholder.
+      endpoint: absoluteUrl("/search.json"),
+      method: "GET",
+      query: { q: "your error text, an error code, or a pasted stack trace" },
     },
     narrowCause: {
       description:

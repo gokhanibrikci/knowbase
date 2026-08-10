@@ -43,6 +43,22 @@ const STRONG_FLOOR = 0.45;
 /** Two entries this close are not reliably distinguishable; make the agent look. */
 const AMBIGUITY_MARGIN = 0.15;
 
+/**
+ * Whether a query is an unsubstituted placeholder rather than something someone asked.
+ *
+ * This is not hypothetical. The JSON-LD SearchAction on every page advertises
+ * `?q={search_term_string}`, and a crawler fetched that URL verbatim — placeholder
+ * and all. The words inside happened to hit an entry about string truncation, so we
+ * answered a meaningless question with a near miss and recorded it as real demand.
+ * Both are exactly what this project is arranged against.
+ *
+ * Angle brackets are covered too, because the documentation this repo publishes uses
+ * `<your error text>` as its own example placeholder.
+ */
+export function isPlaceholderQuery(query: string): boolean {
+  return /^\s*[<{][^<>{}]*[>}]\s*$/.test(query);
+}
+
 export type MatchVerdict = "strong" | "partial" | "none";
 
 export type MatchResult = {

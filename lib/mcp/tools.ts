@@ -1,5 +1,5 @@
 import { diagnose } from "@/lib/ko/diagnose";
-import { matchKnowledgeObjects } from "@/lib/ko/match";
+import { isPlaceholderQuery, matchKnowledgeObjects } from "@/lib/ko/match";
 import { freshnessOf, getAllKnowledgeObjects, getKnowledgeObject } from "@/lib/ko/store";
 import { logQuery, logReport, newLookupId } from "@/lib/query-log";
 import { absoluteUrl } from "@/lib/site";
@@ -103,6 +103,13 @@ export type ToolOutcome = { text: string; isError?: boolean };
 function lookup(args: Record<string, unknown>, userAgent: string): ToolOutcome {
   const error = typeof args.error === "string" ? args.error : "";
   if (!error.trim()) return { text: "The 'error' argument is required.", isError: true };
+
+  if (isPlaceholderQuery(error)) {
+    return {
+      text: `'${error.trim()}' is a placeholder, not an error. Pass the actual error text.`,
+      isError: true,
+    };
+  }
 
   const limit = Math.min(10, Math.max(1, Number(args.limit) || 3));
   const all = getAllKnowledgeObjects();

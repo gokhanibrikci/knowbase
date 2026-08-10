@@ -1,4 +1,4 @@
-import { matchKnowledgeObjects, type MatchVerdict } from "@/lib/ko/match";
+import { isPlaceholderQuery, matchKnowledgeObjects, type MatchVerdict } from "@/lib/ko/match";
 import { SCHEMA_VERSION } from "@/lib/ko/serialize";
 import { freshnessOf, getAllKnowledgeObjects } from "@/lib/ko/store";
 import { logQuery, newLookupId } from "@/lib/query-log";
@@ -69,6 +69,16 @@ export async function GET(request: Request) {
   const query = (url.searchParams.get("q") ?? "").slice(0, MAX_QUERY_LENGTH);
 
   if (!query.trim()) return usage(400, "missing required parameter: q");
+
+  // Answered before matching, and never logged: a placeholder is a client that has
+  // not filled the template in, not a question anyone asked. Matching it would hand
+  // back a near miss, and logging it would put a phantom on the authoring queue.
+  if (isPlaceholderQuery(query)) {
+    return usage(
+      400,
+      `q looks like an unsubstituted placeholder (${query.trim()}) — replace it with the actual error text`,
+    );
+  }
 
   const parsedLimit = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
   const limit = Number.isNaN(parsedLimit)
