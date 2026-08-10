@@ -27,6 +27,35 @@ const FIELD_WEIGHTS = { signature: 8, title: 5, tags: 3, body: 1 } as const;
 const MAX_FIELD_WEIGHT = FIELD_WEIGHTS.signature;
 
 /**
+ * What a term is worth when the only place it appears is `notApplicableTo`.
+ *
+ * That field exists to name the failures an entry is most often confused with, so a
+ * query whose distinctive words land *only* there is a query the entry is disclaiming
+ * — evidence against it, not for it. Treating that text as ordinary body prose did
+ * the opposite: "Cannot connect to the Docker daemon. Is the docker daemon running?"
+ * matched the entry about permission denied at 0.91, because that entry is the one
+ * careful enough to say it is not about this.
+ *
+ * The magnitude sits between a tag hit and a signature hit: enough to move a wrong
+ * entry off the top, not enough to bury one whose signature the query also matches.
+ *
+ * This term-level signal only fires when the vocabularies differ, which measured
+ * reality says is the rare case — confusable errors mostly share their words (the
+ * Docker query above shares every informative token with the permission entry's own
+ * signature, so no term ever reaches the disclaimer). The coverage comparison in
+ * `disclaimingItem` below is what handles that common case; this weight stays for
+ * the disjoint-vocabulary one.
+ */
+const DISCLAIMER_WEIGHT = -4;
+
+/**
+ * A disclaimer item only counts as explaining the query when it accounts for at
+ * least this share of the query's informative tokens. Below it, an overlap is topic
+ * noise — "docker" appearing in both — not a competing diagnosis.
+ */
+const DISCLAIM_COVERAGE_FLOOR = 0.6;
+
+/**
  * A pasted trace can carry hundreds of distinct tokens. Past the most informative
  * few, extra terms only add noise, so both scoring and normalisation stop here.
  */
@@ -72,6 +101,20 @@ export type MatchResult = {
    * A body-only hit is a topic overlap, not an answer, and cannot be called strong.
    */
   hitsIdentity: boolean;
+  /**
+   * Query terms this entry mentions only to exclude. Two errors can be lexically
+   * near-identical — "cannot connect to the Docker daemon" is the permission failure
+   * and the daemon-is-down failure both — and where they are, the words they share
+   * cannot separate them but the disclaimer can.
+   */
+  disclaimedTerms: string[];
+  /**
+   * The notApplicableTo item that explains the query better than this entry's own
+   * error signature does, when one exists. Ranking is untouched — the entry may
+   * still be the closest thing here — but a verdict of "strong" is off the table:
+   * by the entry's own account, the caller may be holding the excluded failure.
+   */
+  disclaimedBy?: string;
 };
 
 export type MatchReport = {
@@ -133,7 +176,7 @@ export function tokenize(query: string): string[] {
   return [...out];
 }
 
-type Haystack = Record<keyof typeof FIELD_WEIGHTS, string>;
+type Haystack = Record<keyof typeof FIELD_WEIGHTS, string> & { disclaimer: string };
 
 function haystack(ko: KnowledgeObject): Haystack {
   return {
@@ -147,10 +190,11 @@ function haystack(ko: KnowledgeObject): Haystack {
       ko.problem,
       ...ko.rootCauses.map((c) => `${c.cause} ${c.detail ?? ""}`),
       ...ko.appliesTo.technology.map((t) => t.name),
-      ...ko.notApplicableTo,
     ]
       .join(" ")
       .toLowerCase(),
+    // Kept out of the positive fields on purpose — see DISCLAIMER_WEIGHT.
+    disclaimer: ko.notApplicableTo.join(" ").toLowerCase(),
   };
 }
 
@@ -183,12 +227,58 @@ function stemCandidates(term: string): string[] {
   return out;
 }
 
-/** The heaviest field this term appears in, or 0 if the entry does not mention it. */
+/**
+ * The notApplicableTo item that accounts for the query better than the entry's own
+ * signature does, if any.
+ *
+ * Coverage is compared, not phrases: confusable errors share their phrasing (both
+ * Docker failures contain "connect to the Docker daemon at unix://..."), so any
+ * contiguous-match rule fires on the genuine query too. Coverage has the property
+ * that matters instead — a query drawn from the entry's own signature is covered
+ * ~fully by it, and nothing can beat full coverage, so a true positive can never be
+ * disclaimed. The confusable query's extra words ("cannot", "is ... running?") are
+ * exactly what the disclaimer covers and the signature does not.
+ */
+function disclaimingItem(ko: KnowledgeObject, queryTokens: string[]): string | undefined {
+  if (queryTokens.length === 0 || ko.notApplicableTo.length === 0) return undefined;
+
+  const signature = [ko.error.signature, ...ko.error.codes, ...ko.error.aliases]
+    .join(" ")
+    .toLowerCase();
+
+  const coverageBy = (text: string) =>
+    queryTokens.reduce((n, t) => n + (text.includes(t) ? 1 : 0), 0) / queryTokens.length;
+
+  const own = coverageBy(signature);
+
+  let best: string | undefined;
+  let bestCoverage = 0;
+  for (const item of ko.notApplicableTo) {
+    const c = coverageBy(item.toLowerCase());
+    if (c > bestCoverage) {
+      bestCoverage = c;
+      best = item;
+    }
+  }
+
+  // Strictly greater: an item merely tying the signature is the shared-vocabulary
+  // baseline, not a competing diagnosis.
+  return bestCoverage >= DISCLAIM_COVERAGE_FLOOR && bestCoverage > own ? best : undefined;
+}
+
+/**
+ * The heaviest field this term appears in.
+ *
+ * Positive fields are checked first, so a term the entry genuinely covers keeps its
+ * full value even when notApplicableTo happens to repeat the word. Only a term found
+ * *nowhere but* the disclaimer scores against the entry.
+ */
 function fieldWeight(fields: Haystack, term: string): number {
   if (fields.signature.includes(term)) return FIELD_WEIGHTS.signature;
   if (fields.title.includes(term)) return FIELD_WEIGHTS.title;
   if (fields.tags.includes(term)) return FIELD_WEIGHTS.tags;
   if (fields.body.includes(term)) return FIELD_WEIGHTS.body;
+  if (fields.disclaimer.includes(term)) return DISCLAIMER_WEIGHT;
   return 0;
 }
 
@@ -273,15 +363,24 @@ export function matchKnowledgeObjects(
     .map((ko, i) => {
       const fields = fieldsByKo[i];
       const matchedTerms: string[] = [];
+      const disclaimedTerms: string[] = [];
       let raw = 0;
       let hitsIdentity = false;
 
       for (const term of terms) {
         const weight = fieldWeight(fields, term);
         if (weight === 0) continue;
+
         raw += idf.get(term)! * weight;
-        matchedTerms.push(term);
-        if (weight >= FIELD_WEIGHTS.title) hitsIdentity = true;
+
+        // A term the entry only disclaims is not one it matched, so it is neither
+        // reported as a hit nor allowed to count towards identity.
+        if (weight > 0) {
+          matchedTerms.push(term);
+          if (weight >= FIELD_WEIGHTS.title) hitsIdentity = true;
+        } else {
+          disclaimedTerms.push(term);
+        }
       }
 
       // Discount by the share of the query's distinctive words we actually know.
@@ -290,7 +389,14 @@ export function matchKnowledgeObjects(
       // real hit, and the two that would have told us otherwise cost nothing.
       const score = Math.min(1, (raw / bestPossible) * coverage);
 
-      return { ko, score, matchedTerms, hitsIdentity };
+      return {
+        ko,
+        score,
+        matchedTerms,
+        hitsIdentity,
+        disclaimedTerms,
+        disclaimedBy: disclaimingItem(ko, candidates),
+      };
     })
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score || a.ko.title.localeCompare(b.ko.title));
@@ -302,6 +408,14 @@ function verdictFor(results: MatchResult[]): MatchVerdict {
   const top = results[0];
   if (!top || top.score < PARTIAL_FLOOR) return "none";
   if (top.score < STRONG_FLOOR || !top.hitsIdentity) return "partial";
+
+  // An entry that names the query's own failure among the ones it is *not* about
+  // cannot be called a clear match, however well the rest of it scores. It may
+  // still be the best thing here — it stays ranked first — but the caller is told to
+  // read the exclusions rather than told the answer was found. Both signals feed
+  // this: disclaimedTerms when the vocabularies differ, disclaimedBy when they do
+  // not and only coverage can tell the two failures apart.
+  if (top.disclaimedTerms.length > 0 || top.disclaimedBy) return "partial";
 
   // A clear winner is part of what "strong" claims. When the runner-up is this
   // close the honest answer is that two entries fit and their notApplicableTo

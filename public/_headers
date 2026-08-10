@@ -10,3 +10,8 @@
 # The IndexNow key must stay verifiable but should not be pinned at the edge.
 /20ad100837b75d3a5dbfa457d6f0e9a6.txt
   Cache-Control: public, max-age=0, s-maxage=300
+
+# The bare discovery path is a byte-for-byte copy of mcp.json (collectors probe
+# both). Extensionless, so the asset host would otherwise guess a content type.
+/.well-known/mcp
+  Content-Type: application/json; charset=utf-8

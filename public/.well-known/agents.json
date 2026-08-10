@@ -1,0 +1,40 @@
+{
+  "$comment": "Agent-facing capability index. No single agents.json schema has won yet, so this document is deliberately plain: each entry is an interface an agent can use right now, described the way the site itself would describe it. The MCP server card lives at /.well-known/mcp.json.",
+  "name": "knowbase",
+  "description": "Verified, source-backed answers to concrete engineering failures. Machine-first: every entry ships as JSON, Markdown and plain text alongside HTML, and the lookup answers 'we do not cover this' rather than returning a near miss.",
+  "site": "https://knowbase.sh",
+  "documentation": "https://knowbase.sh/agents",
+  "interfaces": [
+    {
+      "kind": "http",
+      "method": "GET",
+      "url": "https://knowbase.sh/search.json?q={error text}",
+      "purpose": "Look up entries from an error message, error code, or pasted stack trace. Returns match=strong|partial|none with root causes and exclusions inlined."
+    },
+    {
+      "kind": "http",
+      "method": "POST",
+      "url": "https://knowbase.sh/diagnose.json",
+      "purpose": "Narrow a matched entry to the one root cause your observed discriminator results identify."
+    },
+    {
+      "kind": "http",
+      "method": "POST",
+      "url": "https://knowbase.sh/outcome.json",
+      "purpose": "Report whether the applied fix held, so the entry can be re-verified."
+    },
+    {
+      "kind": "mcp",
+      "url": "https://knowbase.sh/mcp",
+      "serverCard": "https://knowbase.sh/.well-known/mcp.json",
+      "purpose": "The same three calls as MCP tools: knowbase_lookup, knowbase_diagnose, knowbase_report_outcome."
+    },
+    {
+      "kind": "document",
+      "url": "https://knowbase.sh/llms.txt",
+      "purpose": "Index of every entry, llmstxt.org format. /llms-full.txt carries the whole corpus in one fetch."
+    }
+  ],
+  "contentSignals": { "search": true, "ai-input": true, "ai-train": true },
+  "license": "CC-BY-4.0"
+}

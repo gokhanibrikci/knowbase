@@ -121,13 +121,18 @@ export async function GET(request: Request) {
       /** Query terms occurring nowhere in the corpus — why a miss is a miss. */
       unmatchedTerms: report.unmatchedTerms,
       totalMatches: report.verdict === "none" ? 0 : report.results.length,
-      results: results.map(({ ko, score, matchedTerms }) => {
+      results: results.map(({ ko, score, matchedTerms, disclaimedBy }) => {
         const fresh = freshnessOf(ko);
         return {
           id: ko.slug,
           url: absoluteUrl(`/k/${ko.slug}`),
           score: Number(score.toFixed(3)),
           matchedTerms,
+          // Present only when this entry's own notApplicableTo explains the query
+          // better than its error signature does. It is the entry saying "you are
+          // probably holding the failure I exist to be distinguished from" — the
+          // single most load-bearing sentence a near-miss result can carry.
+          ...(disclaimedBy ? { probablyNotThisEntry: disclaimedBy } : {}),
           title: ko.title,
           summary: ko.summary,
           domain: ko.domain,

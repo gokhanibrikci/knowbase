@@ -1,0 +1,197 @@
+slug: docker-permission-denied-daemon-socket
+title: "Docker: permission denied connecting to the daemon socket"
+summary: >-
+  The Docker CLI is a client for a daemon that owns a root-owned Unix socket. The
+  error is a filesystem permission on that socket, not a Docker configuration
+  problem — and the most common cause is a group that was granted but never applied
+  to the running session.
+domain: devops
+tags:
+  - docker
+  - permissions
+  - unix-socket
+  - linux
+  - rootless
+  - ci
+
+error:
+  signature: "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock"
+  codes:
+    - EACCES
+  aliases:
+    - "Got permission denied while trying to connect to the Docker daemon socket"
+    - "dial unix /var/run/docker.sock: connect: permission denied"
+    - "docker permission denied unix:///var/run/docker.sock"
+    - "permission denied docker.sock"
+
+problem: >-
+  Every docker command fails with permission denied, while the same command under
+  sudo works. Nothing is wrong with Docker itself: the CLI is talking to a daemon
+  over a Unix socket owned by root, and the calling user cannot open that file. The
+  usual first fix — adding the user to the docker group — appears to do nothing,
+  because a process cannot gain a group it did not have when it started.
+
+rootCauses:
+  - cause: The user is not a member of the docker group
+    weight: primary
+    detail: >-
+      The daemon creates the socket owned by root and group-owned by docker. A user
+      outside that group has no access at all, so every command fails identically
+      and immediately.
+    discriminator: >-
+      id -nG lists no docker group, and ls -l /var/run/docker.sock shows group docker
+  - cause: The group was granted but the current session predates it
+    weight: primary
+    detail: >-
+      usermod changes the account, not the processes already running under it. A
+      shell, a desktop session or an SSH connection started before the change keeps
+      its original group set until it is replaced.
+    discriminator: >-
+      id -nG in the current shell omits docker while id -nG $USER, which reads the
+      account rather than the process, includes it
+  - cause: The daemon is running rootless and the client is pointed at the system socket
+    weight: common
+    detail: >-
+      Rootless mode puts the socket under the user's own runtime directory. The CLI
+      still defaults to /var/run/docker.sock, which either does not exist or belongs
+      to a separate root daemon the user has no access to.
+    discriminator: >-
+      /run/user/$(id -u)/docker.sock exists, DOCKER_HOST is unset, and dockerd is
+      running as the user rather than as root
+  - cause: Inside a container, the mounted socket's group does not exist in the container
+    weight: common
+    detail: >-
+      Bind-mounting the host socket carries its numeric owner and group, not their
+      names. The container's user is rarely in a group with that GID, so the socket
+      is unreadable even when the same user can use Docker on the host.
+    discriminator: >-
+      stat -c '%g' /var/run/docker.sock inside the container returns a GID that
+      id -G in that container does not list
+  - cause: The socket's ownership or mode was changed
+    weight: edge
+    detail: >-
+      A hardened image, a configuration management run, or a manual chmod can leave
+      the socket owned by something other than root:docker. Group membership is then
+      correct and still insufficient.
+    discriminator: >-
+      ls -l /var/run/docker.sock shows an owner or group other than root docker, or a
+      mode without group read and write
+
+solution:
+  steps:
+    - instruction: >-
+        Separate a permission problem from an absent daemon before changing anything.
+        If the socket does not exist, this is not the failure you are reading about.
+      command: "ls -l /var/run/docker.sock && systemctl is-active docker"
+      note: >-
+        A missing socket or an inactive daemon produces "Cannot connect to the Docker
+        daemon ... Is the docker daemon running?", which no amount of group membership
+        will fix.
+    - instruction: >-
+        Compare the groups of the running shell against the groups of the account. A
+        difference between the two is the whole diagnosis for the most common case.
+      command: "id -nG; id -nG \"$USER\""
+    - instruction: >-
+        Add the user to the docker group if the account itself lacks it.
+      command: "sudo usermod -aG docker \"$USER\""
+      note: >-
+        This grants root-equivalent access to the host. Where that is unacceptable,
+        rootless mode is the supported alternative rather than loosening the socket.
+    - instruction: >-
+        Replace the session so the new group is applied. Logging out and back in is
+        the reliable form; newgrp changes only the shell that runs it.
+      command: "newgrp docker   # or log out and back in"
+    - instruction: >-
+        If the daemon is rootless, point the client at the user's own socket instead
+        of the system one.
+      command: "export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock"
+      note: >-
+        Put this in the shell profile; a rootless daemon started by systemd --user
+        will otherwise be invisible to every new shell.
+    - instruction: >-
+        Inside a container that mounts the host socket, give the container process the
+        socket's numeric group rather than changing the socket.
+      code: |
+        # read the GID from the host socket and grant it to the container
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+          my-image
+      language: bash
+      note: >-
+        chmod 666 on the socket also silences the error and hands every process on the
+        host root-equivalent control of Docker. Prefer the GID.
+  verification: >-
+    docker version prints both a Client and a Server section without sudo, in a newly
+    opened shell rather than the one that was patched.
+  fallback: >-
+    Where the group cannot be granted — a locked-down host, or a build agent you do
+    not control — run the daemon in rootless mode under the user's own account, which
+    needs no privileged group at all.
+
+appliesTo:
+  technology:
+    - name: Docker Engine
+      versions: "all versions on Linux"
+      note: "The socket path and group are defaults; both are configurable in daemon.json."
+  platforms:
+    - linux
+    - ci runners
+    - wsl2
+  runtimes:
+    - dockerd
+    - rootless dockerd
+
+notApplicableTo:
+  - "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running? — the daemon is stopped rather than unreadable"
+  - Docker Desktop on macOS or Windows, where the client reaches a VM and host group membership does not apply
+  - Permission denied raised by a process inside a container against its own filesystem, which is unrelated to the daemon socket
+  - Registry authentication failures such as pull access denied, which occur after the daemon has been reached
+
+evidence:
+  - type: official-docs
+    title: "Docker — Linux post-installation steps for Docker Engine"
+    url: https://docs.docker.com/engine/install/linux-postinstall/
+    publisher: Docker Inc.
+    retrievedAt: "2026-08-10"
+    supports: >-
+      That the daemon communicates over a root-owned Unix socket rather than a port,
+      that access is granted through the docker group, that a session must be
+      restarted before new membership takes effect, and — on the same page — that the
+      group is a root-equivalent privilege grant.
+    quote: "The Docker daemon binds to a Unix socket, not a TCP port. By default it's the `root` user that owns the Unix socket, and other users can only access it using `sudo`."
+  - type: official-docs
+    title: "Docker — Rootless mode"
+    url: https://docs.docker.com/engine/security/rootless/
+    publisher: Docker Inc.
+    retrievedAt: "2026-08-10"
+    supports: >-
+      That the daemon can run entirely as a non-root user, which relocates the socket
+      out of /var/run and makes the system socket the wrong target for the client.
+    quote: "Rootless mode lets you run the Docker daemon and containers as a non-root user to mitigate potential vulnerabilities in the daemon and the container runtime."
+  - type: official-docs
+    title: "Docker CLI reference — environment variables"
+    url: https://docs.docker.com/reference/cli/docker/
+    publisher: Docker Inc.
+    retrievedAt: "2026-08-10"
+    supports: >-
+      That DOCKER_HOST is what selects which daemon socket the client connects to,
+      making it the fix when a rootless daemon listens somewhere other than the default.
+    quote: "Daemon socket to connect to."
+
+confidence: high
+confidenceRationale: >-
+  The socket ownership model, the docker group as the access mechanism, the need to
+  re-establish a session, the existence of a rootless socket elsewhere and the role of
+  DOCKER_HOST are each quoted from Docker's own documentation. The container-GID case
+  is an inference from documented bind-mount behaviour rather than a sentence about
+  this error, and the changed-permissions case is diagnostic rather than documented.
+
+freshness:
+  created: "2026-08-10"
+  updated: "2026-08-10"
+  verifiedAt: "2026-08-10"
+  reviewIntervalDays: 365
+
+related:
+  - docker-no-space-left-on-device

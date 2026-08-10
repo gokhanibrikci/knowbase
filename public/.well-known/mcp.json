@@ -1,0 +1,30 @@
+{
+  "$comment": "MCP server card per the .well-known discovery convention (RFC 8615; MCP SEP drafts). The discovery schema is still settling, so this card sticks to the fields every draft agrees on: what the server is, where it listens, how to speak to it.",
+  "name": "knowbase",
+  "version": "0.1.0",
+  "description": "Verified engineering-failure knowledge. Look an error up from its message or stack trace, narrow it to one root cause via per-cause discriminators, and report whether the fix held. Every entry cites primary sources whose quotes are machine-verified against the live pages.",
+  "endpoint": "https://knowbase.sh/mcp",
+  "transport": ["streamable-http", "http+sse"],
+  "protocolVersions": ["2025-06-18", "2024-11-05"],
+  "authentication": { "type": "none" },
+  "capabilities": { "tools": { "listChanged": false } },
+  "tools": [
+    {
+      "name": "knowbase_lookup",
+      "description": "Paste an error message, code, or stack trace; returns matching entries with root causes, discriminators and exclusions inlined. Answers honestly with match=none when the corpus does not cover it."
+    },
+    {
+      "name": "knowbase_diagnose",
+      "description": "Given an entry and your observed discriminator results, returns which root cause your observations identify and why the others are ruled out."
+    },
+    {
+      "name": "knowbase_report_outcome",
+      "description": "Report whether the applied fix held. Outcomes feed re-verification of the entry, not its published confidence."
+    }
+  ],
+  "documentation": "https://knowbase.sh/agents",
+  "humanInterface": "https://knowbase.sh",
+  "corpusIndex": "https://knowbase.sh/llms.txt",
+  "license": "CC-BY-4.0",
+  "contact": "https://knowbase.sh/about"
+}
