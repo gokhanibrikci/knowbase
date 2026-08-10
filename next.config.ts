@@ -1,5 +1,41 @@
 import type { NextConfig } from "next";
 
+const MARKDOWN_ACCEPT = ".*text/(x-)?markdown.*";
+
+/**
+ * Crawlers that feed a model, and are therefore better served the Markdown twin.
+ *
+ * The measurement that motivates this: one entry is ~107 KB of HTML against ~8 KB
+ * of Markdown, and 65% of the HTML is the RSC hydration payload — a second copy of
+ * the same content, for a client that will never hydrate anything. An agent
+ * fetching the page pays roughly 26,800 tokens to receive 2,500 tokens of answer.
+ *
+ * Googlebot, bingbot and GoogleOther are deliberately absent. Varying content by
+ * user-agent is what cloaking looks like from a search engine's side, and nothing
+ * here is worth putting ranking at risk for. The bots below do not rank us.
+ *
+ * Both kinds are included: the ones that ingest for training, and the ones fetching
+ * live on behalf of a user. Context is scarcest for the second, so it benefits most.
+ */
+const AI_CRAWLER_UA = [
+  "GPTBot",
+  "OAI-SearchBot",
+  "ChatGPT-User",
+  "ClaudeBot",
+  "Claude-User",
+  "Claude-SearchBot",
+  "PerplexityBot",
+  "Perplexity-User",
+  "DuckAssistBot",
+  "Applebot-Extended",
+  "meta-externalagent",
+  "Bytespider",
+  "Amazonbot",
+  "CCBot",
+].join("|");
+
+const AI_CRAWLER_PATTERN = `.*(${AI_CRAWLER_UA}).*`;
+
 const nextConfig: NextConfig = {
   async rewrites() {
     return {
@@ -26,12 +62,25 @@ const nextConfig: NextConfig = {
         {
           // The index has no Markdown twin of its own; llms.txt is its structured form.
           source: "/",
-          has: [{ type: "header", key: "accept", value: ".*text/(x-)?markdown.*" }],
+          has: [{ type: "header", key: "accept", value: MARKDOWN_ACCEPT }],
           destination: "/llms.txt",
         },
         {
           source: "/k/:slug",
-          has: [{ type: "header", key: "accept", value: ".*text/(x-)?markdown.*" }],
+          has: [{ type: "header", key: "accept", value: MARKDOWN_ACCEPT }],
+          destination: "/k/:slug/md",
+        },
+
+        // The same two rules again, for clients that want the cheap rendition but do
+        // not know to ask. Asking is rare; every crawler below sends `Accept: */*`.
+        {
+          source: "/",
+          has: [{ type: "header", key: "user-agent", value: AI_CRAWLER_PATTERN }],
+          destination: "/llms.txt",
+        },
+        {
+          source: "/k/:slug",
+          has: [{ type: "header", key: "user-agent", value: AI_CRAWLER_PATTERN }],
           destination: "/k/:slug/md",
         },
       ],
@@ -72,16 +121,25 @@ const nextConfig: NextConfig = {
           },
         ],
       },
+      /**
+       * These two routes answer differently depending on Accept *and* User-Agent — see
+       * the beforeFiles rewrites. Without Vary a shared cache would store the Markdown
+       * a crawler was served and hand it to the next browser that asked for the page.
+       *
+       * Varying on user-agent normally wrecks a cache, because it fragments by every
+       * distinct string. It is affordable here: every one of these routes is
+       * prerendered and served out of the Worker's own asset bundle, so a miss costs
+       * an asset read rather than a render, and s-maxage is only five minutes anyway.
+       *
+       * Next sets its own Vary for RSC; these are appended to it.
+       */
       {
-        // These routes answer differently depending on Accept — see proxy.ts. Without
-        // Vary, a shared cache would hand one representation to a client that asked
-        // for the other. Next sets its own Vary for RSC, so this is appended to it.
         source: "/k/:slug",
-        headers: [{ key: "vary", value: "accept" }],
+        headers: [{ key: "vary", value: "accept, user-agent" }],
       },
       {
         source: "/",
-        headers: [{ key: "vary", value: "accept" }],
+        headers: [{ key: "vary", value: "accept, user-agent" }],
       },
     ];
   },
