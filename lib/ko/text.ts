@@ -10,7 +10,18 @@
 const UA = "Mozilla/5.0 (compatible; knowbase-source-reader/0.1; +https://knowbase.sh)";
 const TIMEOUT_MS = 30_000;
 
-export async function fetchPage(url: string, timeoutMs = TIMEOUT_MS): Promise<string> {
+export type FetchedPage = { status: number; body: string };
+
+/**
+ * The status matters as much as the body. A page fetched with a 403 contains the
+ * bot-wall's HTML, not the document — searching it for a quote and reporting "not
+ * found" turns an access problem into a false accusation of a broken citation.
+ * Callers that verify must branch on the status; see verify-quotes.
+ */
+export async function fetchPageDetailed(
+  url: string,
+  timeoutMs = TIMEOUT_MS,
+): Promise<FetchedPage> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -19,10 +30,14 @@ export async function fetchPage(url: string, timeoutMs = TIMEOUT_MS): Promise<st
       signal: controller.signal,
       headers: { "user-agent": UA, accept: "text/html,application/xhtml+xml,text/markdown,*/*" },
     });
-    return await res.text();
+    return { status: res.status, body: await res.text() };
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function fetchPage(url: string, timeoutMs = TIMEOUT_MS): Promise<string> {
+  return (await fetchPageDetailed(url, timeoutMs)).body;
 }
 
 /**

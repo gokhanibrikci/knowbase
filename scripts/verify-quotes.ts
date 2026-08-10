@@ -20,7 +20,7 @@
  * "...". Exits non-zero if any quote is ungrounded.
  */
 import { loadAllTolerant } from "../lib/ko/fs-loader";
-import { anchorPresent, fetchPage, groundQuote } from "../lib/ko/text";
+import { anchorPresent, fetchPageDetailed, groundQuote, type FetchedPage } from "../lib/ko/text";
 
 const RESET = "\x1b[0m";
 const RED = "\x1b[31m";
@@ -33,11 +33,19 @@ const CONCURRENCY = 4;
 type Row = {
   slug: string;
   url: string;
-  status: "grounded" | "ungrounded" | "no-quote" | "fetch-error";
+  status: "grounded" | "ungrounded" | "no-quote" | "fetch-error" | "blocked";
   how?: string;
   detail?: string;
   anchorMissing?: boolean;
 };
+
+/**
+ * Statuses that mean "the host refused this client", not "the page is gone".
+ * verify-links draws the same line. A CI runner's IP gets bot-walled where a
+ * workstation does not, and a gate that fails on that gets ignored within a week —
+ * so these warn instead of failing, and the quote is retried next run.
+ */
+const BLOCKED_STATUSES = new Set([403, 429, 503]);
 
 async function main() {
   const { ok, failed } = loadAllTolerant();
@@ -56,7 +64,7 @@ async function main() {
     `grounding ${jobs.length} evidence item(s) across ${ok.length} knowledge object(s)\n`,
   );
 
-  const pages = new Map<string, Promise<string>>();
+  const pages = new Map<string, Promise<FetchedPage>>();
   const rows: Row[] = [];
   const queue = [...jobs];
 
@@ -67,10 +75,10 @@ async function main() {
         continue;
       }
 
-      let html: string;
+      let page: FetchedPage;
       try {
-        if (!pages.has(job.url)) pages.set(job.url, fetchPage(job.url));
-        html = await pages.get(job.url)!;
+        if (!pages.has(job.url)) pages.set(job.url, fetchPageDetailed(job.url));
+        page = await pages.get(job.url)!;
       } catch (error) {
         rows.push({
           slug: job.slug,
@@ -81,14 +89,30 @@ async function main() {
         continue;
       }
 
-      const how = groundQuote(html, job.quote);
+      // A denied or erroring response carries the wall's HTML, not the document.
+      // Grounding against it would report a sound citation as broken.
+      if (BLOCKED_STATUSES.has(page.status)) {
+        rows.push({ slug: job.slug, url: job.url, status: "blocked", detail: `HTTP ${page.status}` });
+        continue;
+      }
+      if (page.status >= 400) {
+        rows.push({
+          slug: job.slug,
+          url: job.url,
+          status: "fetch-error",
+          detail: `HTTP ${page.status}`,
+        });
+        continue;
+      }
+
+      const how = groundQuote(page.body, job.quote);
       rows.push({
         slug: job.slug,
         url: job.url,
         status: how ? "grounded" : "ungrounded",
         how: how ?? undefined,
         detail: how ? undefined : job.quote,
-        anchorMissing: anchorPresent(html, job.url) === false,
+        anchorMissing: anchorPresent(page.body, job.url) === false,
       });
     }
   }
@@ -104,6 +128,11 @@ async function main() {
     } else if (row.status === "no-quote") {
       console.log(`${YELLOW}⚠${RESET} ${row.slug.padEnd(42)} ${DIM}no quote — ungroundable${RESET}`);
       console.log(`  ${DIM}${row.url}${RESET}`);
+    } else if (row.status === "blocked") {
+      console.log(
+        `${YELLOW}⚠${RESET} ${row.slug.padEnd(42)} ${DIM}host refused this client (${row.detail}) — not treated as a broken citation${RESET}`,
+      );
+      console.log(`  ${DIM}${row.url}${RESET}`);
     } else if (row.status === "fetch-error") {
       console.log(`${RED}✖${RESET} ${row.slug.padEnd(42)} fetch failed: ${row.detail}`);
       console.log(`  ${DIM}${row.url}${RESET}`);
@@ -116,11 +145,12 @@ async function main() {
 
   const grounded = rows.filter((r) => r.status === "grounded").length;
   const missing = rows.filter((r) => r.status === "no-quote").length;
+  const blocked = rows.filter((r) => r.status === "blocked").length;
   const bad = rows.filter((r) => r.status === "ungrounded" || r.status === "fetch-error").length;
   const anchors = rows.filter((r) => r.anchorMissing).length;
 
   console.log(
-    `\n${grounded} grounded · ${missing} without a quote · ${bad} failed` +
+    `\n${grounded} grounded · ${missing} without a quote · ${blocked} blocked · ${bad} failed` +
       (anchors > 0 ? ` · ${anchors} with a missing anchor` : ""),
   );
 
