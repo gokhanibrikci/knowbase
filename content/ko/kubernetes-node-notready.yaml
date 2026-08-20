@@ -1,0 +1,358 @@
+slug: kubernetes-node-notready
+title: "Kubernetes node NotReady: pods stop scheduling and get evicted"
+summary: >-
+  A node goes NotReady when its kubelet stops posting a healthy status: the kubelet
+  died, the API server is unreachable, the container runtime broke, or the kubelet's
+  client certificate expired. The node is then tainted NoExecute, and pods without a
+  longer toleration are evicted about five minutes later.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - node
+  - notready
+  - taints
+  - eviction
+  - certificates
+  - troubleshooting
+
+error:
+  signature: "NotReady"
+  codes:
+    - NotReady
+    - NodeNotReady
+    - NodeStatusUnknown
+    - node.kubernetes.io/not-ready
+    - node.kubernetes.io/unreachable
+  aliases:
+    - "node not ready kubernetes"
+    - "Kubelet stopped posting node status"
+    - "kubectl get nodes NotReady"
+    - "node status Unknown kubernetes"
+    - "container runtime network not ready"
+    - "KubeletNotReady"
+
+problem: >-
+  kubectl get nodes shows a node as NotReady. The scheduler stops placing new pods on
+  it, and roughly five minutes later the pods it was running begin terminating and
+  reappearing elsewhere — or, if the node is unreachable, hang in Terminating because
+  nothing can confirm they stopped. The STATUS column says nothing about why. The
+  answer is in the node's Ready condition, and the first split is whether it reads
+  False — the kubelet is alive and reporting a problem — or Unknown — the kubelet's
+  heartbeats stopped arriving at all.
+
+rootCauses:
+  - id: kubelet-not-running
+    cause: The kubelet on the node stopped or is crash-looping
+    weight: primary
+    detail: >-
+      The kubelet is the source of both heartbeats — Node status updates and Lease
+      renewals in kube-node-lease. When the process dies (OOM-killed, crashed on a bad
+      flag or config after an upgrade, disabled by mistake), the heartbeats stop and
+      the node controller flips Ready to Unknown after node-monitor-grace-period,
+      50 seconds by default.
+    discriminator: >-
+      kubectl describe node shows Ready Unknown with 'Kubelet stopped posting node
+      status', and on the node systemctl status kubelet reports inactive, failed or
+      restarting
+  - id: apiserver-unreachable
+    cause: The node cannot reach the API server
+    weight: primary
+    detail: >-
+      The kubelet is healthy but its heartbeats never arrive — a network partition,
+      a changed firewall or security-group rule, a broken load balancer in front of
+      the control plane, or a rebooted VM that came back on a different network. The
+      node controller sets Ready to Unknown and the node gets the
+      node.kubernetes.io/unreachable taint rather than not-ready.
+    discriminator: >-
+      The kubelet journal shows repeated 'Failed to update lease', connection refused
+      or i/o timeout against the API server address, and curl -k
+      https://<control-plane-endpoint>:6443/healthz fails from the node while
+      succeeding from elsewhere
+  - id: container-runtime-down
+    cause: The container runtime is down or its CRI socket is broken
+    weight: common
+    detail: >-
+      The kubelet keeps posting status but reports itself unhealthy, so Ready reads
+      False rather than Unknown and the message names the runtime. containerd or
+      CRI-O crashed, an upgrade moved the socket path, or a full disk stopped the
+      runtime from writing.
+    discriminator: >-
+      kubectl describe node shows Ready False with a message naming the container
+      runtime, and crictl info run on the node errors instead of printing runtime
+      status
+  - id: kubelet-cert-expired
+    cause: The kubelet's client certificate expired, so the API server rejects it
+    weight: common
+    detail: >-
+      kubeadm-issued client certificates expire after one year. Rotation normally
+      renews them, but a node that was powered off across the renewal window, or a
+      cluster never upgraded, misses it — and then every status update is rejected.
+      A whole cluster's nodes flipping NotReady together on the anniversary of the
+      install is this cause until proven otherwise.
+    discriminator: >-
+      The kubelet journal or kube-apiserver logs show 'x509: certificate has expired
+      or is not yet valid', and kubeadm certs check-expiration lists expired
+      certificates
+    resolution:
+      id: renew-kubelet-client-cert-v1
+      stepIds:
+        - inspect-node-condition
+        - check-cert-expiry
+        - renew-kubelet-cert
+        - watch-node-return
+      verificationCriteria:
+        - id: node-ready
+          check: Read the node's Ready condition after the kubelet restarts with the new certificate
+          expected: The Ready condition reports True with reason KubeletReady
+          required: true
+          command: "kubectl get node <node-name>"
+        - id: cert-valid
+          check: Inspect the expiry date of the recreated kubelet client certificate on the node
+          expected: The certificate's notAfter date is in the future
+          required: true
+          command: "openssl x509 -enddate -noout -in /var/lib/kubelet/pki/kubelet-client-current.pem"
+        - id: taints-cleared
+          check: List the node's taints once it reports Ready
+          expected: node.kubernetes.io/not-ready and node.kubernetes.io/unreachable are absent
+          required: true
+          command: "kubectl describe node <node-name>"
+  - id: cni-not-initialized
+    cause: The CNI network plugin is missing or not initialized on the node
+    weight: common
+    detail: >-
+      A freshly joined node stays NotReady until its CNI plugin is installed and
+      running; an existing node regresses when the CNI daemonset is deleted or its
+      config under /etc/cni/net.d is wiped. The runtime itself is fine — it reports
+      NetworkReady false, and the kubelet relays that as Ready False.
+    discriminator: >-
+      kubectl describe node shows 'container runtime network not ready:
+      NetworkReady=false reason:NetworkPluginNotReady', while crictl info succeeds
+      and /etc/cni/net.d on the node is empty or missing
+  - id: node-resource-exhaustion
+    cause: The node itself is starved, so the kubelet cannot heartbeat in time
+    weight: edge
+    detail: >-
+      Memory pressure severe enough that the OOM killer takes the kubelet or the
+      runtime, a completely full disk, or CPU saturation that delays lease renewal
+      past the grace period. The signature is flapping — the node oscillates between
+      Ready and NotReady as the kubelet limps along.
+    discriminator: >-
+      The node flaps between Ready and NotReady, and on the node dmesg shows
+      oom-killer activity or df reports a full filesystem
+
+solution:
+  steps:
+    - id: inspect-node-condition
+      instruction: >-
+        Read the node's conditions and taints. False and Unknown are different
+        diagnoses: False means the kubelet is alive and its message names the problem;
+        Unknown means heartbeats stopped, so the problem is the kubelet process, the
+        node, or the network path to the API server.
+      command: "kubectl describe node <node-name>"
+      note: >-
+        The Taints section shows which of node.kubernetes.io/not-ready (Ready False)
+        or node.kubernetes.io/unreachable (Ready Unknown) the control plane applied.
+    - id: check-kubelet-service
+      instruction: >-
+        SSH to the node and check the kubelet process before anything else — a dead
+        kubelet explains every Unknown, and its last log lines say why it stopped.
+      code: |
+        systemctl status kubelet
+        journalctl -u kubelet --since "-30 min" --no-pager | tail -50
+      language: bash
+      note: >-
+        Look for a crash loop on startup (bad flag or config after an upgrade),
+        x509 errors (certificate), or connection errors (network, API server).
+    - id: check-runtime
+      instruction: >-
+        If Ready is False and the message names the container runtime, check the
+        runtime behind the CRI socket rather than the kubelet.
+      code: |
+        systemctl status containerd   # or crio
+        crictl info
+      language: bash
+      note: >-
+        crictl info failing means the runtime is down. crictl succeeding but showing
+        NetworkReady false means the runtime is fine and the CNI plugin is the
+        problem — reinstall or repair it instead of restarting the runtime.
+    - id: check-apiserver-reachability
+      instruction: >-
+        If Ready is Unknown but the kubelet is running, test the path to the API
+        server from the node itself — a partition looks identical to a dead kubelet
+        from the control plane's side.
+      command: "curl -sk https://<control-plane-endpoint>:6443/healthz"
+      note: >-
+        Expect ok. A timeout or refusal from the node while the same request works
+        from elsewhere is a firewall, security-group or routing change, not a
+        Kubernetes problem.
+    - id: check-cert-expiry
+      instruction: >-
+        Check certificate expiry on kubeadm clusters — client certificates expire
+        after one year, and an expired kubelet client certificate silently turns
+        every heartbeat into a rejected request.
+      code: |
+        kubeadm certs check-expiration
+        openssl x509 -enddate -noout -in /var/lib/kubelet/pki/kubelet-client-current.pem
+      language: bash
+    - id: renew-kubelet-cert
+      instruction: >-
+        If the kubelet client certificate is expired, follow the documented repair:
+        remove the stale kubeconfig and client certs from the failed node, mint a new
+        kubelet.conf from a control-plane node holding the CA key, copy it back and
+        restart the kubelet.
+      code: |
+        # on the failed node — back up and remove the stale credentials
+        mv /etc/kubernetes/kubelet.conf /etc/kubernetes/kubelet.conf.bak
+        mv /var/lib/kubelet/pki/kubelet-client* /tmp/
+
+        # on a control-plane node that has /etc/kubernetes/pki/ca.key
+        kubeadm kubeconfig user --org system:nodes \
+          --client-name "system:node:$NODE" > kubelet.conf
+
+        # copy kubelet.conf to /etc/kubernetes/kubelet.conf on the failed node, then
+        systemctl restart kubelet
+      language: bash
+      note: >-
+        Wait for /var/lib/kubelet/pki/kubelet-client-current.pem to be recreated,
+        then point kubelet.conf back at the rotated certificate so future rotation
+        works again.
+    - id: tune-toleration-seconds
+      instruction: >-
+        For workloads that must ride out short node blips, set an explicit
+        toleration — otherwise the default injected tolerationSeconds of 300 evicts
+        them five minutes after the taint lands.
+      code: |
+        tolerations:
+          - key: "node.kubernetes.io/unreachable"
+            operator: "Exists"
+            effect: "NoExecute"
+            tolerationSeconds: 6000
+      language: yaml
+      note: >-
+        DaemonSet pods already tolerate both taints with no time limit and are never
+        evicted for them.
+    - id: watch-node-return
+      instruction: >-
+        Fix the underlying cause, restart the kubelet, and watch the node return.
+        The not-ready and unreachable taints are removed automatically when the
+        Ready condition recovers — do not remove them by hand.
+      command: "kubectl get nodes -w"
+  verification: >-
+    kubectl get nodes reports the node Ready; kubectl describe node no longer lists
+    node.kubernetes.io/not-ready or node.kubernetes.io/unreachable taints; evicted
+    workloads are Running again and pods on the node stop terminating.
+  fallback: >-
+    If the node cannot be recovered — hardware gone, VM deleted, certificate CA lost
+    — drain what the API still believes is there and delete the Node object so
+    controllers reschedule everything: kubectl drain <node> --ignore-daemonsets
+    --force followed by kubectl delete node <node>. Pods stuck Terminating on an
+    unreachable node are released when the Node object goes away.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.18 and later"
+      note: >-
+        Taint-based eviction for node conditions is stable since v1.18; after 1.29 it
+        runs in a separate taint-eviction-controller rather than the node controller.
+    - name: kubelet
+      versions: "1.18 and later"
+      note: >-
+        Posts Ready via Node status updates and Lease renewals; the node controller
+        marks it Unknown after node-monitor-grace-period, 50 seconds by default.
+    - name: kubeadm
+      versions: "1.15 and later"
+      note: "Client certificates expire after one year unless renewed by upgrade or kubeadm certs renew."
+  runtimes:
+    - containerd
+    - CRI-O
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - >-
+    Pods Evicted by node-pressure eviction while the node itself stays Ready — that
+    is the kubelet reclaiming memory, disk or PIDs on a healthy node
+    (kubernetes-pod-evicted-node-pressure), not a NotReady node
+  - >-
+    Nodes showing SchedulingDisabled after kubectl cordon or drain — an intentional
+    administrative state; the node is still Ready and no taint-based eviction runs
+  - >-
+    A single pod stuck Pending on a cluster of Ready nodes, which is a scheduling or
+    resource problem rather than node health
+  - >-
+    A Node object deleted by the cloud provider or cluster autoscaler, where the node
+    disappears from kubectl get nodes instead of going NotReady
+
+evidence:
+  - type: official-docs
+    title: "Node Status — Conditions"
+    url: https://kubernetes.io/docs/reference/node/node-status/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      The meaning of Ready False versus Unknown, and that the node controller marks a
+      silent node Unknown after node-monitor-grace-period, 50 seconds by default.
+    quote: "False if the node is not healthy and is not accepting pods, and Unknown if the node controller has not heard from the node in the last node-monitor-grace-period (default is 50 seconds)"
+  - type: official-docs
+    title: "Nodes — Node controller"
+    url: https://kubernetes.io/docs/concepts/architecture/nodes/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That the node controller is what sets Ready to Unknown when a node becomes
+      unreachable, and that it then triggers API-initiated eviction of the node's
+      pods.
+    quote: "In the case that a node becomes unreachable, updating the Ready condition in the Node's .status field. In this case the node controller sets the Ready condition to Unknown"
+  - type: official-docs
+    title: "Taints and Tolerations — Taint based Evictions"
+    url: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That node.kubernetes.io/not-ready and node.kubernetes.io/unreachable are the
+      condition taints, that every pod gets an automatic toleration of 300 seconds
+      for them, and therefore that eviction begins about five minutes after the
+      taint lands.
+    quote: "Kubernetes automatically adds a toleration for node.kubernetes.io/not-ready and node.kubernetes.io/unreachable with tolerationSeconds=300 ... Pods remain bound to Nodes for 5 minutes after one of these problems is detected."
+  - type: official-docs
+    title: "Certificate Management with kubeadm"
+    url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That kubeadm client certificates expire after one year, and that kubeadm certs
+      check-expiration is the command that shows expiry per certificate.
+    quote: "Client certificates generated by kubeadm expire after 1 year."
+  - type: official-docs
+    title: "Troubleshooting kubeadm — Kubelet client certificate rotation fails"
+    url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      The x509 error string used as the discriminator for the expired-certificate
+      cause, and the documented repair sequence of deleting the stale kubelet.conf
+      and client certificates, minting a new kubeconfig and restarting the kubelet.
+    quote: "If this rotation process fails you might see errors such as x509: certificate has expired or is not yet valid in kube-apiserver logs."
+
+confidence: high
+confidenceRationale: >-
+  The condition semantics, the 50-second grace period, the two condition taints, the
+  300-second automatic toleration and the one-year certificate lifetime are all
+  quoted from kubernetes.io documentation. The False-versus-Unknown diagnostic split
+  follows directly from those documented mechanisms, but the specific journal and
+  log strings used as discriminators for the runtime, network and resource causes —
+  'Failed to update lease', crictl failure modes, Ready/NotReady flapping under OOM —
+  are operational practice rather than sentences quotable from a single page.
+
+freshness:
+  created: "2026-08-20"
+  updated: "2026-08-20"
+  verifiedAt: "2026-08-20"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-pod-pending-insufficient-resources
+  - docker-no-space-left-on-device

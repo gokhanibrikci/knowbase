@@ -1,0 +1,393 @@
+slug: kubernetes-coredns-dns-resolution-failure
+title: "Kubernetes DNS resolution failing inside pods (CoreDNS)"
+summary: >-
+  Pods resolve names through the cluster DNS Service via a kubelet-written
+  resolv.conf with ndots:5 and a namespace-scoped search list. Failures trace to a
+  short list — CoreDNS down, an under-qualified cross-namespace name, an egress
+  policy eating port 53, or the wrong dnsPolicy — and one nslookup tells them apart.
+domain: kubernetes
+tags:
+  - kubernetes
+  - coredns
+  - dns
+  - ndots
+  - networkpolicy
+  - resolv-conf
+  - nxdomain
+  - troubleshooting
+
+error:
+  signature: "Temporary failure in name resolution"
+  codes:
+    - NXDOMAIN
+    - SERVFAIL
+    - EAI_AGAIN
+  aliases:
+    - "nslookup: can't resolve 'kubernetes.default'"
+    - "server can't find kubernetes.default: NXDOMAIN"
+    - "dial tcp: lookup ... no such host"
+    - "getaddrinfo EAI_AGAIN"
+    - "connection timed out; no servers could be reached"
+    - "kubernetes dns not working"
+
+problem: >-
+  Applications inside pods fail with temporary failure in name resolution, NXDOMAIN
+  for names that plainly exist, or lookups that hang for seconds and then succeed.
+  The failure mode is the first clue: NXDOMAIN means a resolver answered and the
+  name as sent does not exist — usually a qualification or search-list problem —
+  while a timeout means nothing answered at all, pointing at CoreDNS itself or at
+  something dropping port 53 on the way there. Because every workload shares one
+  DNS path, a CoreDNS-level fault presents as dozens of unrelated services breaking
+  at once.
+
+rootCauses:
+  - id: coredns-unhealthy
+    cause: The CoreDNS pods themselves are not running or are crash-looping
+    weight: primary
+    detail: >-
+      When the cluster DNS deployment is down, every lookup from every pod fails at
+      once. The classic crash is the loop plugin halting the process because the
+      node's resolv.conf points at a local stub resolver — systemd-resolved's
+      127.0.0.53 — so CoreDNS forwards queries back to itself; Kubernetes restarts
+      it into CrashLoopBackOff. On some platforms the DNS add-on is simply not
+      deployed at all.
+    discriminator: >-
+      kubectl get pods --namespace=kube-system -l k8s-app=kube-dns shows pods not
+      Running or not Ready, or their logs contain a 'Loop ... detected' line
+  - id: cross-namespace-short-name
+    cause: The name is under-qualified for a Service in another namespace
+    weight: primary
+    detail: >-
+      The search list the kubelet writes starts with the pod's own namespace —
+      <namespace>.svc.cluster.local — so a bare Service name resolves only inside
+      that namespace. Querying data from the test namespace returns NXDOMAIN when
+      the Service lives in prod; data.prod resolves. Nothing is broken — the name
+      is incomplete.
+    discriminator: >-
+      From the same pod, nslookup <service>.<namespace> succeeds while the bare
+      nslookup <service> returns NXDOMAIN
+  - id: networkpolicy-blocks-dns
+    cause: An egress NetworkPolicy silently drops traffic to port 53
+    weight: common
+    detail: >-
+      The moment any policy with Egress in its policyTypes selects a pod, the pod
+      is isolated for egress and only listed destinations remain reachable. A
+      policy written for the application's own traffic rarely lists kube-dns, so
+      every lookup — cluster-internal and external alike — times out. The symptom
+      is timeouts rather than NXDOMAIN because packets are dropped, not answered.
+    discriminator: >-
+      Lookups fail with 'connection timed out; no servers could be reached' rather
+      than NXDOMAIN, and a NetworkPolicy in the pod's namespace selects the pod
+      with Egress in its policyTypes
+    resolution:
+      id: allow-dns-egress-v1
+      stepIds:
+        - run-test-pod
+        - allow-dns-egress
+      verificationCriteria:
+        - id: cluster-lookup-answers
+          check: Repeat the cluster lookup from a test pod in the affected namespace after the policy is applied
+          expected: nslookup kubernetes.default answers with the kube-dns server address instead of timing out
+          required: true
+          command: "kubectl exec -i -t dnsutils -- nslookup kubernetes.default"
+        - id: external-lookup-answers
+          check: Resolve an external name from the same test pod
+          expected: The external name resolves without 'connection timed out; no servers could be reached'
+          required: true
+          command: "kubectl exec -i -t dnsutils -- nslookup example.com"
+  - id: ndots-search-expansion
+    cause: ndots:5 forces external names through the cluster search list first
+    weight: common
+    detail: >-
+      The kubelet writes options ndots:5, so any name with fewer than five dots —
+      which includes practically every external hostname — is tried against each
+      search domain before being tried as an absolute name. Every resolution of
+      api.example.com first costs a round of NXDOMAIN round-trips against the
+      cluster suffixes; under load or UDP packet loss this surfaces as seconds of
+      latency and intermittent EAI_AGAIN rather than a clean failure.
+    discriminator: >-
+      The same lookup with a trailing dot (api.example.com.) is immediate and
+      reliable while the bare name is slow, and CoreDNS query logging shows
+      NXDOMAIN for names like api.example.com.default.svc.cluster.local
+  - id: wrong-dnspolicy
+    cause: A hostNetwork pod fell back to the node's resolv.conf
+    weight: common
+    detail: >-
+      dnsPolicy defaults to ClusterFirst, but on a pod with hostNetwork: true,
+      ClusterFirst silently behaves like Default — the pod inherits the node's
+      resolvers and cluster Service names stop resolving. Such pods need
+      dnsPolicy: ClusterFirstWithHostNet. A dnsPolicy of None with an incomplete
+      dnsConfig fails the same way.
+    discriminator: >-
+      cat /etc/resolv.conf inside the pod shows the node's upstream nameservers
+      instead of the kube-dns ClusterIP, and external names resolve while
+      *.svc.cluster.local names do not
+  - id: coredns-missing-rbac
+    cause: CoreDNS lacks RBAC permission to watch Services and EndpointSlices
+    weight: edge
+    detail: >-
+      CoreDNS answers service names from the API server's Service and
+      EndpointSlice objects. If the system:coredns ClusterRole is missing list and
+      watch on those resources — typically after an upgrade that moved endpoints
+      to EndpointSlices — queries for names that exist return SERVFAIL.
+    discriminator: >-
+      CoreDNS logs show SERVFAIL for cluster-internal names, and kubectl describe
+      clusterrole system:coredns lacks list/watch on services or endpointslices
+
+solution:
+  steps:
+    - id: run-test-pod
+      instruction: >-
+        Start a throwaway DNS test pod and look up kubernetes.default. This one
+        command splits the problem: an answer means the resolver path works and
+        the fault is in the specific name; a failure means the path itself is
+        broken.
+      code: |
+        kubectl apply -f https://k8s.io/examples/admin/dns/dnsutils.yaml
+        kubectl exec -i -t dnsutils -- nslookup kubernetes.default
+      language: bash
+      note: >-
+        A healthy reply names the kube-dns server IP and returns the API server's
+        cluster IP. Run the test pod in the failing workload's namespace —
+        NetworkPolicy is namespaced, and a test pod in default can hide the cause.
+    - id: check-resolv-conf
+      instruction: >-
+        Read the resolv.conf the kubelet wrote into the pod. The nameserver must
+        be the kube-dns ClusterIP and the search list must carry the three cluster
+        suffixes; the node's own resolvers here mean a dnsPolicy problem, not a
+        CoreDNS one.
+      command: "kubectl exec -ti dnsutils -- cat /etc/resolv.conf"
+      note: >-
+        Expected shape: nameserver <kube-dns ClusterIP>, search
+        <namespace>.svc.cluster.local svc.cluster.local cluster.local, options
+        ndots:5.
+    - id: check-coredns-pods
+      instruction: >-
+        Check that the CoreDNS pods are Running and read their logs. A 'Loop ...
+        detected' line followed by an exit means the node's resolv.conf points at
+        a local stub resolver and CoreDNS is forwarding to itself.
+      code: |
+        kubectl get pods --namespace=kube-system -l k8s-app=kube-dns
+        kubectl logs --namespace=kube-system -l k8s-app=kube-dns
+      language: bash
+      note: >-
+        On systemd-resolved nodes, point the kubelet's --resolv-conf at
+        /run/systemd/resolve/resolv.conf — the real file, not the 127.0.0.53 stub.
+        kubeadm detects and does this automatically.
+    - id: check-service-endpoints
+      instruction: >-
+        Verify the kube-dns Service exists and has endpoints. A Service with no
+        endpoints answers nothing — queries time out exactly as if a firewall
+        dropped them.
+      code: |
+        kubectl get svc --namespace=kube-system
+        kubectl get endpointslice -l kubernetes.io/service-name=kube-dns --namespace=kube-system
+      language: bash
+    - id: qualify-name
+      instruction: >-
+        For a Service in another namespace, qualify the name. The search list
+        covers only the pod's own namespace, so the short name is expected to fail
+        across namespaces — that is a name to complete, not a fault to fix.
+      command: "kubectl exec -i -t dnsutils -- nslookup <service-name>.<namespace>"
+    - id: allow-dns-egress
+      instruction: >-
+        If lookups time out and the namespace carries egress policies, add one
+        that explicitly allows DNS to kube-system on both protocols — DNS falls
+        back to TCP for large answers.
+      code: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: allow-dns
+          namespace: <namespace>
+        spec:
+          podSelector: {}
+          policyTypes:
+            - Egress
+          egress:
+            - to:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: kube-system
+              ports:
+                - protocol: UDP
+                  port: 53
+                - protocol: TCP
+                  port: 53
+      language: yaml
+    - id: fix-dnspolicy
+      instruction: >-
+        Give hostNetwork pods the cluster resolver explicitly — ClusterFirst does
+        not survive hostNetwork on its own.
+      code: |
+        spec:
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+      language: yaml
+    - id: cut-ndots-cost
+      instruction: >-
+        For workloads that mostly resolve external names, bypass the search-list
+        expansion: use a trailing dot to make the name absolute, or lower ndots
+        for that pod via dnsConfig.
+      code: |
+        spec:
+          dnsConfig:
+            options:
+              - name: ndots
+                value: "2"
+      language: yaml
+      note: >-
+        A trailing dot (api.example.com.) needs no spec change but must survive
+        the client library. Lowering ndots trades away short in-cluster names of
+        the form <service>.<namespace>.
+  verification: >-
+    From a pod in the affected namespace, nslookup kubernetes.default answers with
+    the kube-dns service IP without retries or timeouts; the cross-namespace name
+    resolves as <service>.<namespace>; an external name resolves in a single round
+    trip; and the CoreDNS pods stay Ready with no loop or SERVFAIL entries in
+    their logs.
+  fallback: >-
+    Where DNS load or UDP conntrack races persist after CoreDNS itself is healthy,
+    run NodeLocal DNSCache so each node answers from a local cache, or scale the
+    CoreDNS Deployment beyond its default replica count — it is an ordinary
+    Deployment in kube-system and scales like one.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.13 and later"
+      note: >-
+        CoreDNS is the default cluster DNS server; the Service and the k8s-app
+        label keep the name kube-dns for compatibility with both deployments.
+    - name: CoreDNS
+      versions: "1.2 and later"
+      note: >-
+        The loop plugin halts the process on a detected forwarding loop, which
+        Kubernetes turns into CrashLoopBackOff.
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - >-
+    Names that resolve but connections that are refused — the lookup returned an
+    IP and the failure is at connect time, which is a Service-without-endpoints or
+    readiness problem (kubernetes-service-no-endpoints), not DNS
+  - >-
+    Node-level DNS problems outside the cluster — the node's own resolv.conf,
+    systemd-resolved or upstream resolvers failing for node processes such as
+    image pulls are debugged on the node, although a broken node file can also
+    feed the CoreDNS forwarding-loop cause above
+  - >-
+    Public DNS for an Ingress hostname failing for clients outside the cluster,
+    which is registrar and zone configuration, not cluster DNS
+  - >-
+    Windows nodes, where ClusterFirstWithHostNet is unsupported and name
+    resolution follows different resolver rules
+
+evidence:
+  - type: official-docs
+    title: "DNS for Services and Pods"
+    url: https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      The resolv.conf the kubelet writes (nameserver, three-suffix search list,
+      options ndots:5), that the search list is scoped to the pod's own namespace,
+      that ClusterFirst is the default dnsPolicy, and that hostNetwork pods
+      silently fall back to Default unless set to ClusterFirstWithHostNet.
+    quote: >-
+      By default, a client Pod's DNS search list includes the Pod's own namespace
+      and the cluster's default domain. ... Otherwise, Pods running with
+      hostNetwork and "ClusterFirst" will fallback to the behavior of the
+      "Default" policy.
+  - type: official-docs
+    title: "Debugging DNS Resolution"
+    url: https://kubernetes.io/docs/tasks/administer-cluster/dns-debugging-resolution/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      The nslookup-from-a-test-pod debugging path; the checks of CoreDNS pods,
+      logs, the kube-dns Service and its endpointslices; the cross-namespace
+      qualification rule; the SERVFAIL-on-missing-RBAC case; and the
+      systemd-resolved stub-file known issue behind the forwarding loop.
+    quote: >-
+      Once that Pod is running, you can exec nslookup in that environment. ... If
+      the namespace of the pod and service differ, the DNS query must include the
+      namespace of the service.
+  - type: official-docs
+    title: "CoreDNS loop plugin"
+    url: https://coredns.io/plugins/loop/
+    publisher: CoreDNS Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That a detected forwarding loop is fatal to the CoreDNS process and surfaces
+      in Kubernetes as CrashLoopBackOff, and that a loopback address such as
+      127.0.0.53 in the forwarded resolv.conf is the most common trigger.
+    quote: >-
+      When a CoreDNS Pod deployed in Kubernetes detects a loop, the CoreDNS Pod
+      will start to "CrashLoopBackOff". This is because Kubernetes will try to
+      restart the Pod every time CoreDNS detects the loop and exits.
+  - type: official-docs
+    title: "Network Policies"
+    url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That any NetworkPolicy with Egress in policyTypes isolates the pods it
+      selects, after which only explicitly allowed destinations — kube-dns on
+      port 53 included — remain reachable.
+    quote: >-
+      When a pod is isolated for egress, the only allowed connections from the pod
+      are those allowed by the egress list of some NetworkPolicy that applies to
+      the pod for egress.
+  - type: official-docs
+    title: "resolv.conf(5) — Linux manual page"
+    url: https://man7.org/linux/man-pages/man5/resolv.conf.5.html
+    publisher: Linux man-pages project
+    retrievedAt: "2026-08-20"
+    supports: >-
+      The ndots mechanism — names below the dot threshold are tried through each
+      search-path element before an absolute query — and that this expansion is
+      slow and traffic-heavy when the appended domains do not answer locally,
+      which is the cost ndots:5 imposes on external lookups.
+    quote: >-
+      Resolver queries having fewer than ndots dots (default is 1) in them will be
+      attempted using each component of the search path in turn until a match is
+      found. ... this process may be slow and will generate a lot of network
+      traffic
+  - type: official-docs
+    title: "Debug Services"
+    url: https://kubernetes.io/docs/tasks/debug/debug-application/debug-service/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That a Service name resolving is the point where DNS is ruled out and
+      Service debugging begins, and that a failed short-name lookup across
+      namespaces is fixed by qualifying the name — the boundary between this
+      entry and Service-endpoint failures.
+    quote: >-
+      If this fails, perhaps your Pod and Service are in different Namespaces, try
+      a namespace-qualified name (again, from within a Pod):
+
+confidence: high
+confidenceRationale: >-
+  The resolv.conf shape, the namespace-scoped search list, the dnsPolicy fallback
+  for hostNetwork pods, the nslookup debugging path, egress-isolation semantics
+  and the loop-crash mechanism are all quoted from Kubernetes, CoreDNS and Linux
+  man-page documentation. Resting on practice rather than a quotable sentence:
+  that ndots:5 expansion surfaces as intermittent EAI_AGAIN under UDP packet
+  loss, the exact NetworkPolicy YAML for re-allowing DNS, and the NodeLocal
+  DNSCache fallback — each follows from documented mechanisms, but no single
+  source sentence states it.
+
+freshness:
+  created: "2026-08-20"
+  updated: "2026-08-20"
+  verifiedAt: "2026-08-20"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-crashloopbackoff
+  - kubernetes-imagepullbackoff
+  - http-502-bad-gateway-nginx

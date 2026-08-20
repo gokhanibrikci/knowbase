@@ -1,9 +1,8 @@
 {
   "$comment": "Topic queue for reaching 25+ entries. Chosen for search volume, a single identifiable root-cause family, and the existence of primary sources that can be quoted verbatim. Domain balance matters: the corpus started 4/7 kubernetes, which reads as a Kubernetes site rather than an engineering one.",
   "status": {
-    "published": 25,
-    "target": 25,
-    "note": "Initial queue fully written. Next batch should be chosen from measured demand \u2014 see the note below."
+    "published": 40,
+    "note": "Kubernetes vertical saturated (19 entries) via the staged pipeline on 2026-08-20. Next vertical from measured demand: watch misses + Search Console impressions."
   },
   "queue": [],
   "nextCandidates": {
@@ -11,18 +10,14 @@
     "registries": [
       "PostgreSQL SQLSTATE classes 22, 23, 40, 42, 53 \u2014 roughly 270 codes, a minority worth an entry",
       "Node.js error codes (ERR_*) \u2014 ~200, many are internal",
-      "Kubernetes pod/container reason strings \u2014 ImagePullBackOff and friends are done; Evicted, NodeAffinity, DeadlineExceeded remain",
       "HTTP status codes with a non-obvious cause \u2014 502 and 413 done; 499, 504, 431 remain",
       "Linux errno (ENOSPC done as Docker; EMFILE, EADDRINUSE, ECONNRESET remain)"
     ],
     "shortlist": [
       "node-eaddrinuse-port-already-in-use",
       "linux-emfile-too-many-open-files",
-      "econnreset-socket-hang-up",
       "mysql-1213-deadlock-found",
       "postgres-23505-unique-violation",
-      "kubernetes-pod-evicted-node-pressure",
-      "http-504-gateway-timeout",
       "git-merge-conflict-resolution",
       "terraform-state-lock",
       "aws-s3-accessdenied"

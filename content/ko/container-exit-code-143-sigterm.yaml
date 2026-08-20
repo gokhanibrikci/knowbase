@@ -1,0 +1,285 @@
+slug: container-exit-code-143-sigterm
+title: "Container terminated with exit code 143 (SIGTERM)"
+summary: >-
+  Exit code 143 means the process ended on SIGTERM (128 + 15), the signal every pod
+  termination and rolling update begins with. During a rollout it is the normal record
+  of a stop; outside one it points at a failing liveness probe, a draining node, or an
+  app that dies on TERM instead of shutting down cleanly.
+domain: kubernetes
+tags:
+  - kubernetes
+  - containers
+  - exit-code-143
+  - sigterm
+  - graceful-shutdown
+  - pod-termination
+  - rolling-update
+
+error:
+  signature: "Container terminated with exit code 143"
+  codes:
+    - "143"
+    - SIGTERM
+    - "signal 15"
+  aliases:
+    - "exit code 143 kubernetes"
+    - "docker container exited with code 143"
+    - "java exit code 143"
+    - "pod terminated exit code 143 reason Error"
+    - "process finished with exit code 143"
+
+problem: >-
+  A container shows lastState.terminated with exitCode 143 and reason Error, usually
+  during or shortly after a deployment. 143 is 128 + 15: the process ended because it
+  received SIGTERM — the signal the kubelet sends first in every pod termination,
+  whether the trigger was a rolling update, a scale-down, a node drain, or kubectl
+  delete. The code alone therefore cannot distinguish a healthy rollout from a real
+  failure; what separates them is whether anything asked the pod to stop, and whether
+  the application actually drained before it died.
+
+rootCauses:
+  - cause: The pod was asked to stop — a rollout, scale-down, drain, or delete
+    weight: primary
+    detail: >-
+      Deleting a pod, directly or through a rolling update, records the intended grace
+      period and sends SIGTERM to the main process of each container. A process that
+      ends on that signal reports 128 + 15 = 143. An app that catches SIGTERM and
+      calls exit(0) records exit code 0 instead — and a JVM conventionally exits 143
+      even after running its shutdown hooks, so on Java workloads 143 is the ordinary
+      appearance of every clean rollout.
+    discriminator: >-
+      The timestamps line up with a rollout, scale-down, or drain — kubectl get events
+      shows Killing next to ScalingReplicaSet or drain activity, and the RESTARTS
+      count does not grow between deploys
+  - cause: A failing liveness probe made the kubelet restart the container
+    weight: common
+    detail: >-
+      A container restarted for a failed liveness probe goes through exactly the same
+      stop sequence as a deleted pod — preStop hook, SIGTERM, grace period, SIGKILL —
+      so a probe failure surfaces as a mysterious 143 with no rollout anywhere. The
+      exit code is the symptom; the failure is whatever made the probe fail, often a
+      too-tight timeout or an app that stops answering under load.
+    discriminator: >-
+      kubectl describe pod shows Killing events citing a failed liveness probe, and
+      RESTARTS climbs while no rollout is in progress
+  - cause: The app has no SIGTERM handler, so it dies mid-request instead of draining
+    weight: common
+    detail: >-
+      143 does not certify a graceful shutdown — it records that the process ended on
+      the signal. A server with no handler dies the instant SIGTERM lands: listeners
+      close abruptly, in-flight requests reset, and the load balancer keeps routing to
+      the pod for the seconds the endpoint removal takes to propagate. The rollout
+      "works" and users see an error blip on every deploy.
+    discriminator: >-
+      No shutdown or drain log lines appear between the Killing event and the exit,
+      and clients record connection resets or 502s during every rolling update
+  - cause: A shell-form entrypoint means the app is not PID 1 and never sees the signal
+    weight: common
+    detail: >-
+      A shell-form ENTRYPOINT runs the application as a child of /bin/sh -c. The shell
+      is PID 1, receives the SIGTERM, and does not forward it, so the app's handler
+      never runs: either the shell dies and the container's processes are torn down
+      abruptly behind a 143, or nothing exits and the grace period ends in SIGKILL and
+      exit 137 instead.
+    discriminator: >-
+      The image config shows Entrypoint or Cmd beginning with /bin/sh -c, or kubectl
+      exec <pod> -- ps shows the application running with a PID other than 1
+  - cause: A node-level actor terminated the pod outside any rollout
+    weight: edge
+    detail: >-
+      Spot or preemptible reclamation, cluster-autoscaler consolidation, and node
+      shutdown all remove pods through the same graceful flow, so a batch of 143s can
+      appear with no deploy anywhere — and a preempted node may grant less grace than
+      the pod asked for.
+    discriminator: >-
+      Several unrelated pods on the same node exit 143 at the same moment, and node or
+      autoscaler events show a drain, scale-down, or preemption at that time
+solution:
+  steps:
+    - instruction: >-
+        Read the exit record and the events together. exitCode 143 under Last State
+        plus a Killing event is the kubelet stopping the container; the event sitting
+        next to the Killing is what names the trigger.
+      command: "kubectl describe pod <pod-name> -n <namespace> | grep -B2 -A8 'Last State'"
+      note: >-
+        reason: Error with exitCode: 143 is how a SIGTERM death is reported —
+        Kubernetes prints no dedicated reason for it.
+    - instruction: >-
+        Correlate the termination with intent: was a rollout, scale-down, or drain
+        running at that moment? If yes, the 143 is the mechanism working, and the only
+        question left is whether the app drained cleanly before exiting.
+      command: "kubectl get events -n <namespace> --sort-by=.lastTimestamp | grep -E 'Killing|ScalingReplicaSet|liveness|drain'"
+      note: >-
+        kubectl rollout history deployment/<name> dates the deploys; liveness-probe
+        Killing events with no rollout nearby point at the probe, not the signal.
+    - instruction: >-
+        Handle SIGTERM in the application: stop accepting new work, finish what is in
+        flight, then exit 0 — so a clean shutdown stops being recorded as a signal
+        death.
+      code: |
+        const server = app.listen(port);
+
+        process.on("SIGTERM", () => {
+          // stop accepting new connections; let in-flight requests finish
+          server.close(() => process.exit(0));
+          // safety net well under terminationGracePeriodSeconds
+          setTimeout(() => process.exit(1), 25_000).unref();
+        });
+      language: javascript
+    - instruction: >-
+        Make sure the signal can reach the app at all: use the exec form of
+        ENTRYPOINT, and exec the binary from any wrapper script so the application is
+        PID 1.
+      code: |
+        # 🔴 shell form — /bin/sh -c is PID 1 and does not pass signals
+        ENTRYPOINT node server.js
+
+        # ✅ exec form — the app is PID 1 and receives SIGTERM
+        ENTRYPOINT ["node", "server.js"]
+
+        # in a wrapper script, hand PID 1 over instead of forking:
+        #   exec node server.js
+      language: dockerfile
+    - instruction: >-
+        Budget the grace period deliberately. The preStop hook and the app's shutdown
+        spend from the same terminationGracePeriodSeconds, so size it to their sum — a
+        short preStop sleep keeps the pod serving while the endpoint removal
+        propagates to every load balancer.
+      code: |
+        spec:
+          terminationGracePeriodSeconds: 45   # preStop + real drain time, with headroom
+          containers:
+            - name: app
+              lifecycle:
+                preStop:
+                  exec:
+                    command: ["sleep", "5"]   # keep serving while endpoints propagate
+      language: yaml
+    - instruction: >-
+        If 143 recurs with no rollout in sight, treat it as a liveness-probe or node
+        problem rather than a signal problem: fix the probe's thresholds or the health
+        endpoint before touching shutdown code.
+    - instruction: >-
+        Point alerting at the anomaly, not at the code: 143 inside a deploy window is
+        the platform working. Alert on restart-count growth outside rollouts, and on
+        escalations to 137 — those mean the grace period expired before the app
+        exited.
+  verification: >-
+    After a full rolling update, every replaced pod logs its shutdown path and its
+    final state shows exitCode 143 or 0 with no escalation to 137; the load balancer
+    records no error spike during the deploy, and kubectl get pods shows RESTARTS flat
+    between rollouts.
+  fallback: >-
+    Where the application cannot be changed, set STOPSIGNAL in the image to a signal
+    the app already handles, or front it with a minimal init such as tini that
+    forwards signals to its child; failing that, accept the abrupt exit and lengthen
+    the preStop sleep so traffic has left the pod before the signal lands.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        Every pod termination follows the TERM-then-KILL sequence with a default
+        terminationGracePeriodSeconds of 30.
+    - name: Docker Engine
+      versions: "all supported versions"
+      note: >-
+        docker stop sends the same sequence, so 143 carries the same meaning outside
+        Kubernetes.
+  runtimes:
+    - containerd
+    - CRI-O
+    - Docker
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - Exit code 137, which is SIGKILL (128 + 9) — the OOM killer or an expired grace period — and means the process never exited on SIGTERM
+  - Application exit codes below 128, such as 1 or 2, which are the program's own failure status and carry no signal information
+  - Pods stuck in Terminating, where nothing exits at all — a finalizer or unreachable-kubelet problem rather than a signal one
+  - Windows containers, where terminations do not surface as POSIX 128 + signal exit codes
+
+evidence:
+  - type: official-docs
+    title: "Pod Lifecycle — Termination of Pods"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That every graceful pod termination begins with SIGTERM to the main process of
+      each container under a grace period, that expiry of the grace period escalates
+      to SIGKILL, and that the same page fixes the default
+      terminationGracePeriodSeconds at 30 seconds and addresses the TERM signal to
+      process 1.
+    quote: "first sending a TERM (aka. SIGTERM) signal, with a grace period timeout, to the main process in each container. ... Once the grace period has expired, the KILL signal is sent to any remaining processes"
+  - type: official-docs
+    title: "Container Lifecycle Hooks — PreStop"
+    url: https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That a preStop hook must run to completion before the TERM signal can be sent,
+      and that hook time and shutdown time are spent from the same
+      terminationGracePeriodSeconds budget, so a hanging hook ends in a kill when the
+      period expires.
+    quote: "the hook must complete its execution before the TERM signal can be sent. ... the Pod's phase will be Terminating and remain there until the Pod is killed after its terminationGracePeriodSeconds expires"
+  - type: official-docs
+    title: "Dockerfile reference — ENTRYPOINT (shell form)"
+    url: https://docs.docker.com/reference/dockerfile/
+    publisher: Docker Inc.
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That a shell-form ENTRYPOINT runs the application under /bin/sh -c, which does
+      not pass signals, so the app is not PID 1 and never receives the SIGTERM that
+      docker stop or the kubelet sends.
+    quote: "It also starts your `ENTRYPOINT` as a subcommand of `/bin/sh -c`, which does not pass signals. This means that the executable will not be the container's `PID 1`, and will not receive Unix signals."
+  - type: official-docs
+    title: "docker container stop"
+    url: https://docs.docker.com/reference/cli/docker/container/stop/
+    publisher: Docker Inc.
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That plain Docker follows the same sequence — SIGTERM to the main process, then
+      SIGKILL after a grace period — so exit 143 has the same meaning outside
+      Kubernetes.
+    quote: "The main process inside the container will receive `SIGTERM`, and after a grace period, `SIGKILL`."
+  - type: official-docs
+    title: "bash(1) — Exit Status"
+    url: https://man7.org/linux/man-pages/man1/bash.1.html
+    publisher: man7.org (Linux man-pages)
+    retrievedAt: "2026-08-20"
+    supports: >-
+      The 128 + N convention for fatal signals that makes a SIGTERM death surface as
+      143 and a SIGKILL death as 137.
+    quote: "When a command terminates on a fatal signal N , bash uses the value of 128+ N as the exit status."
+  - type: official-docs
+    title: "signal(7) — Standard signals"
+    url: https://man7.org/linux/man-pages/man7/signal.7.html
+    publisher: man7.org (Linux man-pages)
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That SIGTERM is the standard termination signal and is number 15 on every
+      mainstream architecture, completing the 128 + 15 = 143 arithmetic.
+    quote: "SIGTERM P1990 Term Termination signal ... SIGTERM 15 15 15 15"
+
+confidence: high
+confidenceRationale: >-
+  The TERM-then-KILL sequence, the 30-second default, the preStop ordering and shared
+  grace budget, and the shell-form PID 1 behaviour are quoted from Kubernetes and
+  Docker documentation, and the 128 + 15 arithmetic from the bash and signal man
+  pages. Two claims rest on operational practice rather than a quotable sentence: that
+  JVMs conventionally exit 143 even after clean shutdown hooks, and the advice to
+  alert on restarts outside deploy windows rather than on the exit code itself.
+
+freshness:
+  created: "2026-08-20"
+  updated: "2026-08-20"
+  verifiedAt: "2026-08-20"
+  reviewIntervalDays: 365
+
+related:
+  - container-exit-code-137-oomkilled
+  - kubernetes-crashloopbackoff
+  - http-502-bad-gateway-nginx

@@ -1,0 +1,304 @@
+slug: kubernetes-pod-stuck-containercreating
+title: "Kubernetes pod stuck in ContainerCreating"
+summary: >-
+  ContainerCreating means the pod is scheduled but the kubelet has not finished
+  building it — sandbox network setup, Secret or ConfigMap mounts, or an image
+  download is still incomplete. The status never says which; the Events shown by
+  kubectl describe do, and they separate a slow pull from a stuck sandbox.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - cni
+  - container-runtime
+  - containercreating
+  - networking
+  - troubleshooting
+
+error:
+  signature: "ContainerCreating"
+  codes:
+    - ContainerCreating
+    - FailedCreatePodSandBox
+    - NetworkNotReady
+    - FailedMount
+  aliases:
+    - "failed to set up sandbox container network"
+    - "Failed to create pod sandbox"
+    - "failed to setup network for sandbox"
+    - "network plugin is not ready: cni config uninitialized"
+    - "pod stuck containercreating kubernetes"
+    - "MountVolume.SetUp failed for volume"
+
+problem: >-
+  kubectl get pods shows ContainerCreating and nothing changes. kubectl logs
+  fails because no container exists yet — the pod is past scheduling, but the
+  kubelet has not produced a running container. A few seconds here is normal on
+  every pod start; minutes is not, and the status looks identical in both cases.
+  The pod phase is still Pending — ContainerCreating is a container's Waiting
+  reason, not a phase. The actual blocker is named only in the pod's Events, and
+  it is usually a node-level problem, so other new pods on the same node are
+  often stuck the same way.
+
+rootCauses:
+  - id: cni-sandbox-failure
+    cause: The CNI plugin cannot set up the pod's network sandbox
+    weight: primary
+    detail: >-
+      Before any container starts, the container runtime creates the pod sandbox
+      and invokes the CNI plugins it is configured to load — config from
+      /etc/cni/net.d, binaries from /opt/cni/bin. A CNI agent that never came up
+      on that node, a config directory left empty by a reboot or upgrade, or a
+      plugin/config version mismatch makes every sandbox on the node fail the
+      same way.
+    discriminator: >-
+      Events show FailedCreatePodSandBox with 'failed to set up sandbox
+      container network' or 'network plugin is not ready', and every new pod
+      landing on the same node sticks identically
+  - id: ipam-exhausted
+    cause: The node has no free pod IP addresses left
+    weight: common
+    detail: >-
+      Each sandbox needs an IP from the node's pod CIDR or, on cloud CNIs, from
+      a per-node interface budget. Leaked allocations from uncleanly deleted
+      pods or a pod density above what the address range supports leave the CNI
+      with nothing to hand out, so sandbox setup fails while the rest of the
+      node looks healthy.
+    discriminator: >-
+      The FailedCreatePodSandBox message mentions 'failed to allocate for
+      range' or 'no available IPv4 addresses', and only densely packed nodes
+      are affected
+  - id: runtime-not-ready
+    cause: The container runtime on the node is down or not ready
+    weight: common
+    detail: >-
+      The kubelet drives container creation through the CRI socket of
+      containerd or CRI-O. A dead, restarting or wedged runtime daemon makes
+      the sandbox RPC fail or hang, and the node normally flips to NotReady
+      shortly after — but pods scheduled just before the flip sit in
+      ContainerCreating.
+    discriminator: >-
+      kubectl get nodes shows the node NotReady, and kubectl describe node
+      shows the Ready condition False with a container-runtime message;
+      crictl info fails on the node itself
+  - id: secret-configmap-mount-wait
+    cause: A Secret or ConfigMap volume the pod mounts does not exist yet
+    weight: common
+    detail: >-
+      Volume setup runs before container creation, and the kubelet keeps
+      retrying rather than failing the pod. Typical in pipelines that deploy
+      the workload before its config, or when the object exists in a different
+      namespace — Secrets and ConfigMaps are namespaced, so a name that works
+      in staging mounts nothing in production.
+    discriminator: >-
+      Events show FailedMount with 'MountVolume.SetUp failed for volume'
+      naming a secret or configmap, and kubectl get for that object in the
+      pod's namespace returns NotFound
+  - id: pull-in-progress
+    cause: The image is still downloading — slow, not stuck
+    weight: common
+    detail: >-
+      A multi-gigabyte image onto a cold node takes minutes, and the container
+      stays in Waiting for the whole download. In kubectl get pods this is
+      indistinguishable from a hang; the difference is only visible in the
+      event timestamps.
+    discriminator: >-
+      The most recent event is 'Pulling image' with no Failed event after it,
+      and re-reading events shows the timestamps still advancing
+  - id: runtimeclass-handler-missing
+    cause: The pod's RuntimeClass names a handler the node does not have
+    weight: edge
+    detail: >-
+      A pod with runtimeClassName set to gVisor or Kata schedules onto a node
+      whose containerd was never configured with that handler. The sandbox
+      request is rejected before networking is even attempted.
+    discriminator: >-
+      The FailedCreatePodSandBox message contains 'no runtime for' followed by
+      the handler name, and the pod spec sets runtimeClassName
+
+solution:
+  steps:
+    - id: inspect-events
+      instruction: >-
+        Read the Events at the bottom of the pod description. The blocking
+        operation — sandbox setup, a mount, a pull — is named there; the
+        ContainerCreating status itself never says which.
+      command: "kubectl describe pod <pod-name> -n <namespace>"
+      note: >-
+        FailedCreatePodSandBox means networking or the runtime; FailedMount
+        means a volume; a lone Pulling event means the download is simply
+        still running.
+    - id: separate-slow-from-stuck
+      instruction: >-
+        Sort the pod's events by time before touching anything. A recent
+        Pulling event with nothing failed after it is progress — wait, or
+        pre-pull the image onto nodes if this happens on every rollout. An old
+        last event with the pod unchanged is a genuine hang.
+      command: >-
+        kubectl get events -n <namespace> --field-selector
+        involvedObject.name=<pod-name> --sort-by=.lastTimestamp
+    - id: check-node-and-runtime
+      instruction: >-
+        Check the node the pod was scheduled to. A NotReady node or a dead
+        runtime daemon explains every stuck pod on it at once.
+      code: |
+        kubectl get pod <pod-name> -n <namespace> -o wide   # which node
+        kubectl describe node <node> | grep -A8 'Conditions:'
+        # on the node:
+        systemctl status containerd    # or crio
+        crictl info                    # fails when the CRI socket is dead
+      language: bash
+    - id: check-cni
+      instruction: >-
+        If the sandbox error mentions the network, verify the CNI agent pod is
+        Running on that node and that the node actually has a CNI config and
+        binaries — the container runtime loads them from disk.
+      code: |
+        kubectl -n kube-system get pods -o wide --field-selector spec.nodeName=<node>
+        # on the node:
+        ls /etc/cni/net.d/    # empty means no network config at all
+        ls /opt/cni/bin/      # plugin binaries the runtime executes
+      language: bash
+      note: >-
+        An empty /etc/cni/net.d after a reboot or upgrade means the network
+        add-on never reinstalled its config on this node — restart its
+        DaemonSet pod or reinstall the add-on. For IP exhaustion, the fix is
+        the CNI's IPAM settings or the node's max-pods, not the pod.
+    - id: create-missing-mounts
+      instruction: >-
+        If FailedMount names a Secret or ConfigMap, create the missing object
+        in the pod's own namespace or fix the name — both objects are
+        namespaced, so the right name in the wrong namespace mounts nothing.
+      command: >-
+        kubectl -n <namespace> get secret <name>; kubectl -n <namespace> get
+        configmap <name>
+      note: >-
+        The kubelet retries the mount on its own; once the object exists the
+        pod continues without being recreated.
+    - id: recreate-pod
+      instruction: >-
+        After fixing a node-level cause — CNI, runtime, IP pool — delete the
+        stuck pod. A fresh pod re-runs the whole sandbox path cleanly, and a
+        controller-managed pod is replaced automatically.
+      command: "kubectl delete pod <pod-name> -n <namespace>"
+  verification: >-
+    kubectl get pod shows the pod Running, kubectl describe pod shows Created
+    and Started events with no new FailedCreatePodSandBox or FailedMount
+    entries, and a newly scheduled pod on the previously affected node also
+    reaches Running.
+  fallback: >-
+    When the node itself needs repair — runtime reinstall, CNI reinstallation,
+    a reboot — cordon and drain it so workloads reschedule onto healthy nodes
+    first: kubectl cordon <node> && kubectl drain <node> --ignore-daemonsets
+    --delete-emptydir-data.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.24 and later"
+      note: >-
+        Since 1.24 the container runtime, not the kubelet, loads and manages
+        the CNI plugins; ContainerCreating itself is a container Waiting
+        reason, not a pod phase.
+    - name: kubelet
+      versions: "1.24 and later"
+      note: >-
+        Surfaces sandbox failures as FailedCreatePodSandBox events and retries
+        creation on its own — the pod is not marked Failed.
+  runtimes:
+    - containerd
+    - CRI-O
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - FailedMount on a PersistentVolume, where the pod waits on a PVC attach or mount rather than on sandbox, config or image setup
+  - CreateContainerConfigError, where a ConfigMap or Secret referenced as environment variables is missing — the sandbox was already created
+  - ImagePullBackOff and ErrImagePull, where the pull has failed and is backing off rather than still in progress
+  - Pods stuck in Pending with no node assigned, which is a scheduling failure before container creation ever begins
+
+evidence:
+  - type: official-docs
+    title: "Debug Pods — My pod stays waiting"
+    url: https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That a pod stuck in the Waiting state has already been scheduled, that
+      the failure is on the assigned machine, and that kubectl describe is the
+      prescribed diagnostic.
+    quote: "If a Pod is stuck in the Waiting state, then it has been scheduled to a worker node, but it can't run on that machine."
+  - type: official-docs
+    title: "Pod Lifecycle — Container states"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That a Waiting container is still performing its startup operations —
+      image pull and Secret application are the named examples — and that the
+      state carries a Reason field such as ContainerCreating.
+    quote: "A container in the Waiting state is still running the operations it requires in order to complete start up: for example, pulling the container image from a container image registry, or applying Secret data."
+  - type: official-docs
+    title: "Network Plugins"
+    url: https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That the container runtime is responsible for loading the CNI plugins
+      that implement the pod network, which is why a missing or broken CNI
+      setup blocks sandbox creation at the runtime level.
+    quote: "In particular, the Container Runtime must be configured to load the CNI plugins required to implement the Kubernetes network model."
+  - type: official-docs
+    title: "Secrets — Using Secrets as files from a Pod"
+    url: https://kubernetes.io/docs/concepts/configuration/secret/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That a pod mounting a Secret that cannot be fetched is retried
+      periodically by the kubelet rather than failed, with the detail reported
+      as a pod Event — the mount-wait cause of ContainerCreating.
+    quote: "If the Secret cannot be fetched (perhaps because it does not exist, or due to a temporary lack of connection to the API server) the kubelet periodically retries running that Pod."
+  - type: source-code
+    title: "kubelet event reasons (pkg/kubelet/events/event.go)"
+    url: https://raw.githubusercontent.com/kubernetes/kubernetes/master/pkg/kubelet/events/event.go
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That NetworkNotReady and FailedCreatePodSandBox are kubelet event
+      reasons, which is why they are the strings to look for in kubectl
+      describe output.
+    quote: "NetworkNotReady = \"NetworkNotReady\" ... FailedCreatePodSandBox = \"FailedCreatePodSandBox\""
+  - type: official-docs
+    title: "Node Status — Conditions"
+    url: https://kubernetes.io/docs/reference/node/node-status/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That the node Ready condition is the signal for whether a node can
+      accept and run pods, which is the discriminator for the
+      runtime-not-ready cause.
+    quote: "True if the node is healthy and ready to accept pods, False if the node is not healthy and is not accepting pods"
+
+confidence: high
+confidenceRationale: >-
+  The Waiting-state semantics, the runtime's ownership of CNI plugin loading,
+  the kubelet's retry behaviour on unfetchable Secrets, the event-reason
+  strings and the node Ready condition are all quoted from Kubernetes
+  documentation and source. The relative frequency of the causes, the specific
+  runtime error fragments used as discriminators ('failed to allocate for
+  range', 'no runtime for'), and the advice that deleting the pod re-runs the
+  sandbox path cleanly rest on operational practice rather than on a quotable
+  sentence.
+
+freshness:
+  created: "2026-08-20"
+  updated: "2026-08-20"
+  verifiedAt: "2026-08-20"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-imagepullbackoff
+  - kubernetes-crashloopbackoff
+  - kubernetes-createcontainerconfigerror
+  - kubernetes-pod-pending-insufficient-resources

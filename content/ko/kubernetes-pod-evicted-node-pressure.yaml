@@ -1,0 +1,297 @@
+slug: kubernetes-pod-evicted-node-pressure
+title: "Kubernetes pod Failed with reason Evicted: node-pressure eviction"
+summary: >-
+  The kubelet killed the pod to relieve node pressure: low memory.available, low
+  nodefs/imagefs disk or inodes, or exhausted PIDs. It sets the pod phase to Failed
+  with reason Evicted, picking victims whose usage exceeds requests first, and leaves
+  the dead pod object in the API. The fix is honest requests, not retrying.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - eviction
+  - node-pressure
+  - qos
+  - ephemeral-storage
+  - troubleshooting
+
+error:
+  signature: "Status: Failed, Reason: Evicted"
+  codes:
+    - Evicted
+    - MemoryPressure
+    - DiskPressure
+    - PIDPressure
+  aliases:
+    - "The node was low on resource: memory"
+    - "The node was low on resource: ephemeral-storage"
+    - "exceeded its local ephemeral storage limit"
+    - "pod evicted kubernetes"
+    - "kubectl pods Evicted status"
+    - "The node had condition: [DiskPressure]"
+
+problem: >-
+  Pods die with status Evicted, often several at once on the same node, and kubectl
+  logs on the dead pod usually returns nothing because the containers are gone. A
+  Deployment or StatefulSet replaces them, so the workload limps along while the
+  evicted pod objects pile up in kubectl get pods output. The pod that got killed is
+  frequently not the one that caused the pressure — the kubelet ranks victims by how
+  far usage exceeds requests, so a well-behaved pod with no requests set can die for
+  a neighbour's appetite.
+
+rootCauses:
+  - cause: Node memory pressure hit a pod using more memory than it requested
+    weight: primary
+    detail: >-
+      memory.available on the node fell below the eviction threshold (default hard
+      threshold 100Mi on Linux), and this pod was Burstable or BestEffort with usage
+      above its memory request. The kubelet evicts those first, ordered by priority
+      and then by how far usage exceeds the request — QoS class itself is only a
+      proxy for that ordering.
+    discriminator: >-
+      kubectl describe pod shows 'The node was low on resource: memory', and the
+      node reported a MemoryPressure condition at eviction time
+  - cause: The pod exceeded its own ephemeral-storage limit or an emptyDir sizeLimit
+    weight: primary
+    detail: >-
+      Writable-layer files, logs, and emptyDir volumes count against
+      ephemeral-storage. If a container's usage exceeds its ephemeral-storage limit,
+      or the pod's total exceeds the summed limits, or an emptyDir outgrows its
+      sizeLimit, the kubelet evicts the pod regardless of how much free disk the
+      node still has.
+    discriminator: >-
+      The pod's status message names the pod itself — 'exceeded its local ephemeral
+      storage limit' or an emptyDir usage message — rather than saying the node was
+      low on a resource
+  - cause: Node disk pressure on nodefs or imagefs selected the pod by disk usage
+    weight: common
+    detail: >-
+      nodefs.available (default threshold 10%) or imagefs.available (default 15%)
+      dropped too low. The kubelet first reclaims node-level resources such as
+      unused images; if that is not enough it evicts pods ranked by their disk
+      usage on the starved filesystem — local volumes, logs, and writable layers.
+      QoS-based reasoning does not apply here because ephemeral storage has no QoS
+      classification.
+    discriminator: >-
+      The message reads 'The node was low on resource: ephemeral-storage' and
+      kubectl describe node shows DiskPressure; df on the node's kubelet and image
+      filesystems confirms which one crossed its threshold
+  - cause: Missing or dishonest resource requests put the pod first in line
+    weight: common
+    detail: >-
+      A pod with no memory request is BestEffort, and any usage at all exceeds a
+      zero request — so it sorts to the front of the eviction order on every memory
+      pressure event. Guaranteed pods (requests equal to limits on every container)
+      are never evicted for another pod's consumption, which is why the same
+      neighbours always survive.
+    discriminator: >-
+      The evicted pods are consistently the ones without requests set, while pods
+      whose requests equal their limits on the same node stay Running through the
+      event
+  - cause: PID or inode exhaustion on the node
+    weight: edge
+    detail: >-
+      pid.available or an inodesFree signal crossed its threshold — typically a
+      fork bomb or a workload creating millions of tiny files. PIDs and inodes have
+      no per-pod requests, so the kubelet falls back to ranking victims purely by
+      pod priority.
+    discriminator: >-
+      kubectl describe node shows PIDPressure, or the eviction message names inodes;
+      disk space and memory on the node look healthy
+  - cause: System daemons overran their reservations, squeezing correct pods
+    weight: edge
+    detail: >-
+      If kubelet, journald or other node daemons use more than what system-reserved
+      and kube-reserved set aside, the kubelet can be forced to evict pods that are
+      within their requests — even Guaranteed ones — choosing the lowest priority
+      first. The pods were configured correctly; the node's accounting was not.
+    discriminator: >-
+      Pods using less than their requests were still evicted; node monitoring shows
+      system-slice processes consuming more than the configured reservations
+
+solution:
+  steps:
+    - instruction: >-
+        Read the eviction message on the dead pod. It names the starved resource and
+        whether the pod breached its own limit or the node ran short — the two need
+        opposite fixes.
+      command: "kubectl describe pod <pod-name> -n <namespace> | grep -A4 'Status\\|Reason\\|Message'"
+      note: >-
+        'The node was low on resource: ...' means node pressure; 'exceeded its local
+        ephemeral storage limit' means the pod broke its own limit.
+    - instruction: >-
+        Inspect the node it ran on. Conditions and events show which signal fired
+        (MemoryPressure, DiskPressure, PIDPressure) and whether it is still firing.
+      command: "kubectl describe node <node-name> | sed -n '/Conditions:/,/Addresses:/p'"
+    - instruction: >-
+        For memory evictions, set requests near real usage, and make pods you cannot
+        afford to lose Guaranteed by setting requests equal to limits on every
+        container. Guaranteed pods are not evicted for another pod's consumption.
+      code: |
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"   # equal to request => Guaranteed QoS
+            cpu: "250m"
+      language: yaml
+      note: >-
+        Guaranteed also means the container is OOM-killed if it exceeds its own
+        limit — the protection is against neighbours, not against yourself.
+    - instruction: >-
+        For ephemeral-storage evictions, bound what the pod may write: set
+        ephemeral-storage requests and limits, cap emptyDir volumes with sizeLimit,
+        and find what is actually writing — logs and cache directories are the
+        usual culprits.
+      code: |
+        containers:
+          - name: app
+            resources:
+              requests:
+                ephemeral-storage: "1Gi"
+              limits:
+                ephemeral-storage: "2Gi"
+        volumes:
+          - name: scratch
+            emptyDir:
+              sizeLimit: 500Mi
+      language: yaml
+    - instruction: >-
+        For node-level disk pressure, reclaim space below the threshold: prune
+        unused images, check that container log rotation is working, and size node
+        disks for the image set they actually carry. The kubelet garbage-collects
+        images itself, but only once pressure already exists.
+      command: "df -h /var/lib/kubelet /var/lib/containerd && crictl rmi --prune"
+    - instruction: >-
+        Delete the lingering Evicted pod objects. They stay in the API until
+        removed by hand or by the pod garbage collector, which only runs once
+        terminated pods exceed the kube-controller-manager's
+        terminated-pod-gc-threshold — 12500 by default, so on most clusters they
+        effectively never age out on their own.
+      command: "kubectl delete pods --field-selector=status.phase=Failed -n <namespace>"
+      note: >-
+        Read their messages first — the evicted pods are the evidence for which
+        signal fired and how often.
+    - instruction: >-
+        Protect what matters next time: give critical workloads a PriorityClass
+        (priority breaks ties within an eviction band, and is the only ordering for
+        PID and inode evictions), and do not rely on PodDisruptionBudgets — the
+        kubelet ignores PDBs during node-pressure eviction.
+  verification: >-
+    The replacement pods stay Running through the load that previously triggered
+    evictions, kubectl describe node shows MemoryPressure/DiskPressure/PIDPressure
+    all False, and no new pods with reason Evicted appear over a full traffic cycle.
+  fallback: >-
+    If honest requests simply do not fit the nodes, the cluster is overcommitted:
+    add capacity or enable an autoscaler. Where evictions fire while dashboards
+    still show free resources, review the kubelet's eviction thresholds and
+    system-reserved/kube-reserved settings — the kubelet acts on its own signals,
+    not on your monitoring.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        Signals and default thresholds are stable; the containerfs signals for
+        split image filesystems are newer (beta since v1.31, gated by
+        KubeletSeparateDiskGC).
+    - name: kubelet
+      versions: "1.20 and later"
+      note: >-
+        Hard-threshold evictions use a 0s grace period; PodDisruptionBudgets and
+        terminationGracePeriodSeconds are not respected.
+  platforms:
+    - linux/amd64
+    - linux/arm64
+    - windows (memory.available threshold differs, 500Mi default)
+
+notApplicableTo:
+  - >-
+    OOMKilled with exit code 137, where the kernel killed one container for
+    exceeding its own memory limit — a cgroup kill, not a pod eviction (see
+    container-exit-code-137-oomkilled)
+  - >-
+    API-initiated eviction via the Eviction API or kubectl drain, which respects
+    PodDisruptionBudgets and comes from the control plane, not from kubelet
+    pressure signals
+  - >-
+    Scheduler preemption, where a pending higher-priority pod displaces a running
+    one at scheduling time — the node was not under resource pressure
+  - >-
+    Pods stuck Pending with insufficient cpu/memory, which is a scheduling-time
+    shortfall; an evicted pod ran and was killed
+  - >-
+    Taint-based evictions by the node lifecycle controller (node NotReady or
+    unreachable), which are driven by node health, not resource thresholds
+
+evidence:
+  - type: official-docs
+    title: "Node-pressure Eviction"
+    url: https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That node-pressure eviction sets the pod phase to Failed and terminates it,
+      and that BestEffort/Burstable pods whose usage exceeds requests are evicted
+      first, ordered by priority and then by usage over requests. The same page
+      defines the signals (memory.available, nodefs/imagefs/containerfs, pid.available),
+      the default hard thresholds, the priority-only ordering for inode and PID
+      starvation, and the system-daemon-overrun case.
+    quote: "During a node-pressure eviction, the kubelet sets the phase for the selected pods to Failed, and terminates the Pod ... BestEffort or Burstable pods where the usage exceeds requests. These pods are evicted based on their Priority"
+  - type: official-docs
+    title: "Pod Quality of Service Classes"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      The practical eviction order by QoS class — BestEffort first, then Burstable,
+      then Guaranteed — that only pods exceeding requests are candidates under
+      resource pressure, and that Guaranteed requires requests equal to limits for
+      every container.
+    quote: "When a Node runs out of resources, Kubernetes will first evict BestEffort Pods running on that Node, followed by Burstable and finally Guaranteed Pods."
+  - type: official-docs
+    title: "Ephemeral storage"
+    url: https://kubernetes.io/docs/concepts/storage/ephemeral-storage/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That the kubelet evicts a pod whose container writable-layer and log usage
+      exceeds its ephemeral-storage limit, and likewise when the pod total
+      (including emptyDir volumes) exceeds the summed container limits — an
+      eviction the pod triggers on itself, independent of node-wide pressure.
+    quote: "For container-level isolation, if a container's writable layer and log usage exceeds its storage limit, the kubelet marks the Pod for eviction."
+  - type: official-docs
+    title: "Pod Lifecycle — Garbage collection of Pods"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That failed pod objects — including evicted ones — remain in the API until
+      explicitly removed, and that the pod garbage collector only cleans terminated
+      pods once their count exceeds terminated-pod-gc-threshold.
+    quote: "For failed Pods, the API objects remain in the cluster's API until a human or controller process explicitly removes them."
+
+confidence: high
+confidenceRationale: >-
+  The eviction signals, default thresholds, victim ordering, Guaranteed-pod
+  guarantee, ephemeral-storage eviction rules and the lingering Failed pod object
+  are all quoted from or directly stated on Kubernetes' own documentation pages.
+  The exact status message strings used as discriminators ('The node was low on
+  resource: ...', 'exceeded its local ephemeral storage limit') come from the
+  kubelet's eviction code as observed in practice rather than from a quotable
+  documentation sentence, as does the 12500 default for terminated-pod-gc-threshold
+  (a kube-controller-manager flag default).
+
+freshness:
+  created: "2026-08-20"
+  updated: "2026-08-20"
+  verifiedAt: "2026-08-20"
+  reviewIntervalDays: 180
+
+related:
+  - container-exit-code-137-oomkilled
+  - kubernetes-pod-pending-insufficient-resources
+  - docker-no-space-left-on-device
+  - kubernetes-crashloopbackoff

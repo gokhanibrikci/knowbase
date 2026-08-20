@@ -1,0 +1,299 @@
+slug: kubernetes-service-no-endpoints
+title: "Kubernetes Service has no endpoints; connections refused or 503"
+summary: >-
+  The Service exists but its EndpointSlices are empty, so nothing is behind the
+  cluster IP and clients get connection refused — or 503 from a proxy in front. A
+  selector matching no pod labels, a wrong targetPort, or pods that are not Ready
+  all produce it; kubectl get endpointslices separates them.
+domain: kubernetes
+tags:
+  - kubernetes
+  - services
+  - endpointslices
+  - selectors
+  - kube-proxy
+  - networking
+  - troubleshooting
+
+error:
+  signature: "no endpoints available for service"
+  codes:
+    - "503"
+    - ECONNREFUSED
+  aliases:
+    - "Service has no endpoints"
+    - "kubectl get endpoints <none>"
+    - "does not have any active Endpoint"
+    - "connection refused kubernetes service"
+    - "503 Service Temporarily Unavailable kubernetes"
+
+problem: >-
+  A Service resolves in DNS and has a cluster IP, but every connection through it
+  is refused or comes back as a 503 from whatever sits in front of it. The pods
+  look fine — Running, restarts stable — and hitting a pod IP directly often
+  works. The gap is between the Service and the pods: the control loop that
+  evaluates the Service's selector has produced an empty EndpointSlice, so
+  kube-proxy has nothing to route to. No error event is recorded anywhere for
+  this; the slice listing, not the pods, is where the answer is.
+
+rootCauses:
+  - id: selector-label-mismatch
+    cause: The Service selector matches no pod labels
+    weight: primary
+    detail: >-
+      spec.selector on the Service must equal metadata.labels on the pods — key
+      for key, value for value. A typo, a renamed label, or a Deployment whose
+      template labels drifted away from the Service leaves the control loop
+      selecting nothing, and the slice stays empty forever without a single
+      warning event.
+    discriminator: >-
+      kubectl get endpointslices -l kubernetes.io/service-name=<service> shows no
+      endpoints, and listing pods with the Service's exact selector returns
+      nothing while the pods are visibly running under other labels
+  - id: target-port-mismatch
+    cause: targetPort does not match the port the container listens on
+    weight: primary
+    detail: >-
+      targetPort defaults to port, so a Service written as port 80 silently
+      targets pod port 80 even though the app listens on 8080. The slice is
+      populated but advertises a port nothing binds — connections reach the right
+      pod IP and are refused by the pod itself.
+    discriminator: >-
+      Endpoints are listed, but a request to a pod IP on the port the slice
+      advertises is refused while kubectl exec <pod> -- ss -tlnp shows the
+      process bound to a different port
+  - id: pods-not-ready
+    cause: The pods are Running but not Ready, so they are excluded
+    weight: common
+    detail: >-
+      The EndpointSlice controller removes a pod's address from the slices of
+      every Service that selects it while its readiness probe fails. The Service
+      side is behaving correctly here — the fault is entirely in the pod.
+    discriminator: >-
+      kubectl get pods shows READY 0/1 for the selected pods — from here this is
+      a readiness failure, not a Service problem: debug it as
+      kubernetes-pod-running-not-ready, not with this entry
+  - id: named-port-undefined
+    cause: targetPort names a port the pod spec does not define
+    weight: common
+    detail: >-
+      A string targetPort is resolved by name against the target pod's container
+      ports. If no containerPort carries that name — never declared, or renamed
+      on one side only — the lookup finds nothing and the Service ends up with no
+      usable endpoints for that port. Named ports are indirection, and both ends
+      must agree on the exact string.
+    discriminator: >-
+      spec.ports[].targetPort in the Service is a string, and kubectl get pod
+      <pod> -o yaml shows no containerPort whose name matches it
+  - id: wrong-namespace
+    cause: The Service and the pods are in different namespaces
+    weight: common
+    detail: >-
+      A selector only selects pods in the Service's own namespace. A Service
+      applied to default while the Deployment landed in staging matches nothing,
+      with labels that look identical side by side.
+    discriminator: >-
+      kubectl get pods -A with the Service's label selector finds the pods, but
+      in a different namespace than the Service
+  - id: no-selector
+    cause: The Service has no selector, so no endpoints are ever created
+    weight: edge
+    detail: >-
+      A Service without spec.selector is a legitimate pattern for backends
+      outside the cluster, but it obliges you to create and maintain the
+      EndpointSlice yourself. Omit the selector by accident — or forget the
+      manual slice — and the Service is permanently empty. Headless Services
+      without selectors behave the same: the control plane creates no slices.
+    discriminator: >-
+      kubectl get service <service> -o yaml shows no spec.selector field at all
+
+solution:
+  steps:
+    - id: list-endpointslices
+      instruction: >-
+        Ask the Service what it selected. This one command forks the whole
+        investigation: an empty ENDPOINTS column means selection is broken
+        (selector, namespace, readiness); a populated one means the ports or the
+        dataplane are.
+      command: "kubectl get endpointslices -l kubernetes.io/service-name=<service> -n <namespace>"
+      note: >-
+        kubectl get endpoints <service> shows the same information through the
+        deprecated Endpoints API, and is what older runbooks reach for.
+    - id: compare-selector-and-labels
+      instruction: >-
+        Put the Service's selector and the pods' labels side by side and compare
+        them key for key. Then re-run the pod listing using the selector itself —
+        if it returns nothing, the selector is the bug.
+      code: |
+        kubectl get service <service> -n <namespace> -o jsonpath='{.spec.selector}'
+        kubectl get pods -n <namespace> --show-labels
+        # now query with the Service's own selector:
+        kubectl get pods -n <namespace> -l '<key>=<value>'
+      language: bash
+      note: >-
+        Selectors are namespaced: repeat the label query with -A to catch pods
+        that exist, but in a different namespace than the Service.
+    - id: check-readiness
+      instruction: >-
+        Check the READY column for the selected pods. A pod at 0/1 is excluded
+        from the slices by design — fixing the Service cannot help; debug the
+        readiness failure instead.
+      command: "kubectl get pods -n <namespace> -l '<key>=<value>'"
+    - id: verify-target-port
+      instruction: >-
+        Confirm targetPort is the port the process actually binds. Bypass the
+        Service and hit a pod IP on the port the slice advertises — a refusal
+        from the pod itself means the port mapping is wrong, not the Service
+        machinery.
+      code: |
+        kubectl get service <service> -n <namespace> -o jsonpath='{.spec.ports}'
+        kubectl exec <pod> -n <namespace> -- ss -tlnp
+        # hit the pod directly on the advertised port:
+        kubectl run -it --rm probe --image=busybox:1.36 --restart=Never -- \
+          wget -qO- --timeout=2 http://<pod-ip>:<target-port>/
+      language: bash
+    - id: align-named-ports
+      instruction: >-
+        If targetPort is a string, give the pod a containerPort with exactly that
+        name. The lookup is by name in the pod's container ports, and there is no
+        error event when it finds nothing.
+      code: |
+        # Pod template
+        ports:
+          - name: http          # must match the Service's targetPort string
+            containerPort: 8080
+        ---
+        # Service
+        ports:
+          - port: 80
+            targetPort: http
+      language: yaml
+    - id: handle-selectorless
+      instruction: >-
+        If the Service is intentionally selector-less, the EndpointSlice is yours
+        to create and keep current; if the missing selector was an accident, add
+        it and the controller repopulates the slice on its own.
+    - id: retest-through-service
+      instruction: >-
+        Re-test through the Service itself from inside the cluster, using the
+        Service port rather than the pod port.
+      command: "kubectl run -it --rm probe --image=busybox:1.36 --restart=Never -- wget -qO- --timeout=2 http://<service>.<namespace>:<port>/"
+  verification: >-
+    kubectl get endpointslices -l kubernetes.io/service-name=<service> lists one
+    address per Ready pod with the intended port, and a request to
+    <service>.<namespace>:<port> from a pod in the cluster returns an application
+    response instead of a refusal or 503.
+  fallback: >-
+    If the slices are populated with ready endpoints, the pods answer on their
+    own IPs, and the Service still refuses connections, selection is not the
+    problem: continue down the Debug Services walkthrough into kube-proxy — is it
+    running on the node, do its iptables or IPVS rules exist for this Service —
+    and suspect a NetworkPolicy when connections time out rather than refuse.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.21 and later"
+      note: >-
+        EndpointSlices have been the endpoint API since 1.21; the deprecated
+        Endpoints API mirrors the same data on current clusters.
+    - name: kube-proxy
+      versions: "all supported releases"
+      note: "Routes regular Service traffic only to endpoints whose ready condition is true."
+  platforms:
+    - self-hosted
+    - managed Kubernetes
+
+notApplicableTo:
+  - >-
+    Pods that are Running but never Ready as the fault itself — the empty slice
+    is only the symptom there; debug the probe failure as
+    kubernetes-pod-running-not-ready
+  - >-
+    502 Bad Gateway from an nginx ingress in front of the Service, where
+    endpoints exist and the upstream connection itself fails — that is
+    http-502-bad-gateway-nginx
+  - >-
+    Traffic blocked by a NetworkPolicy, which leaves the EndpointSlices fully
+    populated and makes connections time out rather than be refused
+  - >-
+    type: ExternalName Services, which have no endpoints by design and resolve
+    to a CNAME at the DNS level
+  - >-
+    A broken kube-proxy or CNI dataplane, where the slices are correct but no
+    rules get programmed — the tail of the Debug Services walkthrough
+
+evidence:
+  - type: official-docs
+    title: "Debug Services"
+    url: https://kubernetes.io/docs/tasks/debug/debug-application/debug-service/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That kubectl get endpointslices filtered by the kubernetes.io/service-name
+      label is the diagnostic, that an empty ENDPOINTS column points at the
+      selector-versus-labels comparison, and that the targetPort and named-port
+      checks belong to the same walkthrough.
+    quote: "Is the targetPort correct for your Pods ... If the ENDPOINTS column is <none> , you should check that the spec.selector field of your Service actually selects for metadata.labels values on your Pods."
+  - type: official-docs
+    title: "Pod Lifecycle — Readiness probe"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That a failing readiness probe removes the pod's address from the
+      EndpointSlices of every Service selecting it, which is why not-Ready pods
+      leave a Service empty without any Service-side misconfiguration.
+    quote: "If the readiness probe returns a failed state, the EndpointSlice controller removes the Pod's IP address from the EndpointSlices of all Services that match the Pod."
+  - type: official-docs
+    title: "EndpointSlices — Conditions"
+    url: https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That the endpoint conditions map to the backing pod's Ready condition, so a
+      pod that is not Ready is visible in the API but not a target for Service
+      traffic.
+    quote: "The serving condition indicates that the endpoint is currently serving responses, and so it should be used as a target for Service traffic. For endpoints backed by a Pod, this maps to the Pod's Ready condition."
+  - type: official-docs
+    title: "Service — Headless Services"
+    url: https://kubernetes.io/docs/concepts/services-networking/service/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That headless Services get no cluster IP and no kube-proxy handling — DNS
+      returns pod addresses directly — and that a headless Service without a
+      selector gets no EndpointSlice objects created at all.
+    quote: "For headless Services, a cluster IP is not allocated, kube-proxy does not handle these Services ... For headless Services that do not define selectors, the control plane does not create EndpointSlice objects."
+  - type: specification
+    title: "Service API reference — ServiceSpec ports"
+    url: https://kubernetes.io/docs/reference/kubernetes-api/service-resources/service-v1/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-20"
+    supports: >-
+      That a string targetPort is resolved by name against the target pod's
+      container ports, and that an unspecified targetPort defaults to the port
+      value — the identity mapping that makes a mismatched containerPort fail
+      silently.
+    quote: "If this is a string, it will be looked up as a named port in the target Pod's container ports. If this is not specified, the value of the 'port' field is used (an identity map)."
+
+confidence: high
+confidenceRationale: >-
+  The endpointslices diagnostic, the selector-versus-labels check, the readiness
+  exclusion, the named-port lookup and the headless behaviour are all quoted from
+  Kubernetes' own debugging walkthrough, concept pages and API reference. Resting
+  on operational practice rather than a quotable sentence: that selectors are
+  scoped to the Service's own namespace, and the mapping from an empty slice to
+  the client-side symptom — refused at the cluster IP, 503 from a proxy in front.
+
+freshness:
+  created: "2026-08-20"
+  updated: "2026-08-20"
+  verifiedAt: "2026-08-20"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-crashloopbackoff
+  - kubernetes-imagepullbackoff
+  - kubernetes-pod-pending-insufficient-resources
+  - http-502-bad-gateway-nginx
