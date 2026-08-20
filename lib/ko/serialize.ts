@@ -15,6 +15,9 @@ export const SCHEMA_VERSION = "1.0";
  * context it would rather spend on the answer.
  */
 function nextSteps(ko: KnowledgeObject) {
+  const resolvableCauseIds = ko.rootCauses.flatMap((cause) =>
+    cause.id && cause.resolution ? [cause.id] : [],
+  );
   return {
     wrongEntry: {
       description:
@@ -33,6 +36,16 @@ function nextSteps(ko: KnowledgeObject) {
       method: "POST",
       body: { slug: ko.slug, observations: "<what the checks returned>" },
     },
+    completeResolution:
+      resolvableCauseIds.length > 0
+        ? {
+            description:
+              "When diagnosis returns an identifiedResolution, apply exactly that recipe, run its criteria, then complete it. Only status=resolved may be presented as resolved.",
+            endpoint: absoluteUrl("/outcome.json"),
+            method: "POST",
+            resolvableCauseIds,
+          }
+        : null,
     mcp: absoluteUrl("/mcp"),
   };
 }
@@ -153,7 +166,11 @@ export function toMarkdown(ko: KnowledgeObject, now: Date = new Date()): string 
     `\`{"slug":"${ko.slug}","observations":"<what they returned>"}\` to ${absoluteUrl("/diagnose.json")}.`,
     "It answers with the cause your observations identify and why the others are excluded.",
     "",
-    `The same three calls as MCP tools: ${absoluteUrl("/mcp")}`,
+    "When diagnosis returns an identifiedResolution, run that recipe and its verification criteria,",
+    `then POST the completion body it supplies to ${absoluteUrl("/outcome.json")}.`,
+    "Only a completion response with status=resolved may be presented as resolved; its receipt is agent-observed, not independently verified.",
+    "",
+    `The same workflow is available as MCP tools: ${absoluteUrl("/mcp")}`,
     "",
   );
 
@@ -237,7 +254,11 @@ export function toPlainText(ko: KnowledgeObject, now: Date = new Date()): string
     `  then POST {"slug":"${ko.slug}","observations":"<what they returned>"}`,
     `  to ${absoluteUrl("/diagnose.json")} — it names the cause and excludes the rest.`,
     "",
-    `  same calls as MCP tools: ${absoluteUrl("/mcp")}`,
+    "  when diagnosis returns identifiedResolution, run its steps and criteria, then",
+    `  complete the supplied body at ${absoluteUrl("/outcome.json")}. Only status=resolved`,
+    "  may be presented as resolved; the receipt records agent-observed checks.",
+    "",
+    `  same workflow as MCP tools: ${absoluteUrl("/mcp")}`,
     "",
   );
 

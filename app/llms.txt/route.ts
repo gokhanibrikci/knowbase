@@ -1,4 +1,5 @@
 import { getAllKnowledgeObjects, freshnessOf } from "@/lib/ko/store";
+import { MCP_PROTOCOL, TOOLS } from "@/lib/mcp/contract";
 import { absoluteUrl, site } from "@/lib/site";
 
 /**
@@ -10,6 +11,9 @@ export const dynamic = "force-static";
 export function GET() {
   const objects = getAllKnowledgeObjects();
   const domains = [...new Set(objects.map((ko) => ko.domain))].sort();
+  const workflowTools = TOOLS.filter(
+    (tool) => !("deprecated" in tool && tool.deprecated),
+  );
 
   const lines: string[] = [];
 
@@ -37,20 +41,26 @@ export function GET() {
     "apart. Once you have run those checks, post what they returned:",
     `${absoluteUrl("/diagnose.json")}  {lookupId, slug, observations}`,
     "",
-    "You get back the one cause your observations identify and the ruled-out causes",
-    "with the check that rules each out — which the lookup alone cannot tell you.",
-    "Optionally report whether the fix held:",
-    `${absoluteUrl("/outcome.json")}  {lookupId, slug, worked}`,
+    "You get back the one cause your observations identify, the ruled-out causes, and",
+    "when available a structured resolution with koRevision, causeId, resolutionId,",
+    "step ids and verification criteria. Apply every listed step, run every criterion,",
+    "then complete the resolution:",
+    `${absoluteUrl("/outcome.json")}  {lookupId, slug, koRevision, causeId, resolutionId, appliedStepIds, criteria:[{id,status,observation?,exitCode?}]}`,
     "",
-    "Neither report can change what an entry claims. Confidence here is gated on",
-    "evidence, never on use, so these only decide what gets re-checked and written next.",
+    "Only status=resolved closes the task. Otherwise follow nextAction and complete again.",
+    "A receipt is caller-held and agent_observed: knowbase validates the current recipe and required statuses",
+    "but does not inspect the environment or authenticate the lookup id. The legacy",
+    "{slug, worked, note?, lookupId?} body",
+    "remains accepted for compatibility, records only a claim, and cannot issue a receipt.",
     "",
-    "The same three calls are available as an MCP server over Streamable HTTP:",
+    `The same ${workflowTools.length} workflow actions are exposed under ${TOOLS.length} MCP tool names over Streamable HTTP:`,
     `${absoluteUrl("/mcp")}`,
     "",
-    "Tools: knowbase_lookup, knowbase_diagnose, knowbase_report_outcome. No auth.",
-    "Both protocol eras are supported — per-request metadata (2026-07-28) and the",
-    "older initialize handshake.",
+    `Tools: ${TOOLS.map((tool) => tool.name).join(", ")}.`,
+    "knowbase_report_outcome is the deprecated compatibility alias; new integrations",
+    "must use knowbase_complete_resolution to obtain a resolved receipt. No auth.",
+    `Both protocol eras are supported — per-request metadata (${MCP_PROTOCOL.modernVersion}) and the`,
+    `older initialize handshake (${MCP_PROTOCOL.legacyVersions.join(", ")}).`,
     "",
     "License: CC-BY-4.0. Attribution is the canonical URL of the entry.",
     "",
@@ -71,7 +81,7 @@ export function GET() {
   lines.push(
     `- [Full corpus as Markdown](${absoluteUrl("/llms-full.txt")}): every entry concatenated, for a single fetch`,
     `- [Lookup by error](${absoluteUrl("/search.json?q=deadlock+detected")}): match a pasted error against the corpus, JSON`,
-    `- [For agents](${absoluteUrl("/agents")}): the three endpoints, with worked examples`,
+    `- [For agents](${absoluteUrl("/agents")}): the three workflow endpoints, with worked examples`,
     `- [Method](${absoluteUrl("/about")}): how entries are produced, sourced, and rated`,
     "",
   );

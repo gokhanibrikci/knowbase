@@ -22,7 +22,6 @@ error:
   aliases:
     - "SQLSTATE HY000 1205"
     - "lock wait timeout exceeded mysql"
-    - "Deadlock found when trying to get lock"
     - "innodb_lock_wait_timeout"
 
 problem: >-

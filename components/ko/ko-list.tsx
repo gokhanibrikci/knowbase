@@ -17,7 +17,7 @@ export function KoList({ objects }: { objects: KnowledgeObject[] }) {
             <Link href={`/k/${ko.slug}`} className="block">
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                 <h3 className="text-ink-bright group-hover:text-accent">{ko.title}</h3>
-                <Tag tone={CONFIDENCE_TONE[ko.confidence]}>{ko.confidence}</Tag>
+                <Tag tone={CONFIDENCE_TONE[ko.confidence]}>evidence: {ko.confidence}</Tag>
                 {fresh.status !== "fresh" ? <Tag tone="warn">{fresh.status}</Tag> : null}
               </div>
               <p className="mt-1 text-sm text-ink-dim">{ko.summary}</p>

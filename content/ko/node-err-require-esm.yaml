@@ -23,7 +23,6 @@ error:
     - "require() of ES modules is not supported"
     - "Must use import to load ES Module"
     - "ERR_REQUIRE_ASYNC_MODULE"
-    - "Cannot use import statement outside a module"
 
 problem: >-
   A dependency that worked before now throws on require(), usually after upgrading it to

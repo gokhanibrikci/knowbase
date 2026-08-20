@@ -33,7 +33,8 @@ problem: >-
   becomes a container, so the usual log-reading reflex gives you nothing to work with.
 
 rootCauses:
-  - cause: The image reference is wrong or the tag does not exist
+  - id: wrong-reference
+    cause: The image reference is wrong or the tag does not exist
     weight: primary
     detail: >-
       A typo in the repository, a tag that was never pushed, or a tag that has since
@@ -42,14 +43,39 @@ rootCauses:
     discriminator: >-
       Events show 'manifest unknown' or 'not found', and pulling the exact same
       reference from your own machine fails identically
-  - cause: The registry is private and credentials are missing or wrong
+  - id: private-registry-credentials
+    cause: The registry is private and credentials are missing or wrong
     weight: common
     detail: >-
       No imagePullSecrets on the pod or its ServiceAccount, a secret in the wrong
       namespace, or credentials that have expired. Image pull secrets are namespaced,
       so one that works in staging does nothing in production.
     discriminator: "Events show '401 Unauthorized', 'pull access denied' or 'authentication required'"
-  - cause: The registry rate-limited the pull
+    resolution:
+      id: configure-image-pull-secret-v1
+      stepIds:
+        - inspect-events
+        - create-pull-secret
+        - attach-pull-secret
+        - restart-workload
+      verificationCriteria:
+        - id: image-pulled
+          check: Inspect the pod Events after the workload has been restarted
+          expected: A Successfully pulled image event is present for the target image
+          required: true
+          command: "kubectl describe pod <pod-name> -n <namespace>"
+        - id: pod-running
+          check: Read the current pod phase after the replacement pod is created
+          expected: The target pod reports phase Running
+          required: true
+          command: "kubectl get pod <pod-name> -n <namespace>"
+        - id: restarts-stable
+          check: Observe the pod restart count across a representative stability window
+          expected: The RESTARTS count does not increase during the observation window
+          required: true
+          command: "kubectl get pod <pod-name> -n <namespace> --watch"
+  - id: registry-rate-limit
+    cause: The registry rate-limited the pull
     weight: common
     detail: >-
       Docker Hub limits unauthenticated pulls to 100 per IPv4 address or IPv6 /64
@@ -57,14 +83,16 @@ rootCauses:
       every node, so a busy cluster exhausts it without any single workload looking
       unusual.
     discriminator: "Events contain 'toomanyrequests' or 'You have reached your pull rate limit'"
-  - cause: The node cannot reach the registry
+  - id: registry-unreachable
+    cause: The node cannot reach the registry
     weight: common
     detail: >-
       DNS failure, an egress firewall, a proxy that needs configuring on the container
       runtime rather than the pod, or a private registry with no route from the node
       subnet.
     discriminator: "Events show 'dial tcp ... i/o timeout', 'no such host' or a TLS handshake failure"
-  - cause: The image has no build for the node's architecture
+  - id: architecture-mismatch
+    cause: The image has no build for the node's architecture
     weight: edge
     detail: >-
       An amd64-only image scheduled onto an arm64 node. The reference resolves and
@@ -73,18 +101,21 @@ rootCauses:
 
 solution:
   steps:
-    - instruction: >-
+    - id: inspect-events
+      instruction: >-
         Read the Events at the bottom of the pod description. The registry's own error
         text is there, and it names the cause; the pod status never does.
       command: "kubectl describe pod <pod-name> -n <namespace>"
       note: >-
         Look for the Failed event from the kubelet — it quotes the runtime's message
         verbatim.
-    - instruction: >-
+    - id: reproduce-pull
+      instruction: >-
         Reproduce the pull from outside the cluster with the exact same reference. This
         separates a wrong reference from a cluster-side problem in one step.
       command: "crane manifest <registry>/<repo>:<tag> || docker pull <registry>/<repo>:<tag>"
-    - instruction: >-
+    - id: create-pull-secret
+      instruction: >-
         If the registry is private, create a pull secret and attach it to the pod in the
         same namespace as the pod.
       code: |
@@ -97,7 +128,8 @@ solution:
       note: >-
         Then reference it under spec.imagePullSecrets, or attach it to the
         ServiceAccount so every pod in the namespace inherits it.
-    - instruction: >-
+    - id: attach-pull-secret
+      instruction: >-
         Wire the secret into the pod spec, or the kubelet will keep pulling anonymously.
       code: |
         spec:
@@ -107,12 +139,14 @@ solution:
             - name: app
               image: <registry>/<repo>:<tag>
       language: yaml
-    - instruction: >-
+    - id: handle-rate-limit
+      instruction: >-
         If the message mentions rate limiting, authenticate rather than retry.
         Unauthenticated pulls share a per-IP budget across the whole cluster, so
         retrying makes it worse. Mirroring hot images into your own registry removes
         the dependency entirely.
-    - instruction: >-
+    - id: restart-workload
+      instruction: >-
         Fix the reference or the credentials, then replace the pod. Editing nothing and
         waiting does not help — the kubelet retries with the same failing spec, backing
         off up to five minutes between attempts.

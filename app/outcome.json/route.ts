@@ -1,10 +1,9 @@
+import { completeResolution } from "@/lib/ko/complete-resolution";
 import { SCHEMA_VERSION } from "@/lib/ko/serialize";
-import { getKnowledgeObject } from "@/lib/ko/store";
-import { logReport } from "@/lib/query-log";
 import { absoluteUrl, site } from "@/lib/site";
 
 /**
- * Whether the fix held.
+ * Close a resolution, or accept the legacy worked:boolean claim.
  *
  * Kept as small as it is on purpose. The signal is weak and we know why: there is no
  * attribution (the agent may have solved it from its own weights and called anyway),
@@ -16,11 +15,11 @@ import { absoluteUrl, site } from "@/lib/site";
  * does earn is a place in the re-check queue: an entry collecting "did not work"
  * against a specific version is worth a human reading its sources again.
  *
- * The schema is the part of the design most likely to be wrong, which is why it is
- * three fields. It will be rewritten once there is data to shape it.
+ * Structured completion is the value exchange: the caller gets either a deterministic
+ * agent-observed receipt and ready-to-use final report, or the failed/missing check
+ * and the next action. Legacy worked:boolean remains accepted, but never becomes a
+ * resolved receipt.
  */
-
-const MAX_NOTE = 2000;
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -37,14 +36,24 @@ function usage(status: number, error?: string) {
       usage: {
         endpoint: absoluteUrl("/outcome.json"),
         method: "POST",
-        body: {
-          lookupId: "optional. The id from the /search.json response.",
-          slug: "required. The entry you applied.",
-          worked: "required. Boolean.",
-          note: "optional. What differed — a version, a platform, a step that did not apply.",
+        completeResolution: {
+          lookupId: "required. The 16-character id from a strong lookup.",
+          slug: "required. The entry diagnosed.",
+          koRevision: "required. The entry updatedAt returned by diagnosis.",
+          causeId: "required. The identified root cause id.",
+          resolutionId: "required. The cause-specific recipe id.",
+          appliedStepIds: "required. Every step id in that recipe.",
+          criteria:
+            "required array of {id,status:met|not_met|unknown|not_run,observation?,exitCode?}; met/not_met needs observation or exitCode.",
         },
-        effect:
-          "Ranks this entry for re-verification. It cannot raise or lower the entry's stated confidence, which is gated on evidence.",
+        legacyCompatibility: {
+          slug: "required. The entry you applied.",
+          worked: "required boolean. Records a claim; never returns a resolved receipt.",
+          lookupId: "optional.",
+          note: "optional.",
+        },
+        trustBoundary:
+          "A receipt is agent_observed. Knowbase validates the current recipe and required statuses but does not inspect the environment or authenticate the lookup id.",
       },
       license: "CC-BY-4.0",
       source: site.url,
@@ -61,37 +70,16 @@ export async function POST(request: Request) {
     return usage(400, "body must be JSON");
   }
 
-  const { lookupId, slug, worked, note } = (body ?? {}) as Record<string, unknown>;
-
-  if (typeof slug !== "string" || !slug) return usage(400, "missing required field: slug");
-  if (typeof worked !== "boolean") return usage(400, "field 'worked' must be a boolean");
-
-  const ko = getKnowledgeObject(slug);
-  if (!ko) return usage(404, `no entry with id: ${slug}`);
-
-  logReport(
-    {
-      kind: "outcome",
-      lookupId: typeof lookupId === "string" ? lookupId.slice(0, 32) : "",
-      slug: ko.slug,
-      worked,
-      note: typeof note === "string" ? note.slice(0, MAX_NOTE) : "",
-    },
-    request.headers.get("user-agent") ?? "",
-  );
+  const result = completeResolution(body, request.headers.get("user-agent") ?? "");
 
   return Response.json(
     {
       schemaVersion: SCHEMA_VERSION,
-      recorded: true,
-      id: ko.slug,
-      effect: worked
-        ? "Recorded. This does not raise the entry's confidence — that is gated on evidence, not on use."
-        : "Recorded, and queued for re-verification against its sources.",
+      ...result.body,
       license: "CC-BY-4.0",
       source: site.url,
     },
-    { headers: CORS },
+    { status: result.httpStatus, headers: CORS },
   );
 }
 

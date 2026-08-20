@@ -36,8 +36,20 @@ jobs:
 
       - run: npm ci
 
+      - name: Generate the runtime corpus and discovery documents
+        run: npm run content
+
       - name: Schema, evidence rules and depth floors
         run: npm run validate
+
+      - name: Retrieval must distinguish answers from near misses
+        run: npm run eval:retrieval
+
+      - name: Agent surfaces and MCP wire stay aligned
+        run: npm run eval:agent-contract
+
+      - name: Resolution completion returns value without overstating trust
+        run: npm run eval:resolution-contract
 
       - name: Every cited source still resolves
         run: npm run verify:links

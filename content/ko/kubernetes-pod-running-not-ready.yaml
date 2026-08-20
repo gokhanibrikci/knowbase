@@ -1,0 +1,261 @@
+slug: kubernetes-pod-running-not-ready
+title: "Kubernetes pod Running but 0/1 Ready: readiness probe failing"
+summary: >-
+  The container is up but its readiness probe fails, so the pod is cut out of every
+  Service that selects it — and, unlike a liveness failure, nothing is restarted.
+  The probe's own error text in the pod Events says whether the probe is wrong or
+  the app genuinely is not ready.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - readiness-probe
+  - probes
+  - endpoints
+  - rollout
+  - troubleshooting
+
+error:
+  signature: "Readiness probe failed"
+  codes:
+    - Unhealthy
+    - Ready=False
+    - ContainersReady=False
+  aliases:
+    - "pod running but not ready"
+    - "0/1 Running kubernetes"
+    - "Readiness probe failed: HTTP probe failed with statuscode: 404"
+    - "Readiness probe failed: dial tcp connect: connection refused"
+    - "kubernetes readiness probe failing no restart"
+
+problem: >-
+  kubectl get pods shows Running with READY 0/1 and zero restarts, and it stays that
+  way. Requests through the Service skip the pod entirely, a rolling update hangs at
+  "1 old replicas are pending termination", and nothing crashes — so there is no
+  restart loop to read and kubectl logs often looks perfectly healthy. The failure
+  lives in the readiness probe's verdict, which only surfaces in the pod's Events
+  and conditions, not in the application log.
+
+rootCauses:
+  - cause: The probe checks the wrong port, path, or scheme
+    weight: primary
+    detail: >-
+      The readinessProbe was copied from another service or drifted from the app: it
+      points at a port the container never listens on, a path the server answers
+      with 404, or plain HTTP against a TLS-only port. The app is fine; the probe
+      can never succeed.
+    discriminator: >-
+      Events repeat the same error forever — 'HTTP probe failed with statuscode:
+      404' or 'connection refused' — and requesting the probe's exact port and path
+      by hand inside the pod fails identically while the app's real endpoint works
+  - cause: The app starts slower than the probe allows
+    weight: common
+    detail: >-
+      initialDelaySeconds plus periodSeconds times failureThreshold is shorter than
+      the app's real warm-up — JVM start, cache load, migrations. The pod eventually
+      becomes Ready on quiet nodes and stays unready on slow ones, which reads as
+      flakiness.
+    discriminator: >-
+      The same manifest sometimes reaches 1/1 after a delay, and running the probe's
+      check by hand succeeds once the app has been up long enough
+  - cause: The readiness check tests a shared dependency
+    weight: common
+    detail: >-
+      The health endpoint pings the database or a downstream API. When that
+      dependency degrades, every replica fails readiness at once, all pod IPs leave
+      the EndpointSlices together, and a partial outage becomes a total one.
+    discriminator: >-
+      All replicas flip to 0/1 at the same moment, and the timing matches an
+      incident on the dependency the health endpoint checks
+  - cause: The app listens on localhost instead of the pod IP
+    weight: common
+    detail: >-
+      The kubelet connects to the pod's IP address, not to 127.0.0.1. A server bound
+      to loopback answers a curl from inside the container but refuses the probe's
+      connection from outside it.
+    discriminator: >-
+      Inside the container, curl to 127.0.0.1:<port> succeeds while curl to the pod
+      IP on the same port is refused; ss -ltn shows the listener bound to 127.0.0.1
+  - cause: A readinessGate condition was never set to True
+    weight: edge
+    detail: >-
+      The pod spec declares readinessGates — commonly injected by load-balancer
+      controllers — and the controller that should PATCH the condition into
+      status.conditions is missing, broken, or lacks RBAC. Every container is ready
+      but the pod as a whole never is, and no probe event explains it.
+    discriminator: >-
+      kubectl describe shows Ready False with ContainersReady True, and the
+      Readiness Gates section lists a condition that is False or absent
+
+solution:
+  steps:
+    - instruction: >-
+        Read the Unhealthy events on the pod. The kubelet quotes the probe's own
+        failure — status code, connection refused, timeout — and that string
+        separates a wrong probe from a slow or broken app.
+      command: "kubectl describe pod <pod-name> -n <namespace>"
+      note: >-
+        No Unhealthy events at all while READY stays 0/1 points away from probes —
+        check the conditions in the next step for a readiness gate.
+    - instruction: >-
+        Compare the pod's conditions. ContainersReady False means a container's
+        readiness probe is failing; ContainersReady True with Ready False means a
+        readinessGate is the blocker and no probe change will help.
+      command: >-
+        kubectl get pod <pod-name> -n <namespace> -o
+        jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
+    - instruction: >-
+        Run the probe's exact check by hand, both against loopback and against the
+        pod IP. Success on 127.0.0.1 with refusal on the pod IP means the server is
+        bound to loopback; a 404 on both means the path is wrong; success on both
+        means the timing, not the check, is at fault.
+      code: |
+        POD_IP=$(kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.status.podIP}')
+        kubectl exec <pod-name> -n <namespace> -- \
+          sh -c "wget -qO- http://127.0.0.1:<port><path> && echo OK-loopback"
+        kubectl run probe-check --rm -it --image=curlimages/curl --restart=Never -n <namespace> -- \
+          curl -sS -o /dev/null -w '%{http_code}\n' "http://$POD_IP:<port><path>"
+      language: bash
+    - instruction: >-
+        Fix the probe to describe the app it actually fronts — the real containerPort,
+        a path the server serves, and a budget that covers the slowest observed
+        startup. Prefer failureThreshold headroom over a long initialDelaySeconds,
+        which delays every pod including fast ones.
+      code: |
+        readinessProbe:
+          httpGet:
+            path: /healthz        # must return 2xx-3xx from the app itself
+            port: 8080            # a port the container really listens on, on the pod IP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 6     # tolerates ~30s of warm-up after the delay
+      language: yaml
+      note: >-
+        For genuinely slow starters, move the wait into a startupProbe so readiness
+        keeps a tight period for the steady state.
+    - instruction: >-
+        Take shared dependencies out of the readiness check unless you want the whole
+        fleet unrouted when that dependency blips. Readiness failure removes the pod
+        from every matching Service's EndpointSlices, so a health endpoint that pings
+        the database converts a database incident into zero endpoints anywhere.
+    - instruction: >-
+        If the blocker is a readinessGate, fix the controller that owns the
+        condition rather than the pod — it must PATCH the condition into the pod's
+        status. Confirm what the gate is waiting for, then check that controller's
+        logs and RBAC.
+      command: "kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.readinessGates}{\"\\n\"}{.status.conditions}'"
+    - instruction: >-
+        Unblock the rollout. A deployment does not proceed past unready pods; it
+        stalls until progressDeadlineSeconds (default 600) and then only reports
+        ProgressDeadlineExceeded — Kubernetes never rolls back on its own. After
+        fixing the probe or the app, restart the rollout and watch it complete.
+      command: "kubectl rollout restart deployment/<name> -n <namespace> && kubectl rollout status deployment/<name> -n <namespace>"
+  verification: >-
+    kubectl get pods shows 1/1 Ready with RESTARTS unchanged, kubectl get
+    endpointslices -l kubernetes.io/service-name=<service> lists the pod IP with
+    ready true, and kubectl rollout status reports the deployment successfully
+    rolled out.
+  fallback: >-
+    If the app cannot expose a meaningful readiness endpoint, probe the cheapest
+    truthful signal instead — a tcpSocket check on the serving port — rather than
+    deleting the probe: with no readinessProbe the pod counts Ready the moment the
+    container starts, and a rolling update will happily shift traffic onto replicas
+    that cannot serve yet.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.14 and later"
+      note: >-
+        Pod readiness gates are stable since 1.14; current docs describe endpoint
+        removal via the EndpointSlice controller.
+    - name: kubelet
+      versions: "1.14 and later"
+      note: >-
+        Runs readiness probes for the container's whole lifecycle; a failed result
+        marks the pod unready but never restarts anything.
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - >-
+    Liveness probe failures, which restart the container and show a climbing
+    RESTARTS count — that is kubernetes-crashloopbackoff territory, not this
+  - >-
+    A Service with zero endpoints because its selector matches no pods
+    (kubernetes-service-no-endpoints) — there the pods can be 1/1 Ready and traffic
+    still goes nowhere
+  - >-
+    Startup probe failures, which kill the container and hand it to the restart
+    policy rather than leaving it Running and unready
+  - >-
+    Pods stuck in Pending, which were never scheduled and have no probes running at
+    all
+  - >-
+    Endpoints marked not-ready during pod termination, which is the normal drain
+    path and not a probe failure
+
+evidence:
+  - type: official-docs
+    title: "Liveness, Readiness, and Startup Probes"
+    url: https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That a failed readiness probe removes the pod's IP from the EndpointSlices of
+      every Service selecting it — traffic removal, not a restart — which is the
+      core semantic this entry rests on and the reason a dependency-checking
+      readiness endpoint can unroute a whole fleet.
+    quote: "If the readiness probe returns a failed state, the EndpointSlice controller removes the Pod's IP address from the EndpointSlices of all Services that match the Pod."
+  - type: official-docs
+    title: "Configure Liveness, Readiness and Startup Probes"
+    url: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      The liveness/readiness contrast in one place: a failed liveness probe restarts
+      the container, a failed readiness probe only marks the pod unready and stops
+      Service traffic to it.
+    quote: "If the liveness probe fails, the container will be restarted. ... If the readiness probe fails, the pod will be marked unready and will not receive traffic from any services."
+  - type: official-docs
+    title: "Pod Lifecycle — Pod readiness"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That readinessGates add extra conditions the kubelet folds into pod readiness,
+      so a pod whose containers are all ready can still be Ready False — the
+      root cause with no probe events.
+    quote: "set readinessGates in the Pod's spec to specify a list of additional conditions that the kubelet evaluates for Pod readiness."
+  - type: official-docs
+    title: "Deployments — Failed Deployment"
+    url: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That a rollout whose new pods never become ready stalls rather than fails
+      fast, and that progressDeadlineSeconds only controls when the stall is
+      reported in status.
+    quote: ".spec.progressDeadlineSeconds denotes the number of seconds the Deployment controller waits before indicating (in the Deployment status) that the Deployment progress has stalled."
+
+confidence: high
+confidenceRationale: >-
+  The endpoint-removal semantics, the restart-vs-unrouted contrast, the
+  readinessGates mechanism and the rollout-stall behaviour are all quoted from
+  current Kubernetes documentation. The individual misconfiguration causes — wrong
+  port or path, loopback binding, dependency-checking health endpoints — and their
+  discriminators are operational practice built on those documented mechanics rather
+  than claims any single page makes, as is the advice to prefer failureThreshold
+  headroom over a long initialDelaySeconds.
+
+freshness:
+  created: "2026-08-11"
+  updated: "2026-08-11"
+  verifiedAt: "2026-08-11"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-crashloopbackoff
+  - kubernetes-pod-pending-insufficient-resources
+  - http-502-bad-gateway-nginx

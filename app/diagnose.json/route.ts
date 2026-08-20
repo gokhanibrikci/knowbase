@@ -1,6 +1,7 @@
 import { diagnose } from "@/lib/ko/diagnose";
 import { SCHEMA_VERSION } from "@/lib/ko/serialize";
 import { getKnowledgeObject } from "@/lib/ko/store";
+import { AGENT_INPUT_LIMITS } from "@/lib/mcp/contract";
 import { logReport } from "@/lib/query-log";
 import { absoluteUrl, site } from "@/lib/site";
 
@@ -16,8 +17,6 @@ import { absoluteUrl, site } from "@/lib/site";
  * by-product, not the pitch. A loop that asks agents to file reports for our benefit
  * would not get called twice.
  */
-
-const MAX_OBSERVATIONS = 4000;
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -41,7 +40,7 @@ function usage(status: number, error?: string) {
             "required. What the discriminators returned — log lines, event text, command output.",
         },
         returns:
-          "The cause your observations identify, how far clear it is, and the ruled-out causes with the checks that rule them out.",
+          "The cause your observations identify, its cause-specific resolution recipe when available, and the completion call that returns a receipt or next action.",
       },
       license: "CC-BY-4.0",
       source: site.url,
@@ -68,13 +67,17 @@ export async function POST(request: Request) {
   const ko = getKnowledgeObject(slug);
   if (!ko) return usage(404, `no entry with id: ${slug}`);
 
-  const text = observations.slice(0, MAX_OBSERVATIONS);
+  const text = observations.slice(0, AGENT_INPUT_LIMITS.observationsCharacters);
   const result = diagnose(ko, text);
+  const linkedLookupId =
+    typeof lookupId === "string"
+      ? lookupId.slice(0, AGENT_INPUT_LIMITS.lookupIdCharacters)
+      : "";
 
   logReport(
     {
       kind: "diagnosis",
-      lookupId: typeof lookupId === "string" ? lookupId.slice(0, 32) : "",
+      lookupId: linkedLookupId,
       slug: ko.slug,
       cause: result.identified?.cause.cause ?? "",
       lead: result.identified ? result.identified.score - (result.ranked[1]?.score ?? 0) : 0,
@@ -84,14 +87,23 @@ export async function POST(request: Request) {
   );
 
   const [top, ...rest] = result.ranked;
+  const identifiedCause = result.identified?.cause ?? null;
+  const resolution = identifiedCause?.resolution ?? null;
+  const stepsById = new Map(ko.solution.steps.map((step) => [step.id, step]));
+  const resolutionSteps = resolution
+    ? resolution.stepIds.map((id) => stepsById.get(id)).filter((step) => Boolean(step))
+    : [];
 
   return Response.json(
     {
       schemaVersion: SCHEMA_VERSION,
       id: ko.slug,
       url: absoluteUrl(`/k/${ko.slug}`),
+      lookupId: linkedLookupId || null,
+      koRevision: ko.freshness.updated,
       identified: result.identified
         ? {
+            causeId: result.identified.cause.id ?? null,
             cause: result.identified.cause.cause,
             weight: result.identified.cause.weight,
             detail: result.identified.cause.detail ?? null,
@@ -107,6 +119,7 @@ export async function POST(request: Request) {
       // Returned even when a cause is identified: naming what was excluded, and the
       // check that excludes it, is what makes the answer auditable rather than a guess.
       ruledOut: rest.map((r) => ({
+        causeId: r.cause.id ?? null,
         cause: r.cause.cause,
         weight: r.cause.weight,
         discriminator: r.cause.discriminator,
@@ -117,13 +130,49 @@ export async function POST(request: Request) {
         verification: ko.solution.verification,
         fallback: ko.solution.fallback ?? null,
       },
+      identifiedResolution:
+        resolution && identifiedCause?.id
+          ? {
+              causeId: identifiedCause.id,
+              resolutionId: resolution.id,
+              steps: resolutionSteps,
+              verificationCriteria: resolution.verificationCriteria,
+              fallback: resolution.fallback ?? null,
+            }
+          : null,
       notApplicableTo: ko.notApplicableTo,
       unrecognisedTerms: result.unmatchedTerms,
-      reportOutcome: {
+      completeResolution:
+        resolution && identifiedCause?.id
+          ? {
+              endpoint: absoluteUrl("/outcome.json"),
+              method: "POST",
+              body: {
+                lookupId: linkedLookupId || "<from the strong lookup>",
+                slug: ko.slug,
+                koRevision: ko.freshness.updated,
+                causeId: identifiedCause.id,
+                resolutionId: resolution.id,
+                appliedStepIds: resolution.stepIds,
+                criteria: resolution.verificationCriteria.map((criterion) => ({
+                  id: criterion.id,
+                  status: "<met|not_met|unknown|not_run>",
+                  observation: "<what the check showed>",
+                })),
+              },
+              returns:
+                "Resolved returns an agent-observed receipt and final incident report. Otherwise it returns the failed or missing criterion and the next action. Do not claim resolved unless status is resolved.",
+            }
+          : null,
+      legacyReportOutcome: {
         endpoint: absoluteUrl("/outcome.json"),
         method: "POST",
-        body: { lookupId: lookupId ?? "<from the lookup>", slug: ko.slug, worked: "<true|false>" },
-        note: "Optional. It ranks re-verification; it cannot change what this entry claims.",
+        body: {
+          lookupId: linkedLookupId || "<from the lookup>",
+          slug: ko.slug,
+          worked: "<true|false>",
+        },
+        note: "Compatibility only. This records a claim and cannot return a resolved receipt.",
       },
       license: "CC-BY-4.0",
       source: site.url,

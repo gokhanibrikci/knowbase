@@ -21,7 +21,6 @@ error:
   aliases:
     - "relation does not exist postgres"
     - "undefined_table"
-    - "column does not exist"
     - "SQLSTATE 42P01"
 
 problem: >-

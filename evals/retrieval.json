@@ -1,0 +1,268 @@
+[
+  {
+    "name": "exact Kubernetes CrashLoopBackOff",
+    "query": "CrashLoopBackOff",
+    "expectedVerdict": "strong",
+    "expectedTop": "kubernetes-crashloopbackoff"
+  },
+  {
+    "name": "exact Kubernetes ImagePullBackOff",
+    "query": "Back-off pulling image ImagePullBackOff",
+    "expectedVerdict": "strong",
+    "expectedTop": "kubernetes-imagepullbackoff"
+  },
+  {
+    "name": "exact PostgreSQL too many clients",
+    "query": "FATAL: sorry, too many clients already",
+    "expectedVerdict": "strong",
+    "expectedTop": "postgres-53300-too-many-connections"
+  },
+  {
+    "name": "exact Node ERR_REQUIRE_ESM",
+    "query": "Error [ERR_REQUIRE_ESM]: require() of ES Module not supported",
+    "expectedVerdict": "strong",
+    "expectedTop": "node-err-require-esm"
+  },
+  {
+    "name": "exact React hydration failure",
+    "query": "Hydration failed because the server rendered HTML didn't match the client",
+    "expectedVerdict": "strong",
+    "expectedTop": "nextjs-react-hydration-mismatch"
+  },
+  {
+    "name": "exact CORS missing header",
+    "query": "No 'Access-Control-Allow-Origin' header is present on the requested resource",
+    "expectedVerdict": "strong",
+    "expectedTop": "cors-no-access-control-allow-origin"
+  },
+  {
+    "name": "exact React signature survives noisy stack",
+    "query": "Hydration failed because the server rendered HTML didn't match the client acmeorders checkoutwidget rendercycle tenantpayload bundleloader requestscope sessionbridge",
+    "expectedVerdict": "strong",
+    "expectedTop": "nextjs-react-hydration-mismatch"
+  },
+  {
+    "name": "exact CORS signature survives noisy stack",
+    "query": "No Access-Control-Allow-Origin header is present on the requested resource acmeorders checkoutwidget tenantpayload bundleloader requestscope sessionbridge orderhandler profileloader cacheadapter traceframe",
+    "expectedVerdict": "strong",
+    "expectedTop": "cors-no-access-control-allow-origin"
+  },
+  {
+    "name": "exact PostgreSQL deadlock",
+    "query": "ERROR: deadlock detected SQLSTATE 40P01",
+    "expectedVerdict": "strong",
+    "expectedTop": "postgres-40p01-deadlock-detected"
+  },
+  {
+    "name": "exact Docker disk exhaustion",
+    "query": "write /var/lib/docker: no space left on device",
+    "expectedVerdict": "strong",
+    "expectedTop": "docker-no-space-left-on-device"
+  },
+  {
+    "name": "exact Docker daemon socket permission",
+    "query": "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",
+    "expectedVerdict": "strong",
+    "expectedTop": "docker-permission-denied-daemon-socket"
+  },
+  {
+    "name": "exact Stripe rate limit",
+    "query": "Stripe API 429 Too Many Requests Stripe-Rate-Limited-Reason endpoint-rate",
+    "expectedVerdict": "strong",
+    "expectedTop": "stripe-429-rate-limit"
+  },
+  {
+    "name": "Docker daemon down is not the permission entry",
+    "query": "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+    "expectedVerdict": "partial",
+    "expectedTop": "docker-permission-denied-daemon-socket"
+  },
+  {
+    "name": "MySQL 1213 is not MySQL 1205",
+    "query": "MySQL error 1213 deadlock found when trying to get lock",
+    "expectedVerdict": "partial"
+  },
+  {
+    "name": "PostgreSQL serialization failure is not deadlock",
+    "query": "PostgreSQL SQLSTATE 40001 serialization_failure",
+    "expectedVerdict": "partial",
+    "expectedTop": "postgres-40p01-deadlock-detected"
+  },
+  {
+    "name": "Terraform state lock must abstain",
+    "query": "terraform state lock could not be acquired",
+    "expectedVerdict": "none"
+  },
+  {
+    "name": "MongoDB context caps shared connection error",
+    "query": "mongodb too many connections",
+    "expectedVerdict": "partial",
+    "expectedTop": "postgres-53300-too-many-connections"
+  },
+  {
+    "name": "Redis context caps shared connection error",
+    "query": "redis too many connections",
+    "expectedVerdict": "partial",
+    "expectedTop": "postgres-53300-too-many-connections"
+  },
+  {
+    "name": "Terraform context caps shared lock timeout",
+    "query": "terraform lock wait timeout",
+    "expectedVerdict": "partial",
+    "expectedTop": "mysql-1205-lock-wait-timeout"
+  },
+  {
+    "name": "Oracle context caps shared missing relation",
+    "query": "oracle relation does not exist",
+    "expectedVerdict": "partial",
+    "expectedTop": "postgres-42p01-relation-does-not-exist"
+  },
+  {
+    "name": "npm EADDRINUSE must abstain",
+    "query": "npm EADDRINUSE port already in use",
+    "expectedVerdict": "none",
+    "forbiddenTop": ["npm-eresolve-peer-dependency"]
+  },
+  {
+    "name": "Node ECONNRESET must abstain",
+    "query": "Node.js ECONNRESET socket hang up read ECONNRESET",
+    "expectedVerdict": "none"
+  },
+  {
+    "name": "Node lowercase econnreset must abstain",
+    "query": "Node.js econnreset socket hang up read econnreset",
+    "expectedVerdict": "none"
+  },
+  {
+    "name": "uppercase unknown diagnostic vetoes exact signature",
+    "query": "Hydration failed because the server rendered HTML didn't match the client ECONNRESET",
+    "expectedVerdict": "partial",
+    "expectedTop": "nextjs-react-hydration-mismatch"
+  },
+  {
+    "name": "lowercase unknown diagnostic vetoes exact signature",
+    "query": "Hydration failed because the server rendered HTML didn't match the client econnreset",
+    "expectedVerdict": "partial",
+    "expectedTop": "nextjs-react-hydration-mismatch"
+  },
+  {
+    "name": "Linux EMFILE must abstain",
+    "query": "Linux EMFILE too many open files ulimit",
+    "expectedVerdict": "none"
+  },
+  {
+    "name": "Rust borrow checker must abstain",
+    "query": "Rust E0502 cannot borrow as mutable because it is also borrowed as immutable",
+    "expectedVerdict": "none"
+  },
+  {
+    "name": "Redis MISCONF must abstain",
+    "query": "Redis MISCONF stop-writes-on-bgsave-error RDB snapshot",
+    "expectedVerdict": "none"
+  },
+  {
+    "name": "AWS S3 AccessDenied must abstain",
+    "query": "AWS S3 AccessDenied PutObject bucket policy denied",
+    "expectedVerdict": "none"
+  },
+  {
+    "name": "Java NullPointerException must abstain",
+    "query": "java.lang.NullPointerException at com.example.orders.Service.run",
+    "expectedVerdict": "none"
+  },
+  {
+    "name": "Git merge conflict must abstain",
+    "query": "git merge conflict CONFLICT content automatic merge failed",
+    "expectedVerdict": "none"
+  },
+  {
+    "name": "Stripe name alone is not a 429",
+    "query": "Stripe unauthorized",
+    "expectedVerdict": "none",
+    "forbiddenTop": ["stripe-429-rate-limit"]
+  },
+  {
+    "name": "Node ERR_MODULE_NOT_FOUND is not Python",
+    "query": "Node Error ERR_MODULE_NOT_FOUND package",
+    "expectedVerdict": "none",
+    "forbiddenTop": ["python-modulenotfounderror"]
+  },
+  {
+    "name": "generic node package missing must abstain",
+    "query": "node package not found",
+    "expectedVerdict": "none",
+    "forbiddenTop": ["python-modulenotfounderror"]
+  },
+  {
+    "name": "generic Docker socket text is not permission denied",
+    "query": "docker socket error",
+    "expectedVerdict": "none",
+    "forbiddenTop": ["docker-permission-denied-daemon-socket"]
+  },
+  {
+    "name": "CJS import parse error is excluded from ERR_REQUIRE_ESM",
+    "query": "Cannot use import statement outside a module",
+    "expectedVerdict": "none",
+    "forbiddenTop": ["node-err-require-esm"]
+  },
+  {
+    "name": "Python symbol ImportError is not ModuleNotFoundError",
+    "query": "ImportError: cannot import name foo from bar",
+    "expectedVerdict": "none",
+    "forbiddenTop": ["python-modulenotfounderror"]
+  },
+  {
+    "name": "deadlock phrase is not MySQL 1205",
+    "query": "Deadlock found when trying to get lock",
+    "expectedVerdict": "none",
+    "forbiddenTop": ["mysql-1205-lock-wait-timeout"]
+  },
+  {
+    "name": "PostgreSQL column missing is not relation 42P01",
+    "query": "column does not exist postgres",
+    "expectedVerdict": "none",
+    "forbiddenTop": ["postgres-42p01-relation-does-not-exist"]
+  },
+  {
+    "name": "generic HTTP 429 needs Stripe context",
+    "query": "429 Too Many Requests",
+    "expectedVerdict": "partial",
+    "expectedTop": "stripe-429-rate-limit"
+  },
+  {
+    "name": "generic HTTP 502 needs nginx context",
+    "query": "502 Bad Gateway",
+    "expectedVerdict": "partial",
+    "expectedTop": "http-502-bad-gateway-nginx"
+  },
+  {
+    "name": "generic HTTP 413 needs nginx context",
+    "query": "413 Request Entity Too Large",
+    "expectedVerdict": "partial",
+    "expectedTop": "nginx-413-request-entity-too-large"
+  },
+  {
+    "name": "generic invalid signature needs JWT context",
+    "query": "invalid signature",
+    "expectedVerdict": "partial",
+    "expectedTop": "jwt-signature-verification-failed"
+  },
+  {
+    "name": "JWT context makes invalid signature strong",
+    "query": "JWT invalid signature",
+    "expectedVerdict": "strong",
+    "expectedTop": "jwt-signature-verification-failed"
+  },
+  {
+    "name": "generic ENOSPC phrase needs Docker context",
+    "query": "no space left on device",
+    "expectedVerdict": "partial",
+    "expectedTop": "docker-no-space-left-on-device"
+  },
+  {
+    "name": "Docker context makes ENOSPC phrase strong",
+    "query": "Docker no space left on device",
+    "expectedVerdict": "strong",
+    "expectedTop": "docker-no-space-left-on-device"
+  }
+]

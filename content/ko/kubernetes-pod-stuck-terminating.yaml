@@ -1,0 +1,258 @@
+slug: kubernetes-pod-stuck-terminating
+title: "Kubernetes pod stuck in Terminating and never deleted"
+summary: >-
+  Terminating means deletionTimestamp is set and the API server is waiting — for
+  finalizers to clear, or for the kubelet to confirm the containers stopped. When
+  either never happens the pod stays forever. Check metadata.finalizers and node
+  health before reaching for --force.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - finalizers
+  - pod-lifecycle
+  - statefulset
+  - terminating
+  - troubleshooting
+
+error:
+  signature: "Terminating"
+  codes:
+    - Terminating
+  aliases:
+    - "pod stuck in terminating state"
+    - "kubectl delete pod hangs"
+    - "pod has deletionTimestamp but is not deleted"
+    - "force delete pod kubernetes"
+    - "pod terminating forever"
+
+problem: >-
+  kubectl delete returned immediately, but minutes or hours later the pod is still
+  listed with STATUS Terminating, and deleting it again changes nothing. The delete
+  was accepted, not performed: the API server set metadata.deletionTimestamp and is
+  now waiting — for every finalizer on the pod to be removed by its controller, and
+  for the kubelet to confirm the containers actually stopped. The pod stays visible
+  until both happen, and either one can be blocked indefinitely.
+
+rootCauses:
+  - cause: A finalizer on the pod is never removed
+    weight: primary
+    detail: >-
+      The controller that owns the finalizer key — a service mesh, a backup agent, a
+      custom operator — crashed, was uninstalled, or lost the RBAC permission to
+      patch the pod. Once deletion is requested nothing new can be added to the
+      finalizers list, but every existing key blocks deletion until its controller
+      clears it, and an absent controller clears nothing.
+    discriminator: >-
+      kubectl get pod -o jsonpath='{.metadata.finalizers}' prints a non-empty list,
+      and the component named by the key is unhealthy or no longer installed
+  - cause: The node's kubelet is unreachable, so deletion is never confirmed
+    weight: primary
+    detail: >-
+      Graceful deletion completes only when the kubelet on the pod's node kills the
+      containers and reports back to the API server. A powered-off, partitioned, or
+      non-gracefully shut down node never reports, so the pod object waits on it
+      forever — Kubernetes will not guess that the workload is dead.
+    discriminator: >-
+      kubectl get node for the pod's .spec.nodeName shows NotReady or Unknown, and
+      every pod on that node is stuck the same way
+  - cause: A volume unmount or detach hangs
+    weight: common
+    detail: >-
+      The containers are gone but the kubelet cannot finish cleanup because a volume
+      will not unmount — a dead NFS server, a crashed CSI node plugin, or a mount
+      held busy by a leaked process. Kubernetes only force-detaches volumes after a
+      deletion has failed for six minutes, and only if the node is unhealthy at that
+      moment, so a healthy node with a wedged mount waits indefinitely.
+    discriminator: >-
+      The kubelet log on the node repeats unmount or UnmountVolume errors naming the
+      pod's volumes, or the CSI node plugin pod on that node is not Running
+  - cause: A container process survives SIGKILL
+    weight: common
+    detail: >-
+      A process in uninterruptible sleep — D state, typically blocked on I/O against
+      a dead network mount or failing disk — cannot be killed by any signal. The
+      runtime can never report the container as exited, so the kubelet never
+      confirms termination, however many grace periods expire.
+    discriminator: >-
+      On the node, ps shows the container's main process in state D, and crictl ps
+      still lists the container long after the grace period expired
+  - cause: It is not stuck, only slow — a long grace period or preStop hook
+    weight: edge
+    detail: >-
+      A terminationGracePeriodSeconds of an hour, or a preStop hook that drains
+      connections slowly, keeps the pod legitimately in Terminating for that long.
+      Nothing is wrong; the deletion completes when the period expires.
+    discriminator: >-
+      .spec.terminationGracePeriodSeconds is large and the time elapsed since
+      deletionTimestamp is still inside it — waiting resolves it without any action
+
+solution:
+  steps:
+    - instruction: >-
+        Establish which wait you are in before touching anything. One command shows
+        the deletion timestamp, the finalizers, the node, and the grace period —
+        between them they discriminate every cause above.
+      command: >-
+        kubectl get pod <pod> -n <namespace> -o
+        jsonpath='{.metadata.deletionTimestamp}{"\n"}{.metadata.finalizers}{"\n"}{.spec.nodeName}{"\n"}{.spec.terminationGracePeriodSeconds}{"\n"}'
+      note: >-
+        Then check the node it names: kubectl get node <node>. A NotReady node
+        changes the whole diagnosis.
+    - instruction: >-
+        If finalizers are set, fix the controller that owns each key rather than
+        deleting the key. Restart the crashed operator, reinstall the component that
+        was removed, or restore its RBAC — the finalizer then clears itself and the
+        cleanup it guarded actually runs.
+    - instruction: >-
+        Only when the owning controller is gone for good, patch the finalizers away
+        — accepting that whatever cleanup the finalizer guaranteed will not happen.
+        This is the documented last step in Kubernetes' own force-delete task, not a
+        first move.
+      code: |
+        kubectl patch pod <pod> -n <namespace> -p '{"metadata":{"finalizers":null}}'
+      language: bash
+    - instruction: >-
+        If the node is NotReady, prefer healing the node over forcing the pod. When
+        a network partition resolves, the kubelet completes the deletion on its own.
+        If the node is confirmed dead — powered off, not mid-restart — taint it
+        out-of-service: its pods are then force-deleted and their volumes detached
+        immediately, which is what lets StatefulSet replacements start elsewhere.
+      code: |
+        # only after confirming the node is shut down, not restarting
+        kubectl taint nodes <node> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
+      language: bash
+      note: >-
+        You must remove the taint yourself once the workloads have moved and the
+        node has recovered — nothing removes it automatically.
+    - instruction: >-
+        If volumes are the blocker on a healthy node, read the kubelet log and check
+        the CSI node plugin. Restarting a crashed plugin pod usually lets the pending
+        unmount complete; a dead NFS server has to come back or be force-unmounted on
+        the node itself.
+      command: >-
+        ssh <node> 'journalctl -u kubelet --since "15 min ago" | grep -iE "unmount|volume|orphan"'
+    - instruction: >-
+        Force delete only as the last resort, and treat StatefulSet pods as a
+        special case. The command removes the pod name from the API immediately,
+        without the kubelet confirming anything — the process may still be running.
+        For a StatefulSet that frees the identity for a replacement while the
+        original may still hold it, so you are asserting the old pod will never talk
+        to its peers again. For a Deployment pod the blast radius is smaller, but
+        the workload may still be running invisibly on the node.
+      command: "kubectl delete pod <pod> -n <namespace> --grace-period=0 --force"
+      note: >-
+        Verify the node is genuinely down or the process genuinely dead before
+        force-deleting anything that holds a lock, a lease, or a StatefulSet
+        identity.
+  verification: >-
+    kubectl get pod <pod> -n <namespace> returns NotFound and the replacement pod
+    reaches Running. For StatefulSet pods, additionally confirm the old node was
+    actually down before the replacement started; for volume-backed pods, confirm
+    the PVC attached cleanly on the new node instead of erroring on a stale
+    attachment.
+  fallback: >-
+    Where pods from one operator get stuck on its finalizer routinely, treat that as
+    a bug in the operator rather than a per-pod chore — upgrade or remove it, or
+    stop it adding finalizers to pods it cannot reliably clean up. Patching each pod
+    by hand is a treadmill, not a fix.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        Terminating is a display state kubectl derives from a set
+        metadata.deletionTimestamp, not a Pod phase.
+    - name: kubelet
+      versions: "1.28 and later for the out-of-service taint"
+      note: >-
+        Non-graceful node shutdown handling (the out-of-service taint) is stable and
+        enabled by default from v1.28.
+  runtimes:
+    - containerd
+    - CRI-O
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - Evicted pods, which are already terminal and merely left behind as records — nothing is waiting, and deleting them completes instantly
+  - CrashLoopBackOff, where the pod is alive and restarting and nobody has requested deletion
+  - Pods stuck in Pending, a scheduling problem in which the pod never started, let alone stopped
+  - A namespace stuck in Terminating, the same finalizer mechanism on a Namespace object — usually an unreachable aggregated API service — with a different diagnosis and fix
+
+evidence:
+  - type: official-docs
+    title: "Finalizers"
+    url: https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That deletion sets metadata.deletionTimestamp and the object then waits in a
+      terminating state until controllers remove every finalizer, that an emptied
+      finalizers list is what completes deletion, and that finalizers can be removed
+      but not added once deletion is requested.
+    quote: "The target object remains in a terminating state while the control plane, or other components, take the actions defined by the finalizers."
+  - type: official-docs
+    title: "Force Delete StatefulSet Pods"
+    url: https://kubernetes.io/docs/tasks/run-application/force-delete-stateful-set-pod/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That force deletion skips kubelet confirmation and frees the pod name
+      immediately, that for StatefulSets this can duplicate a still-running pod and
+      violate at-most-one semantics, and that patching finalizers to null is the
+      documented last step when the pod is still stuck afterwards.
+    quote: "Force deletions do not wait for confirmation from the kubelet that the Pod has been terminated ... this can lead to the duplication of a still-running Pod"
+  - type: official-docs
+    title: "Pod Lifecycle — Termination of Pods"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      The graceful termination flow — 30-second default grace period, TERM then KILL,
+      kubelet removing the pod object after confirming shutdown — and the caution
+      that --grace-period=0 --force deletes the API object without confirmation
+      while the workload may keep running.
+    quote: "Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely."
+  - type: official-docs
+    title: "Node Shutdowns — Non-graceful node shutdown handling"
+    url: https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That pods on a node that shut down non-gracefully stay in terminating status
+      forever if the node never returns, that the node.kubernetes.io/out-of-service
+      taint force-deletes them and detaches their volumes immediately, and that
+      automatic force-detach otherwise requires six minutes plus an unhealthy node.
+    quote: "these pods will be stuck in terminating status on the shutdown node forever ... In any situation where a pod deletion has not succeeded for 6 minutes, kubernetes will force detach volumes being unmounted if the node is unhealthy"
+  - type: official-docs
+    title: "Garbage Collection"
+    url: https://kubernetes.io/docs/concepts/architecture/garbage-collection/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That finalizers are the mechanism by which garbage collection defers deletion
+      until cleanup completes, which is why removing one by hand skips that cleanup.
+    quote: "If a finalizer exists, it ensures that objects are not deleted until all necessary clean-up tasks are completed."
+
+confidence: high
+confidenceRationale: >-
+  The finalizer mechanism, force-deletion semantics and their StatefulSet risk, the
+  stuck-forever behaviour on a dead node, and the out-of-service taint are all quoted
+  from Kubernetes' own documentation. The SIGKILL-immune D-state process cause and
+  the CSI-plugin diagnostics rest on kernel semantics and operational practice rather
+  than on sentences these pages contain, and the discriminators are observable checks
+  the author composed, not sourced claims.
+
+freshness:
+  created: "2026-08-11"
+  updated: "2026-08-11"
+  verifiedAt: "2026-08-11"
+  reviewIntervalDays: 240
+
+related:
+  - kubernetes-crashloopbackoff
+  - kubernetes-imagepullbackoff
+  - kubernetes-pod-pending-insufficient-resources

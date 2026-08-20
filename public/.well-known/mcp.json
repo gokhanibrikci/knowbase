@@ -1,25 +1,42 @@
 {
-  "$comment": "MCP server card per the .well-known discovery convention (RFC 8615; MCP SEP drafts). The discovery schema is still settling, so this card sticks to the fields every draft agrees on: what the server is, where it listens, how to speak to it.",
+  "$comment": "Agent discovery alias for the knowbase MCP server. Runtime server/discover and tools/list responses are authoritative while the server-card standard settles.",
   "name": "knowbase",
   "version": "0.1.0",
-  "description": "Verified engineering-failure knowledge. Look an error up from its message or stack trace, narrow it to one root cause via per-cause discriminators, and report whether the fix held. Every entry cites primary sources whose quotes are machine-verified against the live pages.",
+  "description": "Verified engineering-failure knowledge. Look an error up from its message or stack trace, narrow a strong match to one root cause via per-cause discriminators, then complete the identified resolution with observed verification criteria. Every entry cites primary sources whose quotes are machine-verified against the live pages.",
   "endpoint": "https://knowbase.sh/mcp",
-  "transport": ["streamable-http", "http+sse"],
-  "protocolVersions": ["2025-06-18", "2024-11-05"],
-  "authentication": { "type": "none" },
-  "capabilities": { "tools": { "listChanged": false } },
+  "transport": [
+    "streamable-http"
+  ],
+  "protocolVersions": [
+    "2026-07-28",
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26"
+  ],
+  "authentication": {
+    "type": "none"
+  },
+  "capabilities": {
+    "tools": {
+      "listChanged": false
+    }
+  },
   "tools": [
     {
       "name": "knowbase_lookup",
-      "description": "Paste an error message, code, or stack trace; returns matching entries with root causes, discriminators and exclusions inlined. Answers honestly with match=none when the corpus does not cover it."
+      "description": "Paste an error and get the entries that cover it, or an explicit corpus miss."
     },
     {
       "name": "knowbase_diagnose",
-      "description": "Given an entry and your observed discriminator results, returns which root cause your observations identify and why the others are ruled out."
+      "description": "Narrow a strong match to the one cause identified by observed checks."
+    },
+    {
+      "name": "knowbase_complete_resolution",
+      "description": "Submit the applied steps and verification results; get a receipt or the next action."
     },
     {
       "name": "knowbase_report_outcome",
-      "description": "Report whether the applied fix held. Outcomes feed re-verification of the entry, not its published confidence."
+      "description": "Deprecated compatibility alias for legacy worked:boolean reports; it cannot issue a receipt."
     }
   ],
   "documentation": "https://knowbase.sh/agents",

@@ -1,4 +1,15 @@
-import { INSTRUCTIONS, TOOLS, callTool } from "@/lib/mcp/tools";
+import {
+  INSTRUCTIONS,
+  MCP_CACHE_HINT,
+  MCP_META_KEYS,
+  MCP_PROTOCOL,
+  MCP_SERVER_CAPABILITIES,
+  MCP_SERVER_INFO,
+  MCP_SUPPORTED_VERSIONS,
+  TOOLS,
+  isToolName,
+} from "@/lib/mcp/contract";
+import { callTool } from "@/lib/mcp/tools";
 import { site } from "@/lib/site";
 
 /**
@@ -17,21 +28,11 @@ import { site } from "@/lib/site";
  * disagreeing about what the corpus says, because there is only one of them.
  */
 
-const MODERN_VERSION = "2026-07-28";
-/** Newest first: what we answer an `initialize` with when the client asks for one. */
-const LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
-const SUPPORTED_VERSIONS = [MODERN_VERSION, ...LEGACY_VERSIONS];
-
-const META_VERSION = "io.modelcontextprotocol/protocolVersion";
-const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
-
 /** JSON-RPC and MCP-allocated error codes used below. */
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
 const HEADER_MISMATCH = -32020;
 const UNSUPPORTED_VERSION = -32022;
-
-const SERVER_INFO = { name: site.name, version: site.version };
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -43,6 +44,10 @@ const CORS = {
 
 type JsonRpcId = string | number | null;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function ok(id: JsonRpcId, result: unknown, status = 200) {
   return Response.json({ jsonrpc: "2.0", id, result }, { status, headers: CORS });
 }
@@ -51,6 +56,20 @@ function fail(id: JsonRpcId, code: number, message: string, data?: unknown, stat
   return Response.json(
     { jsonrpc: "2.0", id, error: { code, message, ...(data ? { data } : {}) } },
     { status, headers: CORS },
+  );
+}
+
+/** 2026-07-28 discriminates every successful result on the wire. */
+function modernOk(id: JsonRpcId, result: Record<string, unknown>, status = 200) {
+  const resultMeta = isRecord(result._meta) ? result._meta : {};
+  return ok(
+    id,
+    {
+      resultType: "complete",
+      ...result,
+      _meta: { ...resultMeta, [MCP_META_KEYS.serverInfo]: MCP_SERVER_INFO },
+    },
+    status,
   );
 }
 
@@ -105,11 +124,54 @@ export async function POST(request: Request) {
   const id = message.id ?? null;
   const method = message.method ?? "";
   const params = (message.params ?? {}) as Record<string, unknown>;
-  const meta = (params._meta ?? {}) as Record<string, unknown>;
+  const meta = isRecord(params._meta) ? params._meta : {};
   const userAgent = request.headers.get("user-agent") ?? "";
 
-  const bodyVersion = typeof meta[META_VERSION] === "string" ? (meta[META_VERSION] as string) : "";
-  const isModern = Boolean(bodyVersion);
+  const hasBodyVersion = Object.prototype.hasOwnProperty.call(
+    meta,
+    MCP_META_KEYS.protocolVersion,
+  );
+  const rawBodyVersion = meta[MCP_META_KEYS.protocolVersion];
+
+  if (hasBodyVersion && typeof rawBodyVersion !== "string") {
+    return fail(
+      id,
+      INVALID_PARAMS,
+      `${MCP_META_KEYS.protocolVersion} must be a string`,
+      undefined,
+      400,
+    );
+  }
+
+  const bodyVersion = typeof rawBodyVersion === "string" ? rawBodyVersion : "";
+
+  // Per-request protocol metadata belongs only to the modern era. Legacy revisions
+  // are still supported, but they negotiate through initialize instead.
+  if (hasBodyVersion && bodyVersion !== MCP_PROTOCOL.modernVersion) {
+    return fail(
+      id,
+      UNSUPPORTED_VERSION,
+      "Unsupported per-request protocol version",
+      {
+        requested: bodyVersion,
+        supported: MCP_SUPPORTED_VERSIONS,
+        legacyViaInitialize: MCP_PROTOCOL.legacyVersions,
+      },
+      400,
+    );
+  }
+
+  if (method === "server/discover" && !hasBodyVersion) {
+    return fail(
+      id,
+      INVALID_PARAMS,
+      `server/discover requires params._meta.${MCP_META_KEYS.protocolVersion}`,
+      undefined,
+      400,
+    );
+  }
+
+  const isModern = bodyVersion === MCP_PROTOCOL.modernVersion;
 
   // A notification has no id and expects no body back, only an acknowledgement.
   const isNotification = message.id === undefined || message.id === null;
@@ -141,27 +203,49 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!SUPPORTED_VERSIONS.includes(bodyVersion)) {
+    const clientInfo = meta[MCP_META_KEYS.clientInfo];
+    if (
+      clientInfo !== undefined &&
+      (!isRecord(clientInfo) ||
+        typeof clientInfo.name !== "string" ||
+        !clientInfo.name ||
+        typeof clientInfo.version !== "string" ||
+        !clientInfo.version)
+    ) {
       return fail(
         id,
-        UNSUPPORTED_VERSION,
-        "Unsupported protocol version",
-        { supported: SUPPORTED_VERSIONS, requested: bodyVersion },
+        INVALID_PARAMS,
+        `When present, params._meta.${MCP_META_KEYS.clientInfo} requires string name and version`,
+        undefined,
+        400,
+      );
+    }
+
+    if (!isRecord(meta[MCP_META_KEYS.clientCapabilities])) {
+      return fail(
+        id,
+        INVALID_PARAMS,
+        `Modern MCP requests require params._meta.${MCP_META_KEYS.clientCapabilities}`,
+        undefined,
         400,
       );
     }
 
     if (method === "server/discover") {
-      return ok(id, {
-        resultType: "complete",
-        supportedVersions: SUPPORTED_VERSIONS,
-        capabilities: { tools: {} },
+      return modernOk(id, {
+        supportedVersions: MCP_SUPPORTED_VERSIONS,
+        capabilities: MCP_SERVER_CAPABILITIES,
         instructions: INSTRUCTIONS,
-        _meta: { [META_SERVER_INFO]: SERVER_INFO },
+        ...MCP_CACHE_HINT,
+        _meta: { [MCP_META_KEYS.serverInfo]: MCP_SERVER_INFO },
       });
     }
 
-    if (method === "tools/list") return ok(id, TOOL_LIST);
+    if (method === "ping") return modernOk(id, {});
+
+    if (method === "tools/list") {
+      return modernOk(id, { ...TOOL_LIST, ...MCP_CACHE_HINT });
+    }
 
     if (method === "tools/call") {
       const name = typeof params.name === "string" ? params.name : "";
@@ -177,12 +261,12 @@ export async function POST(request: Request) {
         );
       }
 
-      if (!TOOLS.some((t) => t.name === name)) {
+      if (!isToolName(name)) {
         return fail(id, INVALID_PARAMS, `Unknown tool: ${name}`);
       }
 
       const args = (params.arguments ?? {}) as Record<string, unknown>;
-      return ok(id, toolResult(name, args, userAgent));
+      return modernOk(id, toolResult(name, args, userAgent));
     }
 
     // 404 rather than 200: the status is what lets a client tell an unimplemented
@@ -196,12 +280,16 @@ export async function POST(request: Request) {
     const requested = typeof params.protocolVersion === "string" ? params.protocolVersion : "";
     // Echo the client's version when we speak it, otherwise name our newest legacy
     // one; a legacy client has no way to fall forward, so it needs a usable answer.
-    const negotiated = LEGACY_VERSIONS.includes(requested) ? requested : LEGACY_VERSIONS[0];
+    const negotiated = MCP_PROTOCOL.legacyVersions.includes(
+      requested as (typeof MCP_PROTOCOL.legacyVersions)[number],
+    )
+      ? requested
+      : MCP_PROTOCOL.legacyVersions[0];
 
     return ok(id, {
       protocolVersion: negotiated,
-      capabilities: { tools: { listChanged: false } },
-      serverInfo: SERVER_INFO,
+      capabilities: MCP_SERVER_CAPABILITIES,
+      serverInfo: MCP_SERVER_INFO,
       instructions: INSTRUCTIONS,
     });
   }
@@ -216,7 +304,7 @@ export async function POST(request: Request) {
 
   if (method === "tools/call") {
     const name = typeof params.name === "string" ? params.name : "";
-    if (!TOOLS.some((t) => t.name === name)) {
+    if (!isToolName(name)) {
       return fail(id, INVALID_PARAMS, `Unknown tool: ${name}`);
     }
     const args = (params.arguments ?? {}) as Record<string, unknown>;

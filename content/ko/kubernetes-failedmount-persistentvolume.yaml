@@ -1,0 +1,296 @@
+slug: kubernetes-failedmount-persistentvolume
+title: "Kubernetes pod stuck in ContainerCreating: FailedMount / FailedAttachVolume"
+summary: >-
+  The PVC is bound but the volume never reaches the node. 'timed out waiting for the
+  condition' is only the kubelet's two-minute retry clock — the cause is in the attach
+  events: an RWO volume held by another node, a zone mismatch, a missing CSI driver,
+  or a slow fsGroup chown.
+domain: kubernetes
+tags:
+  - kubernetes
+  - storage
+  - persistentvolume
+  - csi
+  - failedmount
+  - multi-attach
+  - troubleshooting
+
+error:
+  signature: "Unable to attach or mount volumes: unmounted volumes=[data], unattached volumes=[data]: timed out waiting for the condition"
+  codes:
+    - FailedMount
+    - FailedAttachVolume
+  aliases:
+    - "Multi-Attach error for volume"
+    - "Volume is already exclusively attached to one node and can't be attached to another"
+    - "AttachVolume.Attach failed for volume"
+    - "timed out waiting for the condition volume mount"
+    - "MountVolume.MountDevice failed for volume"
+
+problem: >-
+  A pod stays in ContainerCreating and its events alternate between FailedAttachVolume
+  and FailedMount. The PVC shows Bound, so the storage exists — the failure is in
+  getting the volume attached to the node and mounted into the pod. The most quoted
+  line, 'timed out waiting for the condition', carries no cause at all: it is the
+  kubelet giving up after its fixed two-minute wait and retrying. The event that names
+  the cause is usually an earlier, less frequent one from the attach/detach controller,
+  and it scrolls out of view while the timeout repeats every few minutes.
+
+rootCauses:
+  - cause: An RWO volume is still attached to another node (Multi-Attach error)
+    weight: primary
+    detail: >-
+      ReadWriteOnce means one node at a time, not one pod. A rolling update that starts
+      the replacement pod on a different node before the old one releases the volume, a
+      Deployment with more than one replica sharing a single RWO claim, or a pod on a
+      failed node stuck in Terminating all leave the volume exclusively attached where
+      the new pod is not. Newer Kubernetes versions are renaming the event prefix from
+      'Multi-Attach error' to 'Waiting for detach'; match on either.
+    discriminator: >-
+      Events show 'Multi-Attach error for volume', and kubectl get volumeattachment
+      shows the PV attached to a different node than the one the pod was scheduled to
+  - cause: The volume and the node are in different zones
+    weight: common
+    detail: >-
+      With volumeBindingMode Immediate the PV is provisioned as soon as the claim is
+      created, with no knowledge of where the pod will land. Zonal disks (EBS, GCE PD,
+      Azure Disk) can only attach to nodes in their own zone, so a pod scheduled into
+      another zone fails at attach — especially with pre-provisioned PVs that carry no
+      nodeAffinity to steer the scheduler.
+    discriminator: >-
+      The attach error names an availability zone, and the PV's
+      topology.kubernetes.io/zone does not match the same label on the pod's node
+  - cause: The CSI driver is missing or not running on that node
+    weight: common
+    detail: >-
+      Attach and mount are performed by the storage driver, not by Kubernetes itself.
+      A driver that was never installed, a node-plugin DaemonSet pod that is not
+      running on the affected node, or a driver that failed to re-register after an
+      upgrade or node reboot leaves the kubelet unable to execute the mount.
+    discriminator: >-
+      Events show 'driver name ... not found in the list of registered CSI drivers',
+      or the driver's node-plugin pod is absent or crashlooping on that node
+  - cause: A large volume is slow to chown for fsGroup
+    weight: common
+    detail: >-
+      When securityContext.fsGroup is set, Kubernetes by default recursively changes
+      ownership and permissions of every file on the volume at mount time. On a volume
+      with millions of files this takes longer than the kubelet's two-minute wait, so
+      FailedMount timeouts repeat even though the mount is progressing and will
+      eventually succeed.
+    discriminator: >-
+      The VolumeAttachment is attached and there is no attach error — only the timeout
+      — the pod spec sets fsGroup, and the pod does start after several minutes
+  - cause: A stale VolumeAttachment for a node that no longer exists
+    weight: edge
+    detail: >-
+      If a node is deleted or shut down without its pods terminating cleanly, the
+      VolumeAttachment recording the old attachment can linger, and the controller
+      waits on a detach that can never be confirmed. Kubernetes only force-detaches
+      after a six-minute timeout, and only if the node is unhealthy at that instant.
+    discriminator: >-
+      kubectl get volumeattachment names a node that kubectl get nodes no longer
+      lists, or the holding node is NotReady with the old pod stuck in Terminating
+
+solution:
+  steps:
+    - instruction: >-
+        Read the pod's events and separate the two failure kinds: FailedAttachVolume
+        comes from the attach/detach controller and carries the cause;
+        FailedMount with 'timed out waiting for the condition' is the kubelet's
+        two-minute retry clock and carries none.
+      command: "kubectl describe pod <pod-name> -n <namespace>"
+      note: >-
+        The causal event is often minutes older than the repeating timeout. If it has
+        rotated away, check 'kubectl get events -n <namespace> --sort-by=.lastTimestamp'.
+    - instruction: >-
+        Trace the chain from claim to attachment. The VolumeAttachment shows which node
+        actually holds the volume — for Multi-Attach this names the blocker directly.
+      code: |
+        kubectl get pvc <claim> -n <namespace>                 # must be Bound
+        kubectl get pv <pv-name> -o yaml | grep -A5 nodeAffinity
+        kubectl get volumeattachment | grep <pv-name>          # ATTACHED and NODE
+      language: bash
+    - instruction: >-
+        For a Multi-Attach error, remove whatever still uses the volume on the other
+        node — usually the old pod stuck in Terminating, or extra replicas sharing one
+        RWO claim. For single-replica Deployments on RWO storage, set strategy Recreate
+        so the old pod releases the volume before the new one starts.
+      code: |
+        spec:
+          replicas: 1
+          strategy:
+            type: Recreate   # RollingUpdate starts the new pod while the old one holds the RWO volume
+      language: yaml
+    - instruction: >-
+        If the holding node is powered off or unreachable, mark it out-of-service so
+        its pods are force-deleted and the volume detaches immediately instead of
+        waiting on a detach confirmation the node can never send. Verify the node is
+        really down first, and remove the taint after recovery.
+      command: "kubectl taint nodes <node-name> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute"
+    - instruction: >-
+        For a zone mismatch, set volumeBindingMode WaitForFirstConsumer on the
+        StorageClass so the volume is provisioned only after the pod is scheduled, in
+        the zone the scheduler chose. Existing PVs keep their zone — the setting fixes
+        newly provisioned volumes, not misplaced ones.
+      code: |
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+          name: topology-aware
+        provisioner: ebs.csi.aws.com   # or your CSI driver
+        volumeBindingMode: WaitForFirstConsumer
+      language: yaml
+    - instruction: >-
+        If the events blame the driver, confirm it is registered and its node plugin is
+        running on the affected node — a healthy controller elsewhere does not help a
+        node whose local plugin pod is missing.
+      command: "kubectl get csidrivers && kubectl get pods -A -o wide | grep -i csi"
+    - instruction: >-
+        If the only symptom is the timeout and the pod uses fsGroup on a big volume,
+        let it finish once, then set fsGroupChangePolicy OnRootMismatch so the
+        recursive chown is skipped when the root of the volume already has the right
+        ownership.
+      code: |
+        spec:
+          securityContext:
+            fsGroup: 2000
+            fsGroupChangePolicy: "OnRootMismatch"
+      language: yaml
+  verification: >-
+    kubectl describe pod shows SuccessfulAttachVolume followed by the pod reaching
+    Running, and kubectl get volumeattachment shows the volume ATTACHED true on the
+    node the pod is scheduled to, with no new FailedMount events over a full retry
+    interval.
+  fallback: >-
+    If the workload genuinely needs the same data on several nodes at once, RWO is the
+    wrong tool regardless of any fix here — move the claim to a ReadWriteMany-capable
+    backend (NFS, CephFS, EFS, Azure Files) or replicate the data instead of sharing
+    the block device.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.17 and later"
+      note: >-
+        The Multi-Attach event text is being renamed to 'Waiting for detach' on newer
+        releases; the mechanics are unchanged.
+    - name: CSI drivers
+      versions: "any"
+      note: "Attach/mount is executed by the driver; RWO/RWX support depends on the driver."
+  platforms:
+    - AWS EBS
+    - GCE PD
+    - Azure Disk
+    - on-prem CSI storage
+
+notApplicableTo:
+  - >-
+    A pod Pending on an unbound PVC ('pod has unbound immediate PersistentVolumeClaims')
+    — that is a scheduling/provisioning failure before any attach is attempted, covered
+    by kubernetes-pod-pending-insufficient-resources
+  - >-
+    FailedMount naming a ConfigMap or Secret volume — those are API objects, not
+    PersistentVolumes, and are covered by kubernetes-createcontainerconfigerror
+  - >-
+    Permission-denied or read-only filesystem errors inside a running container, which
+    mean the mount succeeded and the problem is ownership or mount options
+  - >-
+    CrashLoopBackOff, where all volumes attached and mounted and the container started
+    then exited
+
+evidence:
+  - type: official-docs
+    title: "Persistent Volumes — Access Modes"
+    url: https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That ReadWriteOnce is a per-node constraint, not per-pod — multiple pods may use
+      an RWO volume only on the same node, which is why a replacement pod on a
+      different node produces the Multi-Attach error.
+    quote: "ReadWriteOnce the volume can be mounted as read-write by a single node. ReadWriteOnce access mode still can allow multiple pods to access (read from or write to) that volume when the pods are running on the same node."
+  - type: source-code
+    title: "attach/detach controller reconciler — reportMultiAttachError (release-1.31)"
+    url: https://raw.githubusercontent.com/kubernetes/kubernetes/release-1.31/pkg/controller/volume/attachdetach/reconciler/reconciler.go
+    publisher: The Kubernetes Authors (kubernetes/kubernetes)
+    retrievedAt: "2026-08-11"
+    supports: >-
+      The exact FailedAttachVolume event text emitted when an RWO volume is requested
+      on a second node, confirming the message comes from the attach/detach controller
+      rather than the kubelet.
+    quote: "Volume is already exclusively attached to one node and can't be attached to another"
+  - type: official-docs
+    title: "Storage Classes — Volume Binding Mode"
+    url: https://kubernetes.io/docs/concepts/storage/storage-classes/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That Immediate binding provisions topology-constrained volumes without knowledge
+      of pod placement and that WaitForFirstConsumer is the prescribed fix, delaying
+      provisioning until the pod is scheduled.
+    quote: "PersistentVolumes will be bound or provisioned without knowledge of the Pod's scheduling requirements. This may result in unschedulable Pods. A cluster administrator can address this issue by specifying the WaitForFirstConsumer mode"
+  - type: official-docs
+    title: "Configure a Security Context — fsGroupChangePolicy"
+    url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That fsGroup triggers a recursive ownership change of the whole volume at mount
+      time, that on large volumes this measurably slows pod startup, and that
+      fsGroupChangePolicy OnRootMismatch is the documented mitigation.
+    quote: "Kubernetes recursively changes ownership and permissions for the contents of each volume to match the fsGroup ... For large volumes, checking and changing ownership and permissions can take a lot of time, slowing Pod startup."
+  - type: source-code
+    title: "kubelet volume manager — podAttachAndMountTimeout (release-1.31)"
+    url: https://raw.githubusercontent.com/kubernetes/kubernetes/release-1.31/pkg/kubelet/volumemanager/volume_manager.go
+    publisher: The Kubernetes Authors (kubernetes/kubernetes)
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That 'timed out waiting for the condition' is a fixed two-minute kubelet wait
+      followed by a retry — a clock, not a diagnosis — which is why the event repeats
+      while the underlying attach problem sits in an older event.
+    quote: "we set the timeout to 2 minutes because kubelet ... will retry in the next sync iteration"
+  - type: source-code
+    title: "CSI volume client — driver registration lookup (release-1.31)"
+    url: https://raw.githubusercontent.com/kubernetes/kubernetes/release-1.31/pkg/volume/csi/csi_client.go
+    publisher: The Kubernetes Authors (kubernetes/kubernetes)
+    retrievedAt: "2026-08-11"
+    supports: >-
+      The exact error emitted when the kubelet cannot find the CSI driver registered
+      on the node, which is the discriminator for the missing-driver cause.
+    quote: "not found in the list of registered CSI drivers"
+  - type: official-docs
+    title: "Node Shutdowns — non-graceful shutdown and forced storage detach"
+    url: https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That the out-of-service taint force-deletes the dead node's pods and detaches
+      their volumes immediately, and that without it a force detach happens only after
+      a six-minute timeout and only if the node is unhealthy.
+    quote: "volume detach operations for the pods terminating on the node will happen immediately ... where a pod deletion has not succeeded for 6 minutes, kubernetes will force detach volumes being unmounted if the node is unhealthy at that instant"
+
+confidence: high
+confidenceRationale: >-
+  RWO semantics, WaitForFirstConsumer, the fsGroup chown behaviour and the
+  out-of-service taint are quoted from Kubernetes documentation, and the three
+  load-bearing message strings — the Multi-Attach event, the two-minute kubelet
+  timeout and the driver-registration error — are quoted from pinned release-1.31
+  source. What rests on practice rather than a quotable sentence: the claim that
+  rolling updates and multi-replica Deployments are the usual Multi-Attach triggers
+  (the source comment calls the >1-replica case user error but the rolling-update
+  framing is field experience), and the stale-VolumeAttachment edge case, which is
+  assembled from the documented six-minute force-detach rule rather than described
+  anywhere as a single failure mode.
+
+freshness:
+  created: "2026-08-11"
+  updated: "2026-08-11"
+  verifiedAt: "2026-08-11"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-pod-pending-insufficient-resources
+  - kubernetes-createcontainerconfigerror
+  - kubernetes-crashloopbackoff
+  - kubernetes-imagepullbackoff

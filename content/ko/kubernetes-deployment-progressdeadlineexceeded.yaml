@@ -1,0 +1,261 @@
+slug: kubernetes-deployment-progressdeadlineexceeded
+title: "Kubernetes Deployment rollout stuck: ProgressDeadlineExceeded"
+summary: >-
+  The Deployment made no progress for progressDeadlineSeconds (600 by default), so
+  the controller set Progressing to False with reason ProgressDeadlineExceeded. The
+  condition is a report, not an intervention — Kubernetes keeps retrying and never
+  rolls back on its own. The blocker is in the newest ReplicaSet's pods.
+domain: kubernetes
+tags:
+  - kubernetes
+  - deployment
+  - rollout
+  - progressdeadlineexceeded
+  - replicaset
+  - troubleshooting
+
+error:
+  signature: "ProgressDeadlineExceeded"
+  codes:
+    - ProgressDeadlineExceeded
+    - ReplicaSetCreateError
+  aliases:
+    - "deployment exceeded its progress deadline"
+    - "Waiting for rollout to finish"
+    - "kubectl rollout status stuck"
+    - "deployment rollout stuck kubernetes"
+    - "Progressing False ProgressDeadlineExceeded"
+
+problem: >-
+  kubectl rollout status sits on 'Waiting for rollout to finish' and eventually exits
+  1 with 'error: deployment exceeded its progress deadline'. The Deployment's
+  Progressing condition is False with reason ProgressDeadlineExceeded. Old pods are
+  usually still serving traffic, so nothing pages — but the new version never
+  arrives, and the condition itself never says why. Progress, for a Deployment,
+  means concrete events: a new ReplicaSet created, the newest one scaling up, old
+  ones scaling down, or new pods becoming ready. If none of those happens for
+  progressDeadlineSeconds, the deadline fires; the actual blocker is a level down,
+  in the pods of the newest ReplicaSet.
+
+rootCauses:
+  - cause: New pods never become Ready because the readiness probe fails
+    weight: primary
+    detail: >-
+      The container starts but its readiness probe never succeeds — wrong port or
+      path, a dependency the new version cannot reach, or an app that needs longer
+      to warm up than the probe allows. A crash-looping container has the same
+      effect: 'new pods become ready or available' is the progress event that never
+      happens, and with maxUnavailable enforced the rollout cannot advance past its
+      first batch.
+    discriminator: >-
+      kubectl get pods shows the newest ReplicaSet's pods Running but 0/1 READY (or
+      CrashLoopBackOff), and kubectl describe pod shows Unhealthy probe events
+  - cause: New pods are unschedulable and sit in Pending
+    weight: common
+    detail: >-
+      The new pod spec requests more CPU or memory than any node has free, or added
+      a nodeSelector, affinity rule, or toleration requirement no node satisfies.
+      The surge pods of a rolling update need headroom on top of the old pods that
+      are still running, so a rollout can be unschedulable on a cluster where the
+      steady state fits.
+    discriminator: >-
+      New pods show STATUS Pending, and kubectl describe pod shows a
+      FailedScheduling event from the scheduler
+  - cause: The ReplicaSet cannot create pods at all — quota, limit ranges, or admission
+    weight: common
+    detail: >-
+      A ResourceQuota or LimitRange in the namespace, or an admission webhook,
+      rejects pod creation outright. No pod objects appear, so there is nothing to
+      describe at the pod level — the rejection is recorded on the Deployment as a
+      ReplicaFailure condition and on the ReplicaSet's events.
+    discriminator: >-
+      kubectl describe deployment shows ReplicaFailure True with reason
+      FailedCreate, and the newest ReplicaSet has fewer CURRENT pods than DESIRED
+  - cause: The new image cannot be pulled
+    weight: common
+    detail: >-
+      A typoed tag, a tag that was never pushed, or missing registry credentials.
+      The pods schedule fine but wait in ImagePullBackOff forever, so no new pod
+      ever becomes ready and the deadline fires.
+    discriminator: >-
+      New pods show ImagePullBackOff or ErrImagePull in kubectl get pods, and the
+      pod events quote the registry's error
+  - cause: progressDeadlineSeconds is too short for a genuinely slow rollout
+    weight: edge
+    detail: >-
+      The deadline bounds the gap between progress events, not the whole rollout.
+      A single step that legitimately takes longer than the deadline — a slow image
+      pull on cold nodes, a long warm-up before readiness, a large minReadySeconds —
+      trips the condition even though the rollout would have completed. The
+      controller keeps retrying, so these rollouts often finish anyway with the
+      failure condition already recorded.
+    discriminator: >-
+      The pods do become ready, just later than the deadline — kubectl get deploy a
+      few minutes later shows availability catching up with no spec change
+
+solution:
+  steps:
+    - instruction: >-
+        Confirm it is a progress failure and not just a slow rollout still in
+        flight. A Deployment past its deadline makes rollout status exit non-zero
+        with the deadline error; a healthy rollout ends in 'successfully rolled
+        out' and exit code 0.
+      command: "kubectl rollout status deployment/<name> -n <namespace>; echo $?"
+    - instruction: >-
+        Read the Deployment's Conditions block. Progressing False with reason
+        ProgressDeadlineExceeded confirms the diagnosis; a ReplicaFailure True
+        condition alongside it means pod creation itself is being rejected and its
+        message quotes the rejection — quota errors appear here verbatim.
+      command: "kubectl describe deployment <name> -n <namespace>"
+      note: >-
+        kubectl get deployment -o yaml shows the same conditions with their full
+        message fields, which describe sometimes truncates.
+    - instruction: >-
+        Drop down to the newest ReplicaSet and its pods — that is where the real
+        blocker lives. The newest ReplicaSet is the one whose DESIRED is above zero
+        but READY lags; its pods' status and events name the cause.
+      code: |
+        kubectl get rs -n <namespace> -l app=<label>
+        kubectl get pods -n <namespace> -l app=<label>
+        kubectl describe pod <new-pod> -n <namespace> | tail -20
+      language: bash
+      note: >-
+        Pending means unschedulable; Running 0/1 means the readiness probe;
+        ImagePullBackOff means the image; no pods at all means quota or admission.
+    - instruction: >-
+        Fix the blocker the pods name, not the condition. Unschedulable pods need
+        smaller requests, more nodes, or relaxed constraints; probe failures need
+        the probe or the app fixed; quota rejections need the Deployment scaled
+        down, other workloads scaled down, or the namespace quota raised; image
+        errors need the reference or credentials corrected. The controller is still
+        retrying, so the rollout completes on its own once the cause is removed.
+    - instruction: >-
+        If the new version is the problem and service matters now, roll back
+        explicitly. The deadline does not do this for you — Kubernetes takes no
+        action on a stalled Deployment beyond reporting the condition, so the
+        broken ReplicaSet keeps retrying until you act.
+      command: "kubectl rollout undo deployment/<name> -n <namespace>"
+      note: >-
+        kubectl rollout history shows revisions; add --to-revision=<n> to skip
+        further back than the immediately previous one.
+    - instruction: >-
+        If the rollout was genuinely progressing and the deadline is simply too
+        tight for your app's startup, raise progressDeadlineSeconds rather than
+        fighting the condition. It must be greater than minReadySeconds.
+      code: |
+        spec:
+          progressDeadlineSeconds: 1200
+          minReadySeconds: 30
+      language: yaml
+      note: >-
+        A paused rollout is not checked against the deadline at all, so pausing is
+        safe while you stack multiple spec changes.
+  verification: >-
+    kubectl rollout status deployment/<name> prints 'successfully rolled out' and
+    exits 0, and kubectl describe deployment shows Progressing True with reason
+    NewReplicaSetAvailable and no ReplicaFailure condition.
+  fallback: >-
+    Where rollback-on-failure needs to be automatic rather than a human running
+    kubectl rollout undo, put a higher-level rollout controller such as Argo
+    Rollouts or Flagger in front of the Deployment — the condition exists precisely
+    so orchestrators like these can watch for it and act.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        The Progressing condition and progressDeadlineSeconds (default 600) are
+        apps/v1 Deployment behaviour; the deadline is ignored while the Deployment
+        is paused and once the rollout completes.
+    - name: kubectl
+      versions: "1.20 and later"
+      note: "rollout status exits non-zero once the deadline is exceeded."
+  platforms:
+    - self-hosted
+    - managed Kubernetes
+
+notApplicableTo:
+  - >-
+    The pod-level failures underneath — a pod stuck Pending on cluster capacity is
+    its own problem (see kubernetes-pod-pending-insufficient-resources), as is a
+    Running pod that never passes readiness; this entry is about the Deployment
+    condition that surfaces them
+  - >-
+    StatefulSet or DaemonSet rollouts — neither has progressDeadlineSeconds or a
+    ProgressDeadlineExceeded condition; a stuck StatefulSet update halts silently
+    at the failing ordinal instead
+  - >-
+    Paused Deployments, which are deliberately not checked against the deadline —
+    a rollout that seems stuck after kubectl rollout pause needs resume, not
+    debugging
+  - >-
+    Rollouts that are slow but still progressing, where rollout status is waiting
+    and the Progressing condition is still True — that is patience, not failure
+
+evidence:
+  - type: official-docs
+    title: "Deployments — Failed Deployment"
+    url: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      The definition of a failed Deployment, the listed blockers (insufficient
+      quota, readiness probe failures, image pull errors, limit ranges), what
+      counts as progress, the ReplicaFailure/FailedCreate quota surface, that
+      pausing suspends the deadline check, that kubectl rollout status exits
+      non-zero once the deadline is exceeded, and that Kubernetes only reports
+      the condition and never rolls back on its own.
+    quote: "Your Deployment may get stuck trying to deploy its newest ReplicaSet without ever completing. ... Kubernetes takes no action on a stalled Deployment other than to report a status condition"
+  - type: official-docs
+    title: "Deployment v1 API reference — DeploymentSpec"
+    url: https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      The exact semantics of progressDeadlineSeconds: maximum time to make
+      progress before the Deployment is considered failed, that the controller
+      keeps processing failed Deployments, and the default of 600 seconds.
+    quote: "The maximum time in seconds for a deployment to make progress before it is considered to be failed. The deployment controller will continue to process failed deployments ... Defaults to 600s."
+  - type: official-docs
+    title: "kubectl rollout undo"
+    url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_rollout/kubectl_rollout_undo/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That kubectl rollout undo is the mechanism for rolling a failed Deployment
+      back to a previous revision, including --to-revision for a specific one.
+    quote: "Roll back to a previous rollout."
+  - type: official-docs
+    title: "Debug Pods — My pod stays pending"
+    url: https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That a Pending pod means it cannot be scheduled, usually for insufficient
+      resources, and that describe-level scheduler messages are where the reason
+      appears — the diagnostic path for the unschedulable-pods cause.
+    quote: "If a Pod is stuck in Pending it means that it can not be scheduled onto a node."
+
+confidence: high
+confidenceRationale: >-
+  What progress means, the 600-second default, the listed blockers, the
+  quota/ReplicaFailure surface, the exit-code behaviour of rollout status and the
+  fact that Kubernetes never rolls back on its own are all quoted from the
+  Kubernetes Deployment documentation and API reference. The per-cause
+  discriminators (Pending vs 0/1 READY vs ImagePullBackOff vs FailedCreate) rest
+  on operational practice — they follow from documented pod states rather than
+  from any sentence about this condition specifically — as does the observation
+  that surge pods need headroom beyond the steady state.
+
+freshness:
+  created: "2026-08-11"
+  updated: "2026-08-11"
+  verifiedAt: "2026-08-11"
+  reviewIntervalDays: 365
+
+related:
+  - kubernetes-pod-pending-insufficient-resources
+  - kubernetes-imagepullbackoff
+  - kubernetes-crashloopbackoff
+  - kubernetes-createcontainerconfigerror

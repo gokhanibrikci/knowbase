@@ -1,9 +1,13 @@
 {
-  "$comment": "Agent-facing capability index. No single agents.json schema has won yet, so this document is deliberately plain: each entry is an interface an agent can use right now, described the way the site itself would describe it. The MCP server card lives at /.well-known/mcp.json.",
+  "$comment": "Agent-facing capability index. The MCP discovery alias lives at /.well-known/mcp.json; runtime MCP discovery remains authoritative.",
   "name": "knowbase",
-  "description": "Verified, source-backed answers to concrete engineering failures. Machine-first: every entry ships as JSON, Markdown and plain text alongside HTML, and the lookup answers 'we do not cover this' rather than returning a near miss.",
+  "version": "0.1.0",
+  "description": "Verified, source-backed answers to concrete engineering failures. Machine-first: every entry ships as JSON, Markdown and plain text alongside HTML, and lookup answers 'we do not cover this' rather than returning a near miss as an answer.",
   "site": "https://knowbase.sh",
   "documentation": "https://knowbase.sh/agents",
+  "authentication": {
+    "type": "none"
+  },
   "interfaces": [
     {
       "kind": "http",
@@ -15,19 +19,19 @@
       "kind": "http",
       "method": "POST",
       "url": "https://knowbase.sh/diagnose.json",
-      "purpose": "Narrow a matched entry to the one root cause your observed discriminator results identify."
+      "purpose": "Narrow a strong match to the one root cause observed discriminator results identify."
     },
     {
       "kind": "http",
       "method": "POST",
       "url": "https://knowbase.sh/outcome.json",
-      "purpose": "Report whether the applied fix held, so the entry can be re-verified."
+      "purpose": "Complete an identified resolution with applied steps and verification criteria; legacy worked:boolean reports remain accepted."
     },
     {
       "kind": "mcp",
       "url": "https://knowbase.sh/mcp",
       "serverCard": "https://knowbase.sh/.well-known/mcp.json",
-      "purpose": "The same three calls as MCP tools: knowbase_lookup, knowbase_diagnose, knowbase_report_outcome."
+      "purpose": "The same workflow as MCP tools: knowbase_lookup, knowbase_diagnose, knowbase_complete_resolution, knowbase_report_outcome."
     },
     {
       "kind": "document",
@@ -35,6 +39,10 @@
       "purpose": "Index of every entry, llmstxt.org format. /llms-full.txt carries the whole corpus in one fetch."
     }
   ],
-  "contentSignals": { "search": true, "ai-input": true, "ai-train": true },
+  "contentSignals": {
+    "search": true,
+    "ai-input": true,
+    "ai-train": true
+  },
   "license": "CC-BY-4.0"
 }

@@ -10,6 +10,7 @@ import { z } from "zod";
  */
 
 const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const stableIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export const KO_DOMAINS = [
   "kubernetes",
@@ -59,7 +60,46 @@ export const evidenceSchema = z.object({
   quote: z.string().min(12).max(240),
 });
 
+export const solutionStepSchema = z.object({
+  /** Stable within a KO revision; agents report which steps they applied. */
+  id: z.string().regex(stableIdPattern, "id must be lowercase kebab-case").optional(),
+  instruction: z.string().min(6),
+  command: z.string().optional(),
+  code: z.string().optional(),
+  language: z.string().optional(),
+  note: z.string().optional(),
+});
+
+export const verificationCriterionSchema = z.object({
+  id: z.string().regex(stableIdPattern, "id must be lowercase kebab-case"),
+  /** The observation the agent must make after applying the fix. */
+  check: z.string().min(8),
+  /** What must be true for this criterion to count as met. */
+  expected: z.string().min(8),
+  required: z.boolean().default(true),
+  /** Optional executable hint; knowbase does not run it on the caller's system. */
+  command: z.string().optional(),
+});
+
+export const causeResolutionSchema = z.object({
+  /** Versioned because changing a recipe changes what an old receipt means. */
+  id: z
+    .string()
+    .regex(
+      /^[a-z0-9]+(?:-[a-z0-9]+)*-v[1-9][0-9]*$/,
+      "resolution id must be kebab-case and end in -v<number>",
+    ),
+  /** Stable ids of the global solution steps that make up this cause's recipe. */
+  stepIds: z
+    .array(z.string().regex(stableIdPattern, "step id must be lowercase kebab-case"))
+    .min(1),
+  verificationCriteria: z.array(verificationCriterionSchema).min(1).max(20),
+  fallback: z.string().min(10).optional(),
+});
+
 export const rootCauseSchema = z.object({
+  /** Stable within a KO revision; completion receipts refer to this id. */
+  id: z.string().regex(stableIdPattern, "id must be lowercase kebab-case").optional(),
   cause: z.string().min(8),
   detail: z.string().min(10).optional(),
   weight: z.enum(CAUSE_WEIGHTS),
@@ -69,14 +109,8 @@ export const rootCauseSchema = z.object({
    * search result, not an answer.
    */
   discriminator: z.string().min(8),
-});
-
-export const solutionStepSchema = z.object({
-  instruction: z.string().min(6),
-  command: z.string().optional(),
-  code: z.string().optional(),
-  language: z.string().optional(),
-  note: z.string().optional(),
+  /** Optional during migration; only a cause with a recipe can mint a receipt. */
+  resolution: causeResolutionSchema.optional(),
 });
 
 export const appliesToSchema = z.object({
@@ -149,6 +183,8 @@ export const koSchema = z
 export type Evidence = z.infer<typeof evidenceSchema>;
 export type RootCause = z.infer<typeof rootCauseSchema>;
 export type SolutionStep = z.infer<typeof solutionStepSchema>;
+export type VerificationCriterion = z.infer<typeof verificationCriterionSchema>;
+export type CauseResolution = z.infer<typeof causeResolutionSchema>;
 export type KnowledgeObject = z.infer<typeof koSchema>;
 
 /**
@@ -231,6 +267,68 @@ export function checkEditorialRules(ko: KnowledgeObject): EditorialViolation[] {
         rule: "future-retrieval",
         message: `evidence claims to have been read in the future (${item.retrievedAt}): ${item.url}`,
       });
+    }
+  }
+
+  const resolutions = ko.rootCauses.flatMap((cause) =>
+    cause.resolution ? [{ cause, resolution: cause.resolution }] : [],
+  );
+  if (resolutions.length > 0) {
+    const causeIds = ko.rootCauses.map((cause) => cause.id);
+    const stepIds = ko.solution.steps.map((step) => step.id);
+
+    if (causeIds.some((id) => !id)) {
+      violations.push({
+        rule: "completion-cause-ids",
+        message: "entries with a cause resolution require an id on every root cause",
+      });
+    }
+    if (stepIds.some((id) => !id)) {
+      violations.push({
+        rule: "completion-step-ids",
+        message: "entries with a cause resolution require an id on every solution step",
+      });
+    }
+
+    for (const [rule, label, ids] of [
+      ["completion-cause-id-unique", "root cause", causeIds],
+      ["completion-step-id-unique", "solution step", stepIds],
+      [
+        "completion-resolution-id-unique",
+        "cause resolution",
+        resolutions.map(({ resolution }) => resolution.id),
+      ],
+    ] as const) {
+      const present = ids.filter((id): id is string => Boolean(id));
+      if (new Set(present).size !== present.length) {
+        violations.push({ rule, message: `${label} ids must be unique within an entry` });
+      }
+    }
+
+    const knownSteps = new Set(stepIds.filter((id): id is string => Boolean(id)));
+    for (const { cause, resolution } of resolutions) {
+      if (new Set(resolution.stepIds).size !== resolution.stepIds.length) {
+        violations.push({
+          rule: "completion-resolution-step-unique",
+          message: `resolution '${resolution.id}' repeats a step id`,
+        });
+      }
+      for (const stepId of resolution.stepIds) {
+        if (!knownSteps.has(stepId)) {
+          violations.push({
+            rule: "completion-resolution-step-reference",
+            message: `resolution '${resolution.id}' references unknown step '${stepId}'`,
+          });
+        }
+      }
+
+      const criterionIds = resolution.verificationCriteria.map((criterion) => criterion.id);
+      if (new Set(criterionIds).size !== criterionIds.length) {
+        violations.push({
+          rule: "completion-criterion-id-unique",
+          message: `cause '${cause.id}' repeats a verification criterion id`,
+        });
+      }
     }
   }
 

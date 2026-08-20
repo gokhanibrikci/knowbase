@@ -17,10 +17,8 @@ error:
   signature: "ModuleNotFoundError: No module named 'x'"
   codes:
     - ModuleNotFoundError
-    - ImportError
   aliases:
     - "No module named"
-    - "ImportError: cannot import name"
     - "ModuleNotFoundError: No module named 'src'"
     - "attempted relative import with no known parent package"
 

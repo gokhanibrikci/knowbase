@@ -143,6 +143,19 @@ export type Report =
       slug: string;
       worked: boolean;
       note: string;
+    }
+  | {
+      kind: "completion";
+      lookupId: string;
+      slug: string;
+      causeId: string;
+      resolutionId: string;
+      /** Deterministic receipt or attempt id; group on this to deduplicate retries. */
+      outcomeId: string;
+      status: "resolved" | "unresolved" | "verification_inconclusive";
+      koRevision: string;
+      criteriaMet: number;
+      criteriaTotal: number;
     };
 
 /**
@@ -150,16 +163,19 @@ export type Report =
  *
  *   blob1 kind  blob2 lookup id  blob3 slug  blob4 cause
  *   blob5 observations or note  blob6 user agent
- *   double1 lead (diagnosis) or worked as 0/1 (outcome)
+ *   blob7 completion receipt/attempt id  blob8 completion status  blob9 KO revision
+ *   blob10 cause resolution id
+ *   double1 lead (diagnosis), worked as 0/1 (outcome), or resolved as 0/1
+ *   double2 completion criteria met  double3 completion criteria total
  *
  * Same boundary as the query log, restated because this is the file where it would
  * be tempting to cross: nothing written here can raise or lower a published
  * `confidence`. That label is gated on evidence. These rows decide what to
  * re-research, never what the site claims.
  */
-export function logReport(report: Report, userAgent: string): void {
+export function logReport(report: Report, userAgent: string): boolean {
   const sink = sinkFor("REPORT_LOG");
-  if (!sink) return;
+  if (!sink) return false;
 
   try {
     sink.writeDataPoint({
@@ -168,15 +184,32 @@ export function logReport(report: Report, userAgent: string): void {
         report.kind,
         report.lookupId,
         report.slug,
-        report.kind === "diagnosis" ? clip(report.cause, 256) : "",
+        report.kind === "diagnosis"
+          ? clip(report.cause, 256)
+          : report.kind === "completion"
+            ? report.causeId
+            : "",
         report.kind === "diagnosis"
           ? clip(redact(report.observations), MAX_QUERY_BYTES)
-          : clip(redact(report.note), MAX_QUERY_BYTES),
+          : report.kind === "outcome"
+            ? clip(redact(report.note), MAX_QUERY_BYTES)
+            : "",
         clip(userAgent, MAX_UA_BYTES),
+        report.kind === "completion" ? report.outcomeId : "",
+        report.kind === "completion" ? report.status : "",
+        report.kind === "completion" ? report.koRevision : "",
+        report.kind === "completion" ? report.resolutionId : "",
       ],
-      doubles: [report.kind === "diagnosis" ? report.lead : report.worked ? 1 : 0],
+      doubles:
+        report.kind === "diagnosis"
+          ? [report.lead, 0, 0]
+          : report.kind === "outcome"
+            ? [report.worked ? 1 : 0, 0, 0]
+            : [report.status === "resolved" ? 1 : 0, report.criteriaMet, report.criteriaTotal],
     });
+    return true;
   } catch {
     // Telemetry must never take the endpoint down with it.
+    return false;
   }
 }

@@ -53,7 +53,7 @@ const DISCLAIMER_WEIGHT = -4;
  * least this share of the query's informative tokens. Below it, an overlap is topic
  * noise — "docker" appearing in both — not a competing diagnosis.
  */
-const DISCLAIM_COVERAGE_FLOOR = 0.6;
+const DISCLAIM_COVERAGE_FLOOR = 0.8;
 
 /**
  * A pasted trace can carry hundreds of distinct tokens. Past the most informative
@@ -62,13 +62,13 @@ const DISCLAIM_COVERAGE_FLOOR = 0.6;
 const MAX_TERMS_CONSIDERED = 40;
 const MAX_TERMS_NORMALISED = 8;
 
-/**
- * Provisional thresholds. They are round numbers chosen against the seed corpus
- * rather than measured, which is honest but temporary: the miss log exists so the
- * next revision can be fitted to queries agents actually send.
- */
+/** A score is only a ranking hint; semantic identity gates below decide hit vs miss. */
 const PARTIAL_FLOOR = 0.15;
 const STRONG_FLOOR = 0.45;
+/** A strong answer must account for at least half of the query's identity vocabulary. */
+const IDENTITY_COVERAGE_FLOOR = 0.5;
+/** Without an exact, specific identifier, two error-family terms must agree. */
+const MIN_IDENTITY_ANCHORS = 2;
 /** Two entries this close are not reliably distinguishable; make the agent look. */
 const AMBIGUITY_MARGIN = 0.15;
 
@@ -101,6 +101,22 @@ export type MatchResult = {
    * A body-only hit is a topic overlap, not an answer, and cannot be called strong.
    */
   hitsIdentity: boolean;
+  /** Share of all informative query tokens found in the error signature/codes/aliases. */
+  identityCoverage: number;
+  /** Exact/prefix identity terms after technology names have been removed. */
+  identityAnchors: string[];
+  /** Whether a complete published signature, code or alias appears in the query. */
+  exactIdentityMatch: boolean;
+  /** Whether that exact identity is specific enough to survive unrelated stack noise. */
+  exactSpecificIdentityMatch: boolean;
+  /** Whether the query contains a published code that is specific without context. */
+  exactSpecificCodeMatch: boolean;
+  /** A specific code, or a generic code paired with this KO's technology. */
+  exactCodeAnchor: boolean;
+  /** Generic codes need an explicit technology/environment term beside them. */
+  genericCodeWithoutContext: boolean;
+  /** The query explicitly names a different technology than this KO covers. */
+  technologyConflict: boolean;
   /**
    * Query terms this entry mentions only to exclude. Two errors can be lexically
    * near-identical — "cannot connect to the Docker daemon" is the permission failure
@@ -126,6 +142,36 @@ export type MatchReport = {
   results: MatchResult[];
 };
 
+/**
+ * Results safe to expose to a caller.
+ *
+ * Ranking keeps every positive score so verdict calculation and telemetry remain
+ * inspectable. Public surfaces need a stricter boundary: a strong verdict has one
+ * answer, while a partial verdict may expose only candidates with their own semantic
+ * identity or an explicit negative-scope explanation.
+ */
+export function presentableMatchResults(
+  report: MatchReport,
+  limit = Number.POSITIVE_INFINITY,
+): MatchResult[] {
+  const safeLimit = Number.isFinite(limit)
+    ? Math.max(0, Math.floor(limit))
+    : Number.POSITIVE_INFINITY;
+  if (report.verdict === "none" || safeLimit === 0) return [];
+  if (report.verdict === "strong") return report.results.slice(0, Math.min(1, safeLimit));
+
+  return report.results
+    .filter(
+      (result) =>
+        result.score >= PARTIAL_FLOOR &&
+        (result.exactIdentityMatch ||
+          result.identityAnchors.length >= MIN_IDENTITY_ANCHORS ||
+          result.disclaimedTerms.length > 0 ||
+          Boolean(result.disclaimedBy)),
+    )
+    .slice(0, safeLimit);
+}
+
 const STOPWORDS = new Set([
   // Ordinary English that survives the length filter but discriminates nothing.
   // The list is longer than it looks like it needs to be because IDF alone is a
@@ -147,9 +193,11 @@ const STOPWORDS = new Set([
   "stack", "caused", "line", "file", "module", "func", "function", "method", "call",
   "called", "failed", "failure", "fatal", "panic", "raise", "raised", "throw",
   "thrown", "log", "logs", "message", "msg", "code", "status", "result", "return",
+  "because", "couldn", "didn", "doesn", "isn", "shouldn", "wasn", "weren",
+  "wouldn",
 ]);
 
-/** Tokens shorter than this substring-match too much to carry meaning. */
+/** Tokens shorter than this exact/prefix-match too much to carry meaning. */
 const MIN_TERM_LENGTH = 3;
 
 /**
@@ -176,26 +224,209 @@ export function tokenize(query: string): string[] {
   return [...out];
 }
 
-type Haystack = Record<keyof typeof FIELD_WEIGHTS, string> & { disclaimer: string };
+type TokenSet = Set<string>;
+type Haystack = Record<keyof typeof FIELD_WEIGHTS, TokenSet> & { disclaimer: TokenSet };
+
+function tokenSet(text: string): TokenSet {
+  return new Set(tokenize(text));
+}
+
+/**
+ * Match whole tokens, plus conservative prefixes for ecosystem spellings such as
+ * `postgres`/`postgresql`. The ratio guard keeps `state` from matching `statement`.
+ */
+function tokensMatch(left: string, right: string): boolean {
+  if (left === right) return true;
+  const shortest = Math.min(left.length, right.length);
+  const longest = Math.max(left.length, right.length);
+  return (
+    shortest >= 5 &&
+    shortest / longest >= 0.75 &&
+    (left.startsWith(right) || right.startsWith(left))
+  );
+}
+
+function tokenSetHas(tokens: TokenSet, term: string): boolean {
+  for (const token of tokens) {
+    if (tokensMatch(token, term)) return true;
+  }
+  return false;
+}
 
 function haystack(ko: KnowledgeObject): Haystack {
   return {
-    signature: [ko.error.signature, ...ko.error.codes, ...ko.error.aliases]
-      .join(" ")
-      .toLowerCase(),
-    title: ko.title.toLowerCase(),
-    tags: ko.tags.join(" ").toLowerCase(),
-    body: [
+    signature: tokenSet([ko.error.signature, ...ko.error.codes, ...ko.error.aliases].join(" ")),
+    title: tokenSet(ko.title),
+    tags: tokenSet(ko.tags.join(" ")),
+    body: tokenSet([
       ko.summary,
       ko.problem,
       ...ko.rootCauses.map((c) => `${c.cause} ${c.detail ?? ""}`),
       ...ko.appliesTo.technology.map((t) => t.name),
-    ]
-      .join(" ")
-      .toLowerCase(),
+    ].join(" ")),
     // Kept out of the positive fields on purpose — see DISCLAIMER_WEIGHT.
-    disclaimer: ko.notApplicableTo.join(" ").toLowerCase(),
+    disclaimer: tokenSet(ko.notApplicableTo.join(" ")),
   };
+}
+
+function identityTokens(ko: KnowledgeObject): TokenSet {
+  return tokenSet([ko.error.signature, ...ko.error.codes, ...ko.error.aliases].join(" "));
+}
+
+function technologyTokens(ko: KnowledgeObject): TokenSet {
+  const names = [
+    ko.domain,
+    ...ko.appliesTo.technology.map((technology) => technology.name),
+    ...(ko.appliesTo.runtimes ?? []),
+  ];
+  const tokens = tokenSet(names.join(" "));
+
+  for (const name of names) {
+    const words = name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+    if (words.length < 2) continue;
+    const acronym = words.map((word) => word[0]).join("");
+    if (acronym.length >= MIN_TERM_LENGTH) tokens.add(acronym);
+  }
+
+  return tokens;
+}
+
+function normalisePhrase(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+/**
+ * Full signatures and aliases are reliable anchors even inside a long stack trace.
+ * Codes are matched as whole normalised tokens; a substring such as `npm` inside an
+ * unrelated npm error is deliberately not enough.
+ */
+function hasExactIdentityMatch(ko: KnowledgeObject, query: string): boolean {
+  const normalisedQuery = normalisePhrase(query);
+  if (!normalisedQuery) return false;
+
+  const paddedQuery = ` ${normalisedQuery} `;
+  for (const code of ko.error.codes) {
+    const normalisedCode = normalisePhrase(code);
+    if (normalisedCode && paddedQuery.includes(` ${normalisedCode} `)) return true;
+  }
+
+  for (const phrase of [ko.error.signature, ...ko.error.aliases]) {
+    const normalised = normalisePhrase(phrase);
+    if (normalised.length >= MIN_TERM_LENGTH && paddedQuery.includes(` ${normalised} `)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/** Codes/statuses whose meaning is not specific without a product/runtime name. */
+const GENERIC_CODES = new Set([
+  "backoff",
+  "cors",
+  "eacces",
+  "enospc",
+  "err_failed",
+  "hy000",
+  "importerror",
+  "invalid_request",
+  "lock_timeout",
+  "pending",
+  "sigkill",
+  "too_many_connections",
+]);
+
+/** Identity phrases shared by several products; the KO's technology disambiguates. */
+const GENERIC_IDENTITY_PHRASES = [
+  "invalid signature",
+  "lock wait timeout",
+  "no space left on device",
+  "pull access denied",
+  "relation does not exist",
+  "signature verification failed",
+  "too many connections",
+].map(normalisePhrase);
+
+/** Broad platform nouns must not manufacture a cross-technology conflict. */
+const GENERIC_TECHNOLOGY_TERMS = new Set([
+  "api",
+  "browser",
+  "browsers",
+  "client",
+  "engine",
+  "framework",
+  "http",
+  "https",
+  "kernel",
+  "language",
+  "linux",
+  "networking",
+  "runtime",
+  "security",
+  "server",
+  "signature",
+  "token",
+  "web",
+]);
+
+function hasGenericIdentityPhrase(query: string): boolean {
+  const paddedQuery = ` ${normalisePhrase(query)} `;
+  return GENERIC_IDENTITY_PHRASES.some((phrase) => paddedQuery.includes(` ${phrase} `));
+}
+
+function isGenericIdentityPhrase(phrase: string): boolean {
+  const paddedPhrase = ` ${normalisePhrase(phrase)} `;
+  return GENERIC_IDENTITY_PHRASES.some((generic) =>
+    paddedPhrase.includes(` ${generic} `),
+  );
+}
+
+/**
+ * Exact non-generic prose is reliable inside a noisy stack trace. Unlike `invalid
+ * signature` or `lock wait timeout`, the complete React/CORS-style message already
+ * identifies its failure family and should not be diluted by application frames.
+ */
+function hasExactSpecificPhraseMatch(ko: KnowledgeObject, query: string): boolean {
+  const paddedQuery = ` ${normalisePhrase(query)} `;
+  return [ko.error.signature, ...ko.error.aliases].some((phrase) => {
+    const normalised = normalisePhrase(phrase);
+    return (
+      normalised.length >= MIN_TERM_LENGTH &&
+      !isGenericIdentityPhrase(normalised) &&
+      paddedQuery.includes(` ${normalised} `)
+    );
+  });
+}
+
+function exactCodeMatches(ko: KnowledgeObject, query: string): string[] {
+  const paddedQuery = ` ${normalisePhrase(query)} `;
+  return ko.error.codes.filter((code) => {
+    const normalised = normalisePhrase(code);
+    return normalised.length > 0 && paddedQuery.includes(` ${normalised} `);
+  });
+}
+
+function isGenericCode(code: string): boolean {
+  const normalised = normalisePhrase(code).replace(/ /g, "_");
+  return /^\d{3}$/.test(normalised) || GENERIC_CODES.has(normalised);
+}
+
+/** Unknown diagnostic identifiers are the strongest evidence that this is a gap. */
+function hasUnmatchedErrorIdentifier(query: string, unmatchedTerms: string[]): boolean {
+  const unmatched = new Set(unmatchedTerms);
+  const raw = query.match(/[A-Za-z0-9][A-Za-z0-9._-]*/g) ?? [];
+
+  return raw.some((token) => {
+    const lower = token.toLowerCase();
+    if (!unmatched.has(lower)) return false;
+    return (
+      /^[A-Z][A-Z0-9_-]{3,}$/.test(token) ||
+      /(?:error|exception)$/i.test(token) ||
+      /^err(?:or)?[_-][a-z0-9_-]{3,}$/i.test(token) ||
+      /^e(?:acces|addr|again|conn|exist|host|inval|io|mfile|net|nfile|noent|nospc|perm|pipe|proto|timed)[a-z0-9_-]{2,}$/i.test(token) ||
+      /^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]+)+$/.test(token)
+    );
+  });
 }
 
 /**
@@ -242,19 +473,18 @@ function stemCandidates(term: string): string[] {
 function disclaimingItem(ko: KnowledgeObject, queryTokens: string[]): string | undefined {
   if (queryTokens.length === 0 || ko.notApplicableTo.length === 0) return undefined;
 
-  const signature = [ko.error.signature, ...ko.error.codes, ...ko.error.aliases]
-    .join(" ")
-    .toLowerCase();
+  const signature = identityTokens(ko);
 
-  const coverageBy = (text: string) =>
-    queryTokens.reduce((n, t) => n + (text.includes(t) ? 1 : 0), 0) / queryTokens.length;
+  const coverageBy = (tokens: TokenSet) =>
+    queryTokens.reduce((n, term) => n + (tokenSetHas(tokens, term) ? 1 : 0), 0) /
+    queryTokens.length;
 
   const own = coverageBy(signature);
 
   let best: string | undefined;
   let bestCoverage = 0;
   for (const item of ko.notApplicableTo) {
-    const c = coverageBy(item.toLowerCase());
+    const c = coverageBy(tokenSet(item));
     if (c > bestCoverage) {
       bestCoverage = c;
       best = item;
@@ -274,11 +504,11 @@ function disclaimingItem(ko: KnowledgeObject, queryTokens: string[]): string | u
  * *nowhere but* the disclaimer scores against the entry.
  */
 function fieldWeight(fields: Haystack, term: string): number {
-  if (fields.signature.includes(term)) return FIELD_WEIGHTS.signature;
-  if (fields.title.includes(term)) return FIELD_WEIGHTS.title;
-  if (fields.tags.includes(term)) return FIELD_WEIGHTS.tags;
-  if (fields.body.includes(term)) return FIELD_WEIGHTS.body;
-  if (fields.disclaimer.includes(term)) return DISCLAIMER_WEIGHT;
+  if (tokenSetHas(fields.signature, term)) return FIELD_WEIGHTS.signature;
+  if (tokenSetHas(fields.title, term)) return FIELD_WEIGHTS.title;
+  if (tokenSetHas(fields.tags, term)) return FIELD_WEIGHTS.tags;
+  if (tokenSetHas(fields.body, term)) return FIELD_WEIGHTS.body;
+  if (tokenSetHas(fields.disclaimer, term)) return DISCLAIMER_WEIGHT;
   return 0;
 }
 
@@ -296,6 +526,11 @@ export function matchKnowledgeObjects(
   if (candidates.length === 0 || objects.length === 0) return empty;
 
   const fieldsByKo = objects.map(haystack);
+  const technologiesByKo = objects.map(technologyTokens);
+  const allTechnologyTokens = new Set<string>();
+  for (const tokens of technologiesByKo) {
+    for (const token of tokens) allTechnologyTokens.add(token);
+  }
   const total = objects.length;
 
   // Document frequency, then IDF. log(N/df) is deliberate: a term every entry
@@ -364,6 +599,8 @@ export function matchKnowledgeObjects(
       const fields = fieldsByKo[i];
       const matchedTerms: string[] = [];
       const disclaimedTerms: string[] = [];
+      const identity = fields.signature;
+      const technologies = technologiesByKo[i];
       let raw = 0;
       let hitsIdentity = false;
 
@@ -388,49 +625,118 @@ export function matchKnowledgeObjects(
       // confident hit on a MySQL lock-timeout entry: every word we recognise is a
       // real hit, and the two that would have told us otherwise cost nothing.
       const score = Math.min(1, (raw / bestPossible) * coverage);
+      const queryIdentityTerms = candidates.filter(
+        (term) =>
+          GENERIC_TECHNOLOGY_TERMS.has(term) || !tokenSetHas(technologies, term),
+      );
+      const identityAnchors = queryIdentityTerms.filter((term) => tokenSetHas(identity, term));
+      const identityCoverage =
+        queryIdentityTerms.length === 0 ? 0 : identityAnchors.length / queryIdentityTerms.length;
+      const matchedCodes = exactCodeMatches(ko, query);
+      const genericCodeMatch = matchedCodes.some(isGenericCode);
+      const exactSpecificCodeMatch = matchedCodes.some((code) => !isGenericCode(code));
+      const queryTechnologyTerms = candidates.filter((term) =>
+        !GENERIC_TECHNOLOGY_TERMS.has(term) && tokenSetHas(allTechnologyTokens, term),
+      );
+      const hasTechnologyContext = queryTechnologyTerms.some((term) =>
+        tokenSetHas(technologies, term),
+      );
+      const technologyConflict =
+        queryTechnologyTerms.length > 0 && !hasTechnologyContext;
+      const exactCodeAnchor =
+        exactSpecificCodeMatch || (genericCodeMatch && hasTechnologyContext);
+      const genericIdentityWithoutContext =
+        hasGenericIdentityPhrase(query) && !hasTechnologyContext;
+      const exactSpecificIdentityMatch =
+        exactSpecificCodeMatch || hasExactSpecificPhraseMatch(ko, query);
 
       return {
         ko,
         score,
         matchedTerms,
         hitsIdentity,
+        identityCoverage,
+        identityAnchors,
+        exactIdentityMatch: hasExactIdentityMatch(ko, query),
+        exactSpecificIdentityMatch,
+        exactSpecificCodeMatch,
+        exactCodeAnchor,
+        genericCodeWithoutContext:
+          (genericCodeMatch && !hasTechnologyContext) || genericIdentityWithoutContext,
+        technologyConflict,
         disclaimedTerms,
         disclaimedBy: disclaimingItem(ko, candidates),
       };
     })
     .filter((r) => r.score > 0)
-    .sort((a, b) => b.score - a.score || a.ko.title.localeCompare(b.ko.title));
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        Number(Boolean(b.disclaimedBy)) - Number(Boolean(a.disclaimedBy)) ||
+        a.ko.title.localeCompare(b.ko.title),
+    );
 
-  return { terms, unmatchedTerms, verdict: verdictFor(results), results };
+  return { terms, unmatchedTerms, verdict: verdictFor(results, query, unmatchedTerms), results };
 }
 
-function verdictFor(results: MatchResult[]): MatchVerdict {
+function verdictFor(
+  results: MatchResult[],
+  query: string,
+  unmatchedTerms: string[],
+): MatchVerdict {
   const top = results[0];
   if (!top || top.score < PARTIAL_FLOOR) return "none";
-  if (top.score < STRONG_FLOOR || !top.hitsIdentity) return "partial";
 
-  // An entry that names the query's own failure among the ones it is *not* about
-  // cannot be called a clear match, however well the rest of it scores. It may
-  // still be the best thing here — it stays ranked first — but the caller is told to
-  // read the exclusions rather than told the answer was found. Both signals feed
-  // this: disclaimedTerms when the vocabularies differ, disclaimedBy when they do
-  // not and only coverage can tell the two failures apart.
+  // An explicit negative-scope match is useful as a lead even when the query's own
+  // identifier is absent: the entry is naming the nearby failure and ruling itself
+  // out, which is exactly what `partial` means.
   if (top.disclaimedTerms.length > 0 || top.disclaimedBy) return "partial";
 
-  // A clear winner is part of what "strong" claims. When the runner-up is this
-  // close the honest answer is that two entries fit and their notApplicableTo
-  // sections, not our ranking, are what tells them apart.
-  const runnerUp = results[1];
-  if (runnerUp && top.score - runnerUp.score < AMBIGUITY_MARGIN) return "partial";
+  const hasIdentityAnchors = top.identityAnchors.length >= MIN_IDENTITY_ANCHORS;
+  const hasSemanticLead = top.exactIdentityMatch || hasIdentityAnchors;
+
+  // A score without an error-family anchor is merely topical overlap. This semantic
+  // gate lets the numeric floor stay tolerant of real neighbouring errors without
+  // turning AWS, Java or Git nouns into arbitrary partial results.
+  if (!hasSemanticLead) return "none";
+
+  if (top.score < STRONG_FLOOR || !top.hitsIdentity) return "partial";
+
+  // A full but generic status (429, Pending, SIGKILL...) is not product-specific.
+  // It becomes actionable only when the query also names this KO's environment.
+  if (top.genericCodeWithoutContext || top.technologyConflict) return "partial";
+
+  // An unknown diagnostic family vetoes strong unless a specific published code is
+  // present. Shared prose around a foreign error is useful at most as a lead.
+  if (!top.exactSpecificCodeMatch && hasUnmatchedErrorIdentifier(query, unmatchedTerms)) {
+    return "partial";
+  }
+
+  // A broad technology word in an identity field is not an error match. In
+  // particular, `npm EADDRINUSE` used to become a strong ERESOLVE answer because
+  // `npm` hit the title while the actual error code was absent from the corpus.
+  if (
+    !top.exactSpecificIdentityMatch &&
+    (!hasIdentityAnchors || top.identityCoverage < IDENTITY_COVERAGE_FLOOR)
+  ) {
+    return "partial";
+  }
+
+  // A clear winner is part of what "strong" claims. When a runner-up is this
+  // close the honest answer is usually that two entries fit and their
+  // notApplicableTo sections, not our ranking, are what tells them apart.
+  //
+  // Usually — because the corpus writes those sections with the sibling's slug in
+  // them, and that is a machine-readable arrow. A runner-up whose own exclusions
+  // point at the top entry has already conceded this query: "Init:CrashLoopBackOff"
+  // sits at 1.000 for the bare CrashLoopBackOff query too, but its first exclusion
+  // names kubernetes-crashloopbackoff, so the tie it creates is not an ambiguity.
+  // Only contenders that do NOT defer to the winner keep the verdict at partial.
+  const contenders = results
+    .slice(1)
+    .filter((r) => top.score - r.score < AMBIGUITY_MARGIN)
+    .filter((r) => !r.ko.notApplicableTo.some((item) => item.includes(top.ko.slug)));
+  if (contenders.length > 0) return "partial";
 
   return "strong";
-}
-
-/** Ranked entries only — the shape the HTML search page wants. */
-export function searchKnowledgeObjects(
-  objects: KnowledgeObject[],
-  query: string,
-): KnowledgeObject[] {
-  if (!query.trim()) return objects;
-  return matchKnowledgeObjects(objects, query).results.map((r) => r.ko);
 }

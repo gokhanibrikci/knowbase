@@ -1,0 +1,251 @@
+slug: kubernetes-errimageneverpull
+title: "Kubernetes ErrImageNeverPull: image not present with pull policy of Never"
+summary: >-
+  With imagePullPolicy: Never the kubelet never contacts a registry — the image must
+  already be on the node, or the container fails with ErrImageNeverPull. Most cases
+  are an image that was never loaded onto that node, or one imported into containerd's
+  default namespace instead of k8s.io, where the kubelet cannot see it.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - images
+  - imagepullpolicy
+  - containerd
+  - kind
+  - minikube
+
+error:
+  signature: "ErrImageNeverPull"
+  codes:
+    - ErrImageNeverPull
+  aliases:
+    - "container image is not present with pull policy of Never"
+    - "ErrImageNeverPull kind"
+    - "kind load docker-image not working"
+    - "ctr images import wrong namespace k8s.io"
+    - "minikube image load ErrImageNeverPull"
+
+problem: >-
+  A pod's container sits in Waiting with reason ErrImageNeverPull and never starts.
+  Unlike ImagePullBackOff there is no retry loop to wait out — the kubelet is doing
+  exactly what imagePullPolicy: Never asks and will not fetch the image, ever. The
+  trap is that "the image exists" usually means it exists somewhere the kubelet
+  cannot see: on your laptop's Docker daemon rather than the cluster node, on a
+  different node than the one the pod scheduled to, or inside containerd's default
+  namespace when the kubelet only reads k8s.io.
+
+rootCauses:
+  - cause: The image was never loaded onto the node the pod scheduled to
+    weight: primary
+    detail: >-
+      Never means the kubelet uses only what is already on the node. In a multi-node
+      cluster an image pre-loaded onto one node does nothing for the others, and the
+      scheduler does not restrict the pod to nodes that have it — Kubernetes' own
+      docs require all nodes to carry the same pre-pulled images for this to work.
+    discriminator: >-
+      kubectl get pod -o wide names the node; crictl images on that node shows no
+      matching reference
+  - cause: The image was imported into containerd's default namespace instead of k8s.io
+    weight: primary
+    detail: >-
+      ctr without -n operates on the namespace named "default", but the kubelet's CRI
+      traffic lives in the k8s.io namespace. An image imported with a bare
+      'ctr images import' lands where ctr sees it and Kubernetes does not — the two
+      listings disagree and the pod fails even though the image is "on the node".
+    discriminator: >-
+      ctr -n default images ls lists the image while ctr -n k8s.io images ls does not
+  - cause: The image exists only in the host Docker daemon, not the cluster runtime
+    weight: common
+    detail: >-
+      kind and minikube nodes run their own containerd with storage separate from the
+      Docker daemon that built the image. docker build makes the image visible to
+      docker images on the host, but nothing inside the cluster, until you hand it
+      over with kind load docker-image or minikube image load.
+    discriminator: >-
+      docker images on the host lists the image but crictl images inside the node
+      (docker exec -it <node> crictl images) does not
+  - cause: The loaded image and the pod spec disagree on name or tag
+    weight: common
+    detail: >-
+      You rebuilt and loaded my-app:v2 while the manifest still says my-app:v1, or the
+      image was loaded under a different repository path than the pod references. The
+      kubelet matches the exact reference, so a near-miss counts as absent.
+    discriminator: >-
+      crictl images shows the repository but under a different tag or path than the
+      pod spec's image field
+  - cause: The kubelet's image garbage collection removed a pre-loaded image
+    weight: edge
+    detail: >-
+      Pods that worked for weeks start failing after the node comes under disk
+      pressure. Kubelet image GC deletes unused images to free space and does not know
+      an image was hand-loaded and unreplaceable — once evicted, Never guarantees it
+      never comes back on its own.
+    discriminator: >-
+      The pod ran on this node before; node events or kubelet logs show disk pressure
+      or image garbage collection shortly before the failures began
+
+solution:
+  steps:
+    - instruction: >-
+        Confirm the reason and find which node the pod landed on — everything that
+        follows happens on that specific node, not "the cluster".
+      command: "kubectl get pod <pod-name> -n <namespace> -o wide && kubectl describe pod <pod-name> -n <namespace> | tail -20"
+    - instruction: >-
+        On that node, list images the way the kubelet sees them. crictl talks to the
+        CRI, so its listing is the ground truth — if the reference is not here, the
+        pod cannot start.
+      command: "crictl images | grep <repo>"
+      note: >-
+        On kind, reach the node with: docker exec -it <cluster>-control-plane crictl
+        images. On minikube: minikube ssh, then sudo crictl images.
+    - instruction: >-
+        If you imported the image with ctr, check both containerd namespaces. Images
+        in the default namespace are invisible to Kubernetes — only the k8s.io
+        namespace is accessible to the cluster, so re-import with -n k8s.io.
+      code: |
+        sudo ctr -n default images ls | grep <repo>   # where a bare import lands
+        sudo ctr -n k8s.io  images ls | grep <repo>   # where the kubelet looks
+
+        # re-import into the namespace Kubernetes reads
+        sudo ctr -n k8s.io images import my-app.tar
+      language: bash
+    - instruction: >-
+        On kind, load the image from your Docker daemon into every node of the
+        cluster. Avoid the :latest tag on pre-loaded images — when imagePullPolicy is
+        omitted, a :latest or missing tag defaults the policy to Always, and the
+        kubelet will try (and likely fail) to pull from a registry instead of using
+        your loaded copy.
+      command: "kind load docker-image my-app:v1 --name <cluster>"
+    - instruction: >-
+        On minikube, the equivalent hand-over loads directly into the in-cluster
+        runtime's storage.
+      command: "minikube image load my-app:v1"
+    - instruction: >-
+        On a real multi-node cluster, pre-load the image onto every node — save it
+        once, import it on each node into k8s.io — or reconsider the policy:
+        IfNotPresent prefers the local copy but can still pull, so a scheduling miss
+        degrades to a registry fetch instead of a hard failure.
+      code: |
+        docker save my-app:v1 -o my-app.tar
+        # on each node:
+        sudo ctr -n k8s.io images import my-app.tar
+      language: bash
+      note: >-
+        Never is only safe when node membership is stable; docs-level guidance is
+        that all nodes must carry the same pre-pulled images.
+    - instruction: >-
+        Delete the pod (or restart the workload) after loading. The kubelet re-checks
+        the node's image store on the next container start attempt.
+      command: "kubectl rollout restart deployment/<name> -n <namespace>"
+  verification: >-
+    kubectl describe pod shows 'Container image ... already present on machine' and
+    the pod reaches Running; crictl images on the pod's node lists the exact
+    reference from the pod spec.
+  fallback: >-
+    If hand-loading onto nodes keeps drifting out of sync, run a small local registry
+    (kind's local-registry pattern, or an in-cluster one), push images there, and use
+    imagePullPolicy: IfNotPresent — the local copy is still preferred, but a miss
+    becomes a fast local pull instead of a dead end.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        ErrImageNeverPull is a container Waiting reason surfaced by the kubelet when
+        imagePullPolicy is Never and the image is absent.
+    - name: containerd
+      versions: "1.3 and later"
+      note: >-
+        The namespace trap is containerd-specific: ctr defaults to the 'default'
+        namespace while CRI traffic uses k8s.io.
+    - name: kind
+      versions: "0.11 and later"
+    - name: minikube
+      versions: "1.25 and later"
+  runtimes:
+    - containerd
+    - CRI-O
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - >-
+    ImagePullBackOff / ErrImagePull, where the kubelet did try to pull and the
+    registry request failed — covered by kubernetes-imagepullbackoff
+  - >-
+    A missing image under imagePullPolicy IfNotPresent, which falls back to a
+    registry pull and therefore surfaces as ErrImagePull, never ErrImageNeverPull
+  - >-
+    CrashLoopBackOff, where the image is present and the container starts and then
+    exits
+  - >-
+    CreateContainerConfigError, where the image is fine but a referenced ConfigMap
+    or Secret is missing
+
+evidence:
+  - type: official-docs
+    title: "Images — Image pull policy and pre-pulled images"
+    url: https://kubernetes.io/docs/concepts/containers/images/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That Never means the kubelet does not fetch the image and startup fails when it
+      is absent locally, and that relying on pre-pulled images requires every node in
+      the cluster to carry the same images.
+    quote: "Never the kubelet does not try fetching the image. If the image is somehow already present locally, the kubelet attempts to start the container; otherwise, startup fails ... ensure all nodes in the cluster have the same pre-pulled images"
+  - type: official-docs
+    title: "kind — Quick Start, Loading an Image Into Your Cluster"
+    url: https://kind.sigs.k8s.io/docs/user/quick-start/
+    publisher: Kubernetes SIGs
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That kind load docker-image is the hand-over from the host Docker daemon to the
+      cluster nodes, and that a :latest or omitted tag flips the defaulted pull
+      policy to Always, which defeats pre-loaded images.
+    quote: "The Kubernetes default pull policy is IfNotPresent unless the image tag is :latest or omitted (and implicitly :latest ) in which case the default policy is Always"
+  - type: official-docs
+    title: "minikube — Pushing images"
+    url: https://minikube.sigs.k8s.io/docs/handbook/pushing/
+    publisher: Kubernetes SIGs
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That only images in containerd's k8s.io namespace are visible to the cluster,
+      and that minikube image load places images into the in-cluster runtime's
+      storage.
+    quote: >-
+      Images in "k8s.io" namespace are accessible to kubernetes cluster.
+  - type: official-docs
+    title: "containerd — Namespaces and Multi-Tenancy"
+    url: https://raw.githubusercontent.com/containerd/containerd/main/docs/namespaces.md
+    publisher: The containerd Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That ctr without an explicit -n flag operates on the namespace literally named
+      'default', which is why a bare 'ctr images import' puts the image where the
+      kubelet's CRI (k8s.io namespace) cannot see it.
+    quote: >-
+      If you do not provide a namespace, `ctr` client commands will all use the
+      default namespace, which is simply named "`default`".
+
+confidence: high
+confidenceRationale: >-
+  The Never semantics, the pre-pulled all-nodes requirement, the :latest-to-Always
+  defaulting and the containerd default-namespace behaviour are all quoted from the
+  Kubernetes, kind, minikube and containerd projects' own documentation. The claim
+  that kubelet image garbage collection can evict a hand-loaded image, and the exact
+  crictl/ctr diagnostic sequence, rest on documented GC and CRI behaviour plus
+  operational practice rather than on a single quotable sentence about this error.
+
+freshness:
+  created: "2026-08-11"
+  updated: "2026-08-11"
+  verifiedAt: "2026-08-11"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-imagepullbackoff
+  - kubernetes-crashloopbackoff
+  - kubernetes-createcontainerconfigerror

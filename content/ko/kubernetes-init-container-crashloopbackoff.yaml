@@ -1,0 +1,266 @@
+slug: kubernetes-init-container-crashloopbackoff
+title: "Kubernetes pod stuck in Init:CrashLoopBackOff or Init:Error"
+summary: >-
+  An init container is exiting non-zero, so the kubelet restarts it with growing
+  backoff and the app containers never start. Init:N/M in the STATUS column says how
+  far initialization got, and kubectl logs -c <init-name> — not plain kubectl logs —
+  is where the actual error is.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubelet
+  - init-containers
+  - crashloopbackoff
+  - pod-lifecycle
+  - troubleshooting
+
+error:
+  signature: "Init:CrashLoopBackOff"
+  codes:
+    - Init:CrashLoopBackOff
+    - Init:Error
+    - Init:N/M
+  aliases:
+    - "pod stuck in Init:0/1"
+    - "init container failing kubernetes"
+    - "back-off restarting failed container init"
+    - "kubectl logs init container"
+    - "Init:Error kubernetes pod"
+
+problem: >-
+  A pod sits at Init:0/1, Init:Error or Init:CrashLoopBackOff and the application
+  never starts. Init containers run strictly in order and each must exit 0 before
+  the next begins, so one failing init container blocks everything behind it. The
+  reflexive kubectl logs <pod> reads the app container, which was never created —
+  the failure is in a container many people forget exists, often one injected by a
+  Helm chart or a service mesh rather than written by hand. The RESTARTS column and
+  the growing back-off delay belong to the init container, not the app.
+
+rootCauses:
+  - cause: The init container's own command fails
+    weight: primary
+    detail: >-
+      A migration script with a bug, a missing binary in a minimal image, a typo in
+      args, or a shell script that returns the last command's non-zero status. The
+      kubelet dutifully reruns it and it fails identically every time.
+    discriminator: >-
+      kubectl logs <pod> -c <init-name> shows the same application-level error on
+      every attempt, and the exit code in kubectl describe is a stable non-zero
+      value such as 1 or 127
+  - cause: A dependency the init container waits for never becomes ready
+    weight: primary
+    detail: >-
+      The most common init pattern is a script that polls a database, a Service or a
+      migration job and exits non-zero when its timeout expires. If the dependency is
+      down, misnamed, or in another namespace without a FQDN, the init container
+      fails on schedule, forever.
+    discriminator: >-
+      Logs show a loop of connection refused, timeout or unknown host against one
+      address, and the pod initializes by itself the moment that dependency is
+      reachable
+  - cause: A mounted ConfigMap, Secret or volume path is wrong
+    weight: common
+    detail: >-
+      The init container starts but its script reads a key that was renamed, a file
+      mounted at a different path than it expects, or a volume owned by a UID it
+      cannot read. The container is fine; its inputs are not.
+    discriminator: >-
+      Logs show 'No such file or directory' or 'permission denied' on a path under a
+      volumeMount, and kubectl describe confirms the mount exists but the content or
+      ownership differs from what the script expects
+  - cause: The init container is killed by its resource limits
+    weight: common
+    detail: >-
+      Init containers take resource limits like any container, and restore or
+      migration steps often need far more memory than the steady-state app. The
+      kernel kills it, the kubelet restarts it, and it dies at the same point each
+      time.
+    discriminator: >-
+      kubectl describe pod shows the init container's Last State as Terminated with
+      Reason OOMKilled or exit code 137
+  - cause: The pod's restartPolicy is Never, so one failure ends the pod
+    weight: edge
+    detail: >-
+      With restartPolicy Never — typical for Jobs — a failed init container is not
+      retried at all: Kubernetes marks the whole pod Failed. There is no back-off
+      loop to observe, which makes it look like a different problem.
+    discriminator: >-
+      Status shows Init:Error with RESTARTS stuck at 0 and the pod phase is Failed
+      rather than Pending
+  - cause: A sidecar was written as a regular init container
+    weight: edge
+    detail: >-
+      A log shipper or proxy that is meant to run for the pod's whole life but sits
+      in initContainers without restartPolicy: Always either blocks initialization
+      forever (it never exits) or, when it crashes, is treated as a failed init step
+      and back-off restarted before the app can start.
+    discriminator: >-
+      The stuck container's logs show a healthy long-running process rather than an
+      error, and the status stays Init:N/M without ever advancing
+
+solution:
+  steps:
+    - instruction: >-
+        Read the STATUS column first. Init:N/M means N of M init containers have
+        completed, so the one failing is number N+1 in the pod spec's initContainers
+        list — that is the container whose logs you need.
+      command: "kubectl get pod <pod-name> -n <namespace>"
+    - instruction: >-
+        Get the init container names, exit codes and last termination reason. The
+        describe output separates Init Containers from Containers and quotes the
+        runtime's reason — OOMKilled, Error — per container.
+      command: "kubectl describe pod <pod-name> -n <namespace>"
+      note: >-
+        The same data is available programmatically via
+        kubectl get pod <pod-name> --template '{{.status.initContainerStatuses}}'.
+    - instruction: >-
+        Read the failing init container's logs by name. Plain kubectl logs targets
+        the app container, which does not exist yet; -c selects the init container,
+        and --previous shows the attempt that just crashed if a new one is already
+        running.
+      command: "kubectl logs <pod-name> -c <init-container-name> --previous"
+      note: >-
+        Init containers running shell scripts become much easier to debug with
+        set -x at the top, so each command is printed as it executes.
+    - instruction: >-
+        Map the exit code to a class of failure before touching anything: 137 is a
+        kill by the memory limit — raise the init container's resources; 127 means
+        the command does not exist in the image; small stable codes like 1 are the
+        script's own error and the logs name it.
+    - instruction: >-
+        If the init container is waiting on a dependency, fix the dependency or its
+        address rather than the pod. The kubelet keeps retrying with back-off capped
+        at five minutes, so the pod recovers on its own once the dependency answers
+        — deleting the pod merely resets the back-off timer.
+    - instruction: >-
+        If the container is meant to keep running alongside the app — a proxy, a log
+        shipper — it is a sidecar, not an init step. Give it a container-level
+        restartPolicy: Always, which makes Kubernetes start it before the app and
+        keep it running instead of waiting for it to exit.
+      code: |
+        spec:
+          initContainers:
+            - name: logshipper
+              image: alpine:latest
+              # container-level restartPolicy turns this init entry into a sidecar
+              restartPolicy: Always
+              command: ['sh', '-c', 'tail -F /opt/logs.txt']
+      language: yaml
+      note: >-
+        Native sidecar support is on by default since Kubernetes v1.29; on older
+        clusters the SidecarContainers feature gate must be enabled.
+    - instruction: >-
+        Remember the retry rules when reasoning about what you see: init containers
+        are retried only when the pod-level restartPolicy is OnFailure or Always
+        (Always is downgraded to OnFailure for init containers), and under Never a
+        single init failure marks the pod Failed with no retry. Fix the cause, then
+        recreate the pod — a pod that restarts runs all init containers again from
+        the beginning.
+      command: "kubectl rollout restart deployment/<name> -n <namespace>"
+  verification: >-
+    kubectl get pod progresses through Init:1/M ... to PodInitializing and then
+    Running, the Initialized condition is True, and the RESTARTS count stops
+    growing across several back-off periods.
+  fallback: >-
+    When logs are empty or the failure only reproduces in-cluster, temporarily
+    override the init container's command with 'sleep 3600', let the pod reach that
+    step, then kubectl exec -c <init-name> into it and run the original command by
+    hand to inspect mounts, env and network from the container's own point of view.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.20 and later"
+      note: >-
+        Init:* is a kubectl STATUS summary, not a pod phase — a pod that is
+        initializing is in phase Pending with condition Initialized false.
+    - name: kubelet
+      versions: "1.20 and later"
+      note: >-
+        Restart back-off doubles from 10s and is capped at 300 seconds; sidecar
+        (restartable init) containers require v1.29+ for on-by-default support.
+  runtimes:
+    - containerd
+    - CRI-O
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+notApplicableTo:
+  - >-
+    CrashLoopBackOff without the Init: prefix, where initialization finished and
+    the main application container is the one crashing (kubernetes-crashloopbackoff)
+  - >-
+    Init:ImagePullBackOff or Init:ErrImagePull, where the init container's image
+    cannot be pulled and it never runs at all (kubernetes-imagepullbackoff)
+  - >-
+    Pods showing plain Pending with no Init: status, which have not been scheduled
+    or have not begun executing init containers
+  - >-
+    CreateContainerConfigError, where a referenced ConfigMap or Secret is missing
+    and the container is never created rather than created and crashing
+
+evidence:
+  - type: official-docs
+    title: "Init Containers"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/init-containers/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That init containers run strictly in order, each must complete successfully
+      before the next starts, and that the kubelet's response to a failure is to
+      restart that init container repeatedly until it succeeds.
+    quote: "Each init container must complete successfully before the next one starts. If a Pod's init container fails, the kubelet repeatedly restarts that init container until it succeeds."
+  - type: official-docs
+    title: "Debug Init Containers"
+    url: https://kubernetes.io/docs/tasks/debug/debug-application/debug-init-containers/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      The meaning of the Init:N/M, Init:Error and Init:CrashLoopBackOff status
+      values, and (same page) that init container logs are read by passing the init
+      container's name with -c to kubectl logs.
+    quote: "Init:N/M The Pod has M Init Containers, and N have completed so far. Init:Error An Init Container has failed to execute. Init:CrashLoopBackOff An Init Container has failed repeatedly."
+  - type: official-docs
+    title: "Pod Lifecycle — Container restarts"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That failed init containers are restarted only under a pod-level
+      restartPolicy of OnFailure or Always, and that restarts happen with an
+      exponential back-off delay capped at 300 seconds.
+    quote: "For init containers that exit with an error, the kubelet restarts the init container if the Pod level restartPolicy is either OnFailure or Always ... capped at 300 seconds (5 minutes)"
+  - type: official-docs
+    title: "Sidecar Containers"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That an initContainers entry with container-level restartPolicy Always is a
+      sidecar that keeps running for the pod's whole life, which is the fix when a
+      long-running process was written as a regular init container.
+    quote: "If an init container is created with its restartPolicy set to Always , it will start and remain running during the entire life of the Pod."
+
+confidence: high
+confidenceRationale: >-
+  The ordering rule, the restart semantics per restartPolicy, the Init:* status
+  meanings, the logs -c mechanic and the sidecar distinction are all quoted from
+  kubernetes.io. Two things rest on practice rather than a quotable sentence: the
+  claim that dependency-wait scripts are the most frequent real-world cause, and the
+  exit-code readings (137 as a limit kill, 127 as command-not-found), which are
+  container-runtime conventions rather than statements these pages make. The
+  restartPolicy Never consequence (pod treated as failed) is stated on the Init
+  Containers page outside the quoted excerpt.
+
+freshness:
+  created: "2026-08-11"
+  updated: "2026-08-11"
+  verifiedAt: "2026-08-11"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-crashloopbackoff
+  - kubernetes-imagepullbackoff
+  - kubernetes-createcontainerconfigerror
+  - container-exit-code-137-oomkilled

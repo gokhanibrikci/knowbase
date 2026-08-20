@@ -1,0 +1,266 @@
+slug: kubectl-connection-refused-localhost-8080
+title: "kubectl: The connection to the server localhost:8080 was refused"
+summary: >-
+  kubectl found no kubeconfig, so it fell back to its compiled-in default of
+  http://localhost:8080 — an address no modern API server listens on. The cluster is
+  usually fine; the client is unconfigured. The fix is pointing kubectl at a real
+  kubeconfig: copy admin.conf, set KUBECONFIG, or select a context.
+domain: kubernetes
+tags:
+  - kubernetes
+  - kubectl
+  - kubeconfig
+  - kubeadm
+  - client-go
+  - contexts
+  - troubleshooting
+
+error:
+  signature: "The connection to the server localhost:8080 was refused - did you specify the right host or port?"
+  codes:
+    - ECONNREFUSED
+  aliases:
+    - "kubectl connection refused localhost 8080"
+    - "dial tcp 127.0.0.1:8080: connect: connection refused"
+    - "kubectl works as root but not as my user"
+    - "kubectl get nodes connection refused after kubeadm init"
+    - "The connection to the server localhost:8080 was refused"
+
+problem: >-
+  Every kubectl command fails instantly with a refused connection to localhost:8080,
+  even though the cluster itself may be perfectly healthy. The address is the tell:
+  no modern API server listens on port 8080, and localhost is almost never where the
+  control plane lives. kubectl prints it because it resolved no kubeconfig at all —
+  no $HOME/.kube/config, no KUBECONFIG, no --kubeconfig flag — and client-go's legacy
+  default server filled the gap. The error therefore says nothing about the cluster;
+  it says the client has no idea where the cluster is.
+
+rootCauses:
+  - cause: No kubeconfig exists where kubectl looks
+    weight: primary
+    detail: >-
+      kubectl reads $HOME/.kube/config by default. On a fresh workstation, or on a
+      kubeadm control-plane node where the post-init copy of /etc/kubernetes/admin.conf
+      into $HOME/.kube/config was skipped, that file simply is not there, and kubectl
+      falls through to the localhost:8080 default.
+    discriminator: >-
+      'kubectl config view' prints an empty skeleton (clusters: null, current-context
+      is empty), and ls $HOME/.kube/config reports no such file
+  - cause: Running under sudo or as root swaps $HOME to a directory with no config
+    weight: primary
+    detail: >-
+      sudo kubectl resolves $HOME to /root, so it looks for /root/.kube/config while
+      the working config sits under the invoking user. The inverse also happens: the
+      config was created as root during cluster setup, so the unprivileged user has
+      nothing. Same command, different $HOME, different result.
+    discriminator: >-
+      The command succeeds with sudo but fails without it (or the reverse), and the
+      failing identity has no .kube/config in its own home directory
+  - cause: KUBECONFIG is set in one shell but absent where the command actually runs
+    weight: common
+    detail: >-
+      An export KUBECONFIG=... made interactively does not follow the command into a
+      new terminal, a cron job, a CI step, or a systemd unit. In that environment the
+      variable is unset, the default path is empty, and kubectl falls back. An empty
+      or typo'd KUBECONFIG value fails the same way.
+    discriminator: >-
+      'echo $KUBECONFIG' differs between the shell where kubectl works and the
+      environment where it fails, and passing --kubeconfig explicitly fixes the failure
+  - cause: A kubeconfig exists but no usable current-context is selected
+    weight: common
+    detail: >-
+      kubectl uses the current context to pick cluster and credentials. After merging
+      several kubeconfig files, deleting a cluster entry, or hand-editing the file,
+      current-context can be empty or name a context whose cluster has no server —
+      and with no server location resolved, the legacy default takes over.
+    discriminator: >-
+      'kubectl config current-context' errors with 'current-context is not set' or
+      names a context missing from 'kubectl config get-contexts'
+  - cause: kubectl runs in a container that has neither a kubeconfig nor a pod environment
+    weight: edge
+    detail: >-
+      Inside a real pod, API access is discovered through the service account and the
+      KUBERNETES_SERVICE_HOST environment; a plain docker container or CI runner has
+      neither that environment nor a mounted kubeconfig, so kubectl has nowhere to
+      look and falls back to localhost:8080.
+    discriminator: >-
+      Inside the failing container, 'env | grep KUBERNETES_SERVICE_HOST' is empty and
+      no kubeconfig file is mounted at the path kubectl checks
+
+solution:
+  steps:
+    - instruction: >-
+        Confirm the problem is client-side before touching the cluster. If the
+        effective configuration is empty, kubectl never knew where the API server was
+        and nothing on the server needs fixing.
+      command: "kubectl config view"
+      note: >-
+        An unconfigured client prints 'clusters: null' and an empty current-context.
+        If instead you see a real server address, the problem is a different one —
+        see notApplicableTo.
+    - instruction: >-
+        On a kubeadm control-plane node, install the admin kubeconfig for your
+        non-root user — these are the same commands kubeadm init prints at the end.
+      code: |
+        mkdir -p $HOME/.kube
+        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+        sudo chown $(id -u):$(id -g) $HOME/.kube/config
+      language: bash
+      note: >-
+        admin.conf carries cluster-admin privileges — treat the copy like a root
+        credential and do not share it.
+    - instruction: >-
+        If you genuinely are root, point KUBECONFIG at admin.conf instead of copying.
+      command: "export KUBECONFIG=/etc/kubernetes/admin.conf"
+      note: >-
+        The export lasts only for the current shell. Put it in the shell profile, or
+        prefer the copy in the previous step so sudo and non-sudo behave the same.
+    - instruction: >-
+        Stop mixing sudo into kubectl once the user copy exists. sudo swaps $HOME to
+        /root, so it reads a different config file than your user does — pick one
+        identity and give that identity the config.
+    - instruction: >-
+        If a kubeconfig exists but the error persists, check that a current context is
+        set and points at a real cluster, then select one explicitly.
+      code: |
+        kubectl config current-context
+        kubectl config get-contexts
+        kubectl config use-context <context-name>
+      language: bash
+    - instruction: >-
+        On managed or packaged clusters, regenerate the kubeconfig with the
+        distribution's own tooling rather than writing one by hand — for example
+        'aws eks update-kubeconfig --name <cluster>', 'gcloud container clusters
+        get-credentials <cluster>', or for k3s, /etc/rancher/k3s/k3s.yaml.
+    - instruction: >-
+        For cron jobs, CI steps and systemd units, set KUBECONFIG in the unit or job
+        definition itself. Interactive shell exports do not reach those environments,
+        which is why the same command works at the terminal and fails on schedule.
+      code: |
+        # systemd unit
+        [Service]
+        Environment=KUBECONFIG=/etc/kubernetes/admin.conf
+
+        # or make it explicit per invocation
+        kubectl --kubeconfig /path/to/config get nodes
+      language: ini
+  verification: >-
+    kubectl config current-context prints a named context, kubectl cluster-info
+    reports the control plane at its real address rather than localhost:8080, and
+    kubectl get nodes returns the node list without the refused-connection error.
+  fallback: >-
+    If no kubeconfig can be recovered anywhere, generate a fresh one from a
+    control-plane node: re-copy /etc/kubernetes/admin.conf, or mint a scoped
+    credential with 'kubeadm kubeconfig user --client-name <name>' and bind it the
+    privileges it needs. On managed platforms, re-download credentials with the
+    provider CLI.
+
+appliesTo:
+  technology:
+    - name: kubectl
+      versions: "all released versions"
+      note: >-
+        The localhost:8080 fallback is a compiled-in client-go default, marked
+        deprecated in the source but still present.
+    - name: kubeadm
+      versions: "1.15 and later"
+      note: >-
+        kubeadm writes the admin kubeconfig to /etc/kubernetes/admin.conf on
+        control-plane nodes; nothing installs it into $HOME for you.
+  platforms:
+    - linux
+    - macos
+    - windows
+
+notApplicableTo:
+  - >-
+    TLS and authentication errors against a real API server — 'x509: certificate has
+    expired', 'certificate signed by unknown authority', or 'Unauthorized' — where
+    kubectl found a kubeconfig and reached a server; the config resolved, the
+    credentials or trust did not
+  - >-
+    Connection refused or timeouts against a remote server address (anything other
+    than localhost:8080), which means the kubeconfig resolved correctly and the
+    problem is the network path or an API server that is actually down
+  - >-
+    kubelet problems — nodes NotReady, 'kubelet is not running' — which are
+    node-side failures; this error is produced entirely on the client before any
+    packet reaches the cluster
+  - >-
+    Clusters that deliberately served the insecure port — kube-apiserver's
+    unauthenticated localhost:8080 listener was removed in Kubernetes 1.20, so on
+    any modern cluster nothing legitimate answers there
+
+evidence:
+  - type: official-docs
+    title: "Organizing Cluster Access Using kubeconfig Files"
+    url: https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That kubectl looks for $HOME/.kube/config by default and that KUBECONFIG or
+      --kubeconfig overrides it — the search order whose empty result triggers the
+      localhost:8080 fallback, and the reason sudo's different $HOME changes the
+      outcome.
+    quote: "By default, kubectl looks for a file named config in the $HOME/.kube directory. You can specify other kubeconfig files by setting the KUBECONFIG environment variable or by setting the --kubeconfig flag."
+  - type: source-code
+    title: "client-go clientcmd client_config.go — legacy default server"
+    url: https://raw.githubusercontent.com/kubernetes/client-go/master/tools/clientcmd/client_config.go
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That http://localhost:8080 is the compiled-in default server client-go returns
+      when no kubeconfig provides one, which is why the error names that exact
+      address.
+    quote: >-
+      func getDefaultServer() string { ... return "http://localhost:8080"
+  - type: official-docs
+    title: "Creating a cluster with kubeadm"
+    url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      The prescribed fix on control-plane nodes: copy /etc/kubernetes/admin.conf into
+      $HOME/.kube/config for a non-root user, or export KUBECONFIG to it when running
+      as root.
+    quote: "To make kubectl work for your non-root user, run these commands, which are also part of the kubeadm init output ... Alternatively, if you are the root user, you can run: export KUBECONFIG = /etc/kubernetes/admin.conf"
+  - type: official-docs
+    title: "Configure Access to Multiple Clusters"
+    url: https://kubernetes.io/docs/tasks/access-application-cluster/configure-access-multiple-clusters/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That kubectl config use-context is the mechanism for selecting which cluster and
+      credentials kubectl uses — the fix when a kubeconfig exists but no usable
+      context is current.
+    quote: "After your clusters, users, and contexts are defined in one or more configuration files, you can quickly switch between clusters by using the kubectl config use-context command."
+  - type: official-docs
+    title: "Accessing the Kubernetes API from a Pod"
+    url: https://kubernetes.io/docs/tasks/run-application/access-api-from-pod/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That in-cluster API access is discovered through the pod's service account
+      rather than a kubeconfig — the environment a bare container or CI runner lacks,
+      which is why kubectl there falls back to localhost:8080.
+    quote: "In each case, the service account credentials of the Pod are used to communicate securely with the API server."
+
+confidence: high
+confidenceRationale: >-
+  The default file location, the KUBECONFIG override, the kubeadm admin.conf
+  workflow and context switching are all quoted from Kubernetes documentation, and
+  the localhost:8080 fallback is read directly from the client-go source that
+  produces it. The sudo/$HOME cause and the cron/CI environment cause follow from
+  the documented $HOME/.kube/config default rather than from any sentence naming
+  sudo or cron, and the removal of the insecure port in 1.20 rests on release
+  history rather than a quoted source here.
+
+freshness:
+  created: "2026-08-11"
+  updated: "2026-08-11"
+  verifiedAt: "2026-08-11"
+  reviewIntervalDays: 365
+
+related:
+  - kubernetes-imagepullbackoff
+  - kubernetes-crashloopbackoff

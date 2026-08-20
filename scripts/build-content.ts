@@ -12,8 +12,16 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { loadFromDisk } from "../lib/ko/fs-loader";
+import {
+  buildAgentsCard,
+  buildMcpServerCard,
+  serializeDiscoveryDocument,
+} from "../lib/mcp/contract";
 
 const OUT = path.join(process.cwd(), "lib", "ko", "content.generated.ts");
+const MCP_CARD_OUT = path.join(process.cwd(), "public", ".well-known", "mcp.json");
+const MCP_CARD_ALIAS_OUT = path.join(process.cwd(), "public", ".well-known", "mcp");
+const AGENTS_CARD_OUT = path.join(process.cwd(), "public", ".well-known", "agents.json");
 
 function main() {
   const objects = loadFromDisk();
@@ -33,10 +41,20 @@ function main() {
 
   writeFileSync(OUT, body, "utf8");
 
+  // Discovery is generated from the same declarative contract as the runtime.
+  // Both MCP paths intentionally receive the exact same bytes because clients probe
+  // both spellings while the server-card convention settles.
+  const mcpCard = serializeDiscoveryDocument(buildMcpServerCard());
+  const agentsCard = serializeDiscoveryDocument(buildAgentsCard());
+  writeFileSync(MCP_CARD_OUT, mcpCard, "utf8");
+  writeFileSync(MCP_CARD_ALIAS_OUT, mcpCard, "utf8");
+  writeFileSync(AGENTS_CARD_OUT, agentsCard, "utf8");
+
   const bytes = Buffer.byteLength(body, "utf8");
   console.log(
     `content bundle: ${objects.length} knowledge objects → lib/ko/content.generated.ts (${(bytes / 1024).toFixed(1)} kB)`,
   );
+  console.log("agent discovery: mcp, mcp.json and agents.json refreshed from contract");
 }
 
 main();

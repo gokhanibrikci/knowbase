@@ -1,0 +1,272 @@
+slug: kubernetes-job-backofflimitexceeded
+title: "Kubernetes Job failed: reached the specified backoff limit"
+summary: >-
+  The Job controller counted pod failures up to .spec.backoffLimit — 6 by default —
+  and marked the Job permanently Failed with reason BackoffLimitExceeded. The
+  condition is pure accounting: the actual reason lives in the logs of the failed
+  pods, which are kept around precisely so you can read them.
+domain: kubernetes
+tags:
+  - kubernetes
+  - job
+  - batch
+  - backofflimit
+  - pod-failure-policy
+  - retries
+  - troubleshooting
+
+error:
+  signature: "Job has reached the specified backoff limit"
+  codes:
+    - BackoffLimitExceeded
+    - JobReasonBackoffLimitExceeded
+  aliases:
+    - "Job has reached the specified backoff limit"
+    - "BackoffLimitExceeded kubernetes job"
+    - "kubernetes job failed backoffLimit"
+    - "job.batch backoff limit exceeded"
+    - "Job failed condition BackoffLimitExceeded"
+
+problem: >-
+  A Job stops creating pods and kubectl describe job shows a Warning event with
+  reason BackoffLimitExceeded and a Failed condition carrying the message 'Job has
+  reached the specified backoff limit'. The message says only that the failure
+  budget ran out, never why the pods failed. Because retries are spaced with an
+  exponential back-off delay, the Job can look merely slow for many minutes before
+  it dies — with the default limit of 6 the built-in example takes at least nine
+  minutes to fail. Once the condition is set the failure is permanent: nothing
+  restarts a Failed Job, so waiting accomplishes nothing.
+
+rootCauses:
+  - cause: The workload fails deterministically, so every retry fails identically
+    weight: primary
+    detail: >-
+      A code bug, wrong arguments, a missing input file or an unreachable dependency
+      makes the container exit non-zero on every attempt. Retrying was never going to
+      help; the backoff limit just decides how long the futile retries continue —
+      roughly nine minutes at the default of 6, thanks to the exponential delay.
+    discriminator: >-
+      Every retained failed pod shows the same error and the same exit code —
+      kubectl logs on two different pods of the Job print the same failure
+  - cause: The container is killed for exceeding resources, counting as a failure each time
+    weight: common
+    detail: >-
+      An OOM kill (exit code 137) or an eviction for disk pressure terminates the pod,
+      the Job controller counts it and recreates it, and the replacement dies the same
+      way until the budget is spent. The Job accounting cannot tell an OOM from a bug.
+    discriminator: >-
+      kubectl describe pod on a failed pod shows lastState terminated with reason
+      OOMKilled or exitCode 137, not an application error in the logs
+  - cause: Transient disruptions are counted because no pod failure policy ignores them
+    weight: common
+    detail: >-
+      Node drains, preemption and taint-based eviction fail the pod through no fault
+      of the workload. By default each such failure is counted toward
+      .spec.backoffLimit, so cluster maintenance can exhaust a small budget while the
+      program itself never misbehaved.
+    discriminator: >-
+      Failed pods carry the DisruptionTarget condition, and the failures cluster
+      around node upgrades or autoscaler scale-downs rather than spreading evenly
+  - cause: backoffLimit was set far below the default for a workload with expected transient failures
+    weight: common
+    detail: >-
+      Someone set backoffLimit to 0 or 1 to fail fast, and a single flaky network call
+      or a one-off eviction now kills the whole Job. The default is 6; a manifest that
+      overrides it downward turns any transient error into a permanent Job failure.
+    discriminator: >-
+      kubectl get job -o jsonpath='{.spec.backoffLimit}' prints 0 or 1 and
+      .status.failed equals it exactly
+  - cause: restartPolicy OnFailure hides the evidence and skews the counting
+    weight: edge
+    detail: >-
+      With restartPolicy OnFailure the kubelet restarts the container inside the same
+      pod, and the Job counts those container retries in Pending or Running pods in
+      addition to whole failed pods. When the limit is reached the pod running the job
+      is terminated, taking its logs with it — the Job looks like it failed with no
+      trace.
+    discriminator: >-
+      The Job's pods show RESTARTS greater than 0 before disappearing, and kubectl
+      logs on them returns nothing after the Job fails
+
+solution:
+  steps:
+    - instruction: >-
+        Confirm what actually fired. The Failed condition's reason distinguishes the
+        failure-count limit (BackoffLimitExceeded) from the wall-clock deadline
+        (DeadlineExceeded) — they need different fixes.
+      command: "kubectl describe job <job-name> -n <namespace>"
+      note: >-
+        status.failed in kubectl get job -o yaml shows how many pod failures were
+        counted against the limit.
+    - instruction: >-
+        Read the logs of the failed pods. They are not deleted when the Job fails —
+        with restartPolicy Never every attempt leaves its own Failed pod behind, and
+        the real error is in there, not in the Job status.
+      command: "kubectl get pods -l job-name=<job-name> -n <namespace>"
+      note: >-
+        Then kubectl logs <pod-name> on each Failed pod. Identical output across
+        attempts means a deterministic bug; varying output points at the environment.
+    - instruction: >-
+        If the pods are gone, you are running restartPolicy OnFailure — the pod is
+        terminated once the limit is reached. Switch to Never while debugging so the
+        evidence survives, exactly as the Kubernetes docs suggest.
+    - instruction: >-
+        Fix the underlying cause, then delete and re-create the Job. A Job that hit
+        its backoff limit is permanently failed — there is no automatic restart, and
+        most of the spec is immutable, so editing it in place is not an option.
+      command: "kubectl delete job <job-name> -n <namespace> && kubectl apply -f job.yaml"
+    - instruction: >-
+        Stop paying for retries that cannot succeed and for disruptions that are not
+        failures: add a pod failure policy that fails the Job immediately on a
+        non-retriable exit code and ignores pod disruptions instead of counting them.
+      code: |
+        apiVersion: batch/v1
+        kind: Job
+        spec:
+          backoffLimit: 6
+          podFailurePolicy:
+            rules:
+              - action: FailJob        # a bug: fail now, don't burn six retries
+                onExitCodes:
+                  containerName: main
+                  operator: In
+                  values: [42]
+              - action: Ignore         # node drains don't consume the budget
+                onPodConditions:
+                  - type: DisruptionTarget
+          template:
+            spec:
+              restartPolicy: Never     # podFailurePolicy requires Never
+              containers:
+                - name: main
+                  image: my-batch:1.4
+      language: yaml
+      note: >-
+        podFailurePolicy is stable since Kubernetes 1.31 and cannot be combined with
+        restartPolicy OnFailure.
+    - instruction: >-
+        Bound the Job in wall-clock time with activeDeadlineSeconds where total
+        duration matters more than attempt count — but know that it takes precedence
+        over backoffLimit and kills the Job with reason DeadlineExceeded even
+        mid-retry.
+    - instruction: >-
+        Choose backoffLimit deliberately rather than reflexively raising it. More
+        retries of a deterministic failure only delay the same outcome — the delay
+        between attempts doubles each time, capped at six minutes — while genuinely
+        transient failures are better excluded from the count with an Ignore rule.
+  verification: >-
+    The re-created Job reaches the Complete condition: kubectl get job shows
+    COMPLETIONS satisfied, status.conditions contains type Complete instead of
+    Failed, and status.failed stays at zero (or safely below the limit) across a
+    full run.
+  fallback: >-
+    For Indexed Jobs where one bad index should not kill the rest, set
+    backoffLimitPerIndex so failure accounting is per index. Where the application
+    manages its own retries idempotently, set backoffLimit to 0 and treat any pod
+    failure as final rather than letting two retry layers multiply.
+
+appliesTo:
+  technology:
+    - name: Kubernetes
+      versions: "1.21 and later"
+      note: >-
+        BackoffLimitExceeded is the reason on the Job's Failed condition, set by the
+        Job controller; the message text comes from the controller source.
+    - name: Job controller (kube-controller-manager)
+      versions: "1.21 and later"
+      note: >-
+        Counts whole failed pods, plus container retries inside Pending/Running pods
+        when restartPolicy is OnFailure.
+  platforms:
+    - self-hosted
+    - managed Kubernetes
+
+notApplicableTo:
+  - >-
+    CrashLoopBackOff on Deployments and other long-running workloads, where the
+    kubelet restarts containers indefinitely and nothing is ever marked permanently
+    Failed — backoffLimit is a Job concept
+  - >-
+    CronJob schedule problems — missed schedules, startingDeadlineSeconds or
+    concurrencyPolicy skips happen before any pod runs; only the child Job a
+    CronJob spawns can hit BackoffLimitExceeded
+  - >-
+    Jobs failed with reason DeadlineExceeded, where activeDeadlineSeconds expired —
+    a wall-clock kill that fires even if not a single pod failed
+  - >-
+    A Job whose status.failed is still below backoffLimit — it is retrying with an
+    exponential delay, not failed, and patience or a log read is the right move
+
+evidence:
+  - type: official-docs
+    title: "Jobs — Pod backoff failure policy"
+    url: https://kubernetes.io/docs/concepts/workloads/controllers/job/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That backoffLimit defaults to 6, that failed pods are recreated with an
+      exponential back-off delay capped at six minutes, that both failed pods and —
+      under OnFailure — container retries are counted, and that activeDeadlineSeconds
+      takes precedence over backoffLimit.
+    quote: "The .spec.backoffLimit is set by default to 6 ... recreated by the Job controller with an exponential back-off delay ... capped at six minutes ... .spec.activeDeadlineSeconds takes precedence over its .spec.backoffLimit"
+  - type: official-docs
+    title: "Job — Kubernetes API reference (JobSpec)"
+    url: https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/job-v1/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That backoffLimit is the number of retries before the Job is marked failed with
+      a default of 6, and that podFailurePolicy cannot be combined with
+      restartPolicy=OnFailure.
+    quote: "Specifies the number of retries before marking this job failed. Defaults to 6, unless backoffLimitPerIndex (only Indexed Job) is specified. ... This field cannot be used in combination with restartPolicy=OnFailure."
+  - type: official-docs
+    title: "Handling retriable and non-retriable pod failures with Pod failure policy"
+    url: https://kubernetes.io/docs/tasks/job/pod-failure-policy/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That a pod failure policy exists to stop retrying non-retriable failures, and
+      that without one a Job retries to the backoffLimit — the page's own example
+      takes at least nine minutes to fail at the default of 6.
+    quote: "use Pod failure policy to avoid unnecessary Pod restarts when a Pod failure indicates a non-retriable software bug ... if the Pod failure policy were disabled, the Job would retry until reaching the backoffLimit (6 failures)"
+  - type: official-docs
+    title: "Pod Lifecycle — container restart policy"
+    url: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That OnFailure restarts the failed container in place while Never leaves the
+      pod terminated, which is why the two policies count failures differently inside
+      a Job and why Never preserves one pod per attempt.
+    quote: "OnFailure : Only restarts the container if it exits with an error (non-zero exit status). ... Jobs commonly use restartPolicy: OnFailure or restartPolicy: Never to handle batch processing tasks appropriately"
+  - type: source-code
+    title: "kubernetes/kubernetes — pkg/controller/job/job_controller.go (release-1.33)"
+    url: https://raw.githubusercontent.com/kubernetes/kubernetes/release-1.33/pkg/controller/job/job_controller.go
+    publisher: The Kubernetes Authors
+    retrievedAt: "2026-08-11"
+    supports: >-
+      That the literal condition message 'Job has reached the specified backoff
+      limit' and the reason BackoffLimitExceeded are set by the Job controller when
+      the failure count passes the limit.
+    quote: "jm.newFailureCondition(batch.JobReasonBackoffLimitExceeded, \"Job has reached the specified backoff limit\")"
+
+confidence: high
+confidenceRationale: >-
+  The default of 6, the exponential delay and its six-minute cap, the dual counting
+  rules, the activeDeadlineSeconds precedence, the podFailurePolicy semantics and
+  the literal error message are all quoted from Kubernetes documentation or the Job
+  controller source. The per-cause discriminators — same exit code across attempts,
+  DisruptionTarget on disrupted pods, RESTARTS greater than zero under OnFailure —
+  are diagnostic practice that follows from the documented behaviour rather than
+  sentences any page states about diagnosis.
+
+freshness:
+  created: "2026-08-11"
+  updated: "2026-08-11"
+  verifiedAt: "2026-08-11"
+  reviewIntervalDays: 180
+
+related:
+  - kubernetes-crashloopbackoff
+  - kubernetes-imagepullbackoff
+  - container-exit-code-137-oomkilled

@@ -1,6 +1,12 @@
-import { isPlaceholderQuery, matchKnowledgeObjects, type MatchVerdict } from "@/lib/ko/match";
+import {
+  isPlaceholderQuery,
+  matchKnowledgeObjects,
+  presentableMatchResults,
+  type MatchVerdict,
+} from "@/lib/ko/match";
 import { SCHEMA_VERSION } from "@/lib/ko/serialize";
 import { freshnessOf, getAllKnowledgeObjects } from "@/lib/ko/store";
+import { AGENT_INPUT_LIMITS } from "@/lib/mcp/contract";
 import { logQuery, newLookupId } from "@/lib/query-log";
 import { absoluteUrl, site } from "@/lib/site";
 
@@ -17,10 +23,8 @@ import { absoluteUrl, site } from "@/lib/site";
  * and "we do not cover this" is a useful thing for an agent to be told plainly.
  */
 
-const DEFAULT_LIMIT = 5;
-const MAX_LIMIT = 20;
-/** A whole traceback is a legitimate query; a megabyte of one is not. */
-const MAX_QUERY_LENGTH = 8000;
+const DEFAULT_LIMIT = AGENT_INPUT_LIMITS.lookupResults.http.default;
+const MAX_LIMIT = AGENT_INPUT_LIMITS.lookupResults.http.maximum;
 
 const GUIDANCE: Record<MatchVerdict, string> = {
   strong:
@@ -66,7 +70,10 @@ const CORS = {
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const query = (url.searchParams.get("q") ?? "").slice(0, MAX_QUERY_LENGTH);
+  const query = (url.searchParams.get("q") ?? "").slice(
+    0,
+    AGENT_INPUT_LIMITS.queryCharacters,
+  );
 
   if (!query.trim()) return usage(400, "missing required parameter: q");
 
@@ -91,8 +98,8 @@ export async function GET(request: Request) {
 
   logQuery(query, report, request.headers.get("user-agent") ?? "", lookupId);
 
-  // On "none" the ranked list is noise by definition — withholding it is the point.
-  const results = report.verdict === "none" ? [] : report.results.slice(0, limit);
+  const presentableResults = presentableMatchResults(report);
+  const results = presentableResults.slice(0, limit);
 
   return Response.json(
     {
@@ -108,7 +115,7 @@ export async function GET(request: Request) {
        * only way anyone learns which cause actually fires in the field.
        */
       nextStep:
-        report.verdict === "none"
+        report.verdict !== "strong"
           ? null
           : {
               endpoint: absoluteUrl("/diagnose.json"),
@@ -120,12 +127,15 @@ export async function GET(request: Request) {
       terms: report.terms,
       /** Query terms occurring nowhere in the corpus — why a miss is a miss. */
       unmatchedTerms: report.unmatchedTerms,
-      totalMatches: report.verdict === "none" ? 0 : report.results.length,
+      totalMatches: presentableResults.length,
       results: results.map(({ ko, score, matchedTerms, disclaimedBy }) => {
         const fresh = freshnessOf(ko);
         return {
           id: ko.slug,
           url: absoluteUrl(`/k/${ko.slug}`),
+          matchScore: Number(score.toFixed(3)),
+          // Backward-compatible alias for schema 1.0. New clients should use
+          // matchScore, whose name makes clear that this is ranking—not probability.
           score: Number(score.toFixed(3)),
           matchedTerms,
           // Present only when this entry's own notApplicableTo explains the query
@@ -143,17 +153,22 @@ export async function GET(request: Request) {
           // usable without a second fetch, and running them is the work an agent was
           // going to do anyway.
           rootCauses: ko.rootCauses.map((c) => ({
+            id: c.id ?? null,
             cause: c.cause,
             weight: c.weight,
             discriminator: c.discriminator,
+            resolutionAvailable: Boolean(c.resolution),
           })),
           // Inlined rather than left to a follow-up fetch: this is the endpoint where
           // the risk of applying a near-miss is highest, and ruling an entry out
           // should not cost a second request.
           notApplicableTo: ko.notApplicableTo,
+          evidenceConfidence: ko.confidence,
+          // Backward-compatible aliases; remove in the next schema major.
           confidence: ko.confidence,
           verifiedAt: fresh.verifiedAt,
           freshness: fresh.status,
+          evidenceSourceCount: ko.evidence.length,
           sources: ko.evidence.length,
           formats: {
             json: absoluteUrl(`/k/${ko.slug}.json`),
