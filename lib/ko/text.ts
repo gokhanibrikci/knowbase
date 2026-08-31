@@ -36,6 +36,25 @@ export async function fetchPageDetailed(
   }
 }
 
+/**
+ * The error-cause code of a failed fetch, walked out of undici's wrapping.
+ *
+ * The distinction that matters downstream: ENOTFOUND means DNS says the name does
+ * not resolve — the closest a network error comes to "this source is gone". Every
+ * other code (ECONNRESET, ETIMEDOUT, ECONNREFUSED, UND_ERR_*) describes the path
+ * between this client and the host, and datacenter runners get reset by anti-bot
+ * layers that let every other client through.
+ */
+export function networkErrorCode(error: unknown): string {
+  let e: unknown = error;
+  for (let i = 0; i < 4 && e instanceof Error; i++) {
+    const code = (e as Error & { code?: string }).code;
+    if (typeof code === "string" && code) return code;
+    e = (e as Error & { cause?: unknown }).cause;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function fetchPage(url: string, timeoutMs = TIMEOUT_MS): Promise<string> {
   return (await fetchPageDetailed(url, timeoutMs)).body;
 }

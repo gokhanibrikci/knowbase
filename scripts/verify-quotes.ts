@@ -20,7 +20,7 @@
  * "...". Exits non-zero if any quote is ungrounded.
  */
 import { loadAllTolerant } from "../lib/ko/fs-loader";
-import { anchorPresent, fetchPageDetailed, groundQuote, type FetchedPage } from "../lib/ko/text";
+import { anchorPresent, fetchPageDetailed, groundQuote, networkErrorCode, type FetchedPage } from "../lib/ko/text";
 
 const RESET = "\x1b[0m";
 const RED = "\x1b[31m";
@@ -33,7 +33,7 @@ const CONCURRENCY = 4;
 type Row = {
   slug: string;
   url: string;
-  status: "grounded" | "ungrounded" | "no-quote" | "fetch-error" | "blocked";
+  status: "grounded" | "ungrounded" | "no-quote" | "fetch-error" | "blocked" | "unreachable";
   how?: string;
   detail?: string;
   anchorMissing?: boolean;
@@ -46,6 +46,23 @@ type Row = {
  * so these warn instead of failing, and the quote is retried next run.
  */
 const BLOCKED_STATUSES = new Set([403, 429, 503]);
+
+const FETCH_ATTEMPTS = 3;
+const RETRY_DELAYS_MS = [2_000, 5_000];
+
+async function fetchWithRetry(url: string): Promise<FetchedPage> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt++) {
+    try {
+      return await fetchPageDetailed(url);
+    } catch (error) {
+      lastError = error;
+      const delay = RETRY_DELAYS_MS[attempt];
+      if (delay) await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastError;
+}
 
 async function main() {
   const { ok, failed } = loadAllTolerant();
@@ -77,14 +94,22 @@ async function main() {
 
       let page: FetchedPage;
       try {
-        if (!pages.has(job.url)) pages.set(job.url, fetchPageDetailed(job.url));
+        if (!pages.has(job.url)) pages.set(job.url, fetchWithRetry(job.url));
         page = await pages.get(job.url)!;
       } catch (error) {
+        // Reachability is verify-links' jurisdiction, and it probes the same URL in
+        // the same CI run. What a connection-level throw proves HERE is only that
+        // this client could not read the page this time — three weekly runs failed
+        // on exactly that (a Netlify host resetting GitHub runners, kubernetes.io
+        // flaking once) with zero actual citation rot behind them. DNS saying the
+        // name no longer resolves is the one network error that still fails, since
+        // no retry or different client can read a page whose host does not exist.
+        const code = networkErrorCode(error);
         rows.push({
           slug: job.slug,
           url: job.url,
-          status: "fetch-error",
-          detail: error instanceof Error ? error.message : String(error),
+          status: code === "ENOTFOUND" ? "fetch-error" : "unreachable",
+          detail: code,
         });
         continue;
       }
@@ -133,6 +158,11 @@ async function main() {
         `${YELLOW}⚠${RESET} ${row.slug.padEnd(42)} ${DIM}host refused this client (${row.detail}) — not treated as a broken citation${RESET}`,
       );
       console.log(`  ${DIM}${row.url}${RESET}`);
+    } else if (row.status === "unreachable") {
+      console.log(
+        `${YELLOW}⚠${RESET} ${row.slug.padEnd(42)} ${DIM}unreachable from this client (${row.detail}) — reachability is verify:links' call${RESET}`,
+      );
+      console.log(`  ${DIM}${row.url}${RESET}`);
     } else if (row.status === "fetch-error") {
       console.log(`${RED}✖${RESET} ${row.slug.padEnd(42)} fetch failed: ${row.detail}`);
       console.log(`  ${DIM}${row.url}${RESET}`);
@@ -146,11 +176,12 @@ async function main() {
   const grounded = rows.filter((r) => r.status === "grounded").length;
   const missing = rows.filter((r) => r.status === "no-quote").length;
   const blocked = rows.filter((r) => r.status === "blocked").length;
+  const unreachable = rows.filter((r) => r.status === "unreachable").length;
   const bad = rows.filter((r) => r.status === "ungrounded" || r.status === "fetch-error").length;
   const anchors = rows.filter((r) => r.anchorMissing).length;
 
   console.log(
-    `\n${grounded} grounded · ${missing} without a quote · ${blocked} blocked · ${bad} failed` +
+    `\n${grounded} grounded · ${missing} without a quote · ${blocked} blocked · ${unreachable} unreachable · ${bad} failed` +
       (anchors > 0 ? ` · ${anchors} with a missing anchor` : ""),
   );
 

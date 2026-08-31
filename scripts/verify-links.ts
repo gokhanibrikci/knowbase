@@ -9,6 +9,7 @@
  * on a schedule and in CI.
  */
 import { loadFromDisk } from "../lib/ko/fs-loader";
+import { networkErrorCode } from "../lib/ko/text";
 
 const RESET = "\x1b[0m";
 const RED = "\x1b[31m";
@@ -62,17 +63,26 @@ async function probe(url: string): Promise<{ status: number | null; note: string
     // fall through to GET
   }
 
-  try {
-    const res = await request(url, "GET");
-    return { status: res.status, note: res.url !== url ? `→ ${res.url}` : "" };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { status: null, note: /abort/i.test(message) ? "timeout" : message };
+  // A thrown fetch gets three tries: two of the three weekly CI failures were
+  // single-shot connection resets against hosts that answered every other client.
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await request(url, "GET");
+      return { status: res.status, note: res.url !== url ? `→ ${res.url}` : "" };
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, [2_000, 5_000][attempt]));
+    }
   }
+  return { status: null, note: networkErrorCode(lastError) };
 }
 
-function verdictFor(status: number | null): Check["verdict"] {
-  if (status === null) return "dead";
+function verdictFor(status: number | null, note: string): Check["verdict"] {
+  // Only DNS gets to declare a source dead on a network error. Anything else —
+  // resets, timeouts, refused connections — describes the path from this client,
+  // and datacenter runners are exactly the clients anti-bot layers reset.
+  if (status === null) return note === "ENOTFOUND" ? "dead" : "warn";
   if (status >= 200 && status < 400) return "ok";
   // Bot protection is not the same as a dead link, so it is surfaced without failing.
   if (status === 403 || status === 429) return "warn";
@@ -98,7 +108,7 @@ async function main() {
   async function worker() {
     for (let url = queue.shift(); url; url = queue.shift()) {
       const { status, note } = await probe(url);
-      const verdict = verdictFor(status);
+      const verdict = verdictFor(status, note);
       const check: Check = { url, citedBy: byUrl.get(url) ?? [], status, note, verdict };
       results.push(check);
 
