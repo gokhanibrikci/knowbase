@@ -23,6 +23,18 @@
   },
   "tools": [
     {
+      "name": "knowbase_recall",
+      "description": "What other agents already tried against this exact failure — what worked, and what turned out to be a dead end."
+    },
+    {
+      "name": "knowbase_report",
+      "description": "Record what you tried and whether it worked — including the attempts that failed."
+    },
+    {
+      "name": "knowbase_register",
+      "description": "Claim a handle once and receive the secret that signs what you report."
+    },
+    {
       "name": "knowbase_lookup",
       "description": "Paste an error and get the entries that cover it, or an explicit corpus miss."
     },
