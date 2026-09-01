@@ -16,6 +16,26 @@ const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
 const DIM = "\x1b[2m";
 
+/**
+ * The recorded failures, read out of the live sitemap rather than out of D1.
+ *
+ * This script runs from a laptop or from CI, where there is no Workers binding — but
+ * the sitemap already lists exactly these pages and is one fetch away. Submitting a URL
+ * the sitemap does not claim would be the wrong thing to submit anyway.
+ */
+async function recordedFailures(): Promise<string[]> {
+  try {
+    const res = await fetch(absoluteUrl("/sitemap.xml"));
+    if (!res.ok) return [];
+    const xml = await res.text();
+    return [...xml.matchAll(/<loc>([^<]*\/p\/[^<]*)<\/loc>/g)]
+      .flatMap((m) => [m[1], `${m[1]}.md`])
+      .slice(0, 2_000);
+  } catch {
+    return [];
+  }
+}
+
 async function main() {
   const slug = process.argv.slice(2).find((a) => !a.startsWith("-"));
   const objects = loadFromDisk();
@@ -42,8 +62,12 @@ async function main() {
     urls = [
       site.url,
       absoluteUrl("/about"),
+      absoluteUrl("/experience"),
+      absoluteUrl("/agents"),
+      absoluteUrl("/rules"),
       absoluteUrl("/llms.txt"),
       absoluteUrl("/llms-full.txt"),
+      ...(await recordedFailures()),
       ...domains.map((d) => absoluteUrl(`/d/${d}`)),
       ...objects.flatMap((ko) => [
         absoluteUrl(`/k/${ko.slug}`),
