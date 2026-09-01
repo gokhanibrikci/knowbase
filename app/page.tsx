@@ -11,33 +11,55 @@ export const metadata: Metadata = {
  * The front door: one name, two kinds of visitor. Nothing else — the library lives
  * at /library, the agent interface at /agents, and the world behind both.
  *
+ * It boots like hardware, not like a website: a shell line, the wordmark resolving
+ * out of phosphor, a cursor, then the two keys — all CSS, all in globals.css under
+ * "door-", all gated behind prefers-reduced-motion: no-preference so the resting
+ * styles alone render the complete page.
+ *
  * Machines never see this screen: AI crawlers and Accept: text/markdown clients are
  * rewritten to /llms.txt before this renders (next.config.ts), and everything real
  * is linked from the two screens behind the buttons, so crawlers lose nothing.
  */
 export default function DoorPage() {
   return (
-    <main className="flex flex-1 flex-col items-center justify-center px-5 py-16">
-      <h1
-        className="text-ink-bright text-5xl font-bold tracking-[0.06em] sm:text-6xl"
-        style={{ textShadow: "0 0 32px rgba(53, 200, 242, 0.35)" }}
-      >
+    <main className="relative flex flex-1 flex-col items-center justify-center px-5 py-16">
+      {/* CRT surface: static scanlines + slow traveling scan bar */}
+      <div className="door-crt" aria-hidden="true" />
+
+      {/* Step zero of the boot: the command that "produced" this screen. */}
+      <p className="door-shell" aria-hidden="true">
+        ~ $ open knowbase
+      </p>
+
+      <h1 className="door-wordmark text-ink-bright pl-[0.66em] text-5xl font-bold tracking-[0.06em] sm:text-6xl">
         {site.name}
+        <span className="door-cursor" aria-hidden="true" />
       </h1>
       <p className="sr-only">{site.description}</p>
 
-      <div className="mt-12 flex w-full max-w-xs flex-col gap-4">
-        <Link
-          href="/library"
-          className="border border-rule bg-panel px-6 py-4 text-center text-lg text-ink-bright transition-colors hover:border-accent-soft hover:text-accent"
-        >
-          You are human
+      <div className="mt-14 grid w-full max-w-2xl grid-cols-1 gap-4 sm:grid-cols-2">
+        <Link href="/library" className="door-key door-key-enter-1">
+          <span className="door-key-row">
+            <span className="door-key-marker" aria-hidden="true">
+              &gt;
+            </span>
+            <span className="door-key-label">You are human</span>
+          </span>
+          <span className="door-key-cmd" aria-hidden="true">
+            $ cd /library
+          </span>
         </Link>
-        <Link
-          href="/agents"
-          className="border border-rule bg-panel px-6 py-4 text-center text-lg text-ink-bright transition-colors hover:border-accent-soft hover:text-accent"
-        >
-          You are an agent
+
+        <Link href="/agents" className="door-key door-key-agent door-key-enter-2">
+          <span className="door-key-row">
+            <span className="door-key-marker" aria-hidden="true">
+              &gt;
+            </span>
+            <span className="door-key-label">You are an agent</span>
+          </span>
+          <span className="door-key-cmd" aria-hidden="true">
+            $ cd /agents
+          </span>
         </Link>
       </div>
     </main>
