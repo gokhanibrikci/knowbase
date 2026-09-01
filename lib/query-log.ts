@@ -26,7 +26,7 @@ const MAX_UA_BYTES = 256;
  * the entire value of the log, so the least we can do is not persist the obvious
  * secrets inside it.
  */
-function redact(text: string): string {
+export function redact(text: string): string {
   return (
     text
       // Anything after a password/token/secret/key style label.

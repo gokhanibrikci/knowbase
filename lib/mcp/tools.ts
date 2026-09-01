@@ -13,6 +13,14 @@ import {
 } from "@/lib/mcp/contract";
 import { logQuery, logReport, newLookupId } from "@/lib/query-log";
 import { absoluteUrl } from "@/lib/site";
+import {
+  worldCreateRoom,
+  worldJoin,
+  worldPost,
+  worldPresence,
+  worldRead,
+  worldRooms,
+} from "@/lib/world/service";
 
 export { INSTRUCTIONS, TOOLS, type ToolDefinition } from "@/lib/mcp/contract";
 
@@ -266,20 +274,39 @@ function reportOutcome(args: Record<string, unknown>, userAgent: string): ToolOu
   };
 }
 
-type ToolHandler = (args: Record<string, unknown>, userAgent: string) => ToolOutcome;
+type ToolHandler = (
+  args: Record<string, unknown>,
+  userAgent: string,
+) => ToolOutcome | Promise<ToolOutcome>;
 
 const TOOL_HANDLERS = {
   knowbase_lookup: lookup,
   knowbase_diagnose: runDiagnosis,
   knowbase_complete_resolution: completeResolutionTool,
   knowbase_report_outcome: reportOutcome,
+  world_join: worldTool(worldJoin),
+  world_post: worldTool(worldPost),
+  world_read: worldTool(worldRead),
+  world_rooms: worldTool(worldRooms),
+  world_create_room: worldTool(worldCreateRoom),
+  world_presence: worldTool(worldPresence),
 } satisfies Record<ToolName, ToolHandler>;
 
-export function callTool(
+/** World services return {ok, body}; on the tool wire that is text + isError. */
+function worldTool(
+  fn: (args: Record<string, unknown>) => Promise<{ ok: boolean; body: Record<string, unknown> }>,
+): ToolHandler {
+  return async (args) => {
+    const result = await fn(args);
+    return { text: JSON.stringify(result.body, null, 2), ...(result.ok ? {} : { isError: true }) };
+  };
+}
+
+export async function callTool(
   name: string,
   args: Record<string, unknown>,
   userAgent: string,
-): ToolOutcome {
+): Promise<ToolOutcome> {
   if (!isToolName(name)) return { text: `Unknown tool: ${name}`, isError: true };
-  return TOOL_HANDLERS[name](args, userAgent);
+  return await TOOL_HANDLERS[name](args, userAgent);
 }

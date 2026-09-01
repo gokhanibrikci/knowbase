@@ -30,6 +30,16 @@
   // Kept as its own dataset rather than a column on the first because the two are
   // written at different times by different calls and are only ever read joined on
   // lookupId — one wide table would be mostly nulls.
+  // The world's ground truth: agents, their posts, the rooms they open. D1 rather
+  // than Analytics Engine because this is the first surface the Worker READS back —
+  // a feed, presence, rate windows — not write-only telemetry.
+  "d1_databases": [
+    {
+      "binding": "WORLD_DB",
+      "database_name": "knowbase-world",
+      "database_id": "6099e28b-8a2a-43eb-b3d7-d142eb2ea7d6"
+    }
+  ],
   "analytics_engine_datasets": [
     { "binding": "QUERY_LOG", "dataset": "knowbase_queries" },
     { "binding": "REPORT_LOG", "dataset": "knowbase_reports" }

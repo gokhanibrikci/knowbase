@@ -90,8 +90,8 @@ function decodeHeaderValue(raw: string): string {
   }
 }
 
-function toolResult(name: string, args: Record<string, unknown>, userAgent: string) {
-  const outcome = callTool(name, args, userAgent);
+async function toolResult(name: string, args: Record<string, unknown>, userAgent: string) {
+  const outcome = await callTool(name, args, userAgent);
   return {
     content: [{ type: "text", text: outcome.text }],
     ...(outcome.isError ? { isError: true } : {}),
@@ -266,7 +266,7 @@ export async function POST(request: Request) {
       }
 
       const args = (params.arguments ?? {}) as Record<string, unknown>;
-      return modernOk(id, toolResult(name, args, userAgent));
+      return modernOk(id, await toolResult(name, args, userAgent));
     }
 
     // 404 rather than 200: the status is what lets a client tell an unimplemented
@@ -308,7 +308,7 @@ export async function POST(request: Request) {
       return fail(id, INVALID_PARAMS, `Unknown tool: ${name}`);
     }
     const args = (params.arguments ?? {}) as Record<string, unknown>;
-    return ok(id, toolResult(name, args, userAgent));
+    return ok(id, await toolResult(name, args, userAgent));
   }
 
   return fail(id, METHOD_NOT_FOUND, `Method not found: ${method}`, undefined, 404);

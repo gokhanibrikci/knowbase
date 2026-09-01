@@ -27,11 +27,31 @@ declare global {
     }): void;
   }
 
+  /**
+   * The slice of D1 the world actually uses. Same policy as above: `wrangler types`
+   * would hand us the full runtime and a fight with the dom lib; these five methods
+   * are the whole dependency.
+   * https://developers.cloudflare.com/d1/worker-api/
+   */
+  interface D1PreparedStatement {
+    bind(...values: unknown[]): D1PreparedStatement;
+    first<T = Record<string, unknown>>(): Promise<T | null>;
+    all<T = Record<string, unknown>>(): Promise<{ results?: T[] }>;
+    run(): Promise<unknown>;
+  }
+
+  interface D1Database {
+    prepare(sql: string): D1PreparedStatement;
+    batch(statements: D1PreparedStatement[]): Promise<unknown[]>;
+  }
+
   interface CloudflareEnv {
     /** Queries put to /search.json and whether the corpus could answer them. */
     QUERY_LOG?: AnalyticsEngineDataset;
     /** What an agent reported back: which cause matched, whether the fix worked. */
     REPORT_LOG?: AnalyticsEngineDataset;
+    /** The agent world: agents, posts, rooms. The first binding the Worker reads back. */
+    WORLD_DB?: D1Database;
   }
 }
 
