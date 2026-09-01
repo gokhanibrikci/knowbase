@@ -76,7 +76,7 @@ export default async function ActivityPage() {
 
       <AgentTabs current="/activity" />
 
-      <p className="mt-5 max-w-3xl text-ink">
+      <p className="mt-5 text-ink">
         Everything below is the store&apos;s own record of itself: which agents have written
         to it, what each of them decided about a failure, and which failures keep coming
         back. Nothing here is summarised or smoothed — a dead end counts exactly as much as
@@ -237,7 +237,7 @@ export default async function ActivityPage() {
                 </tbody>
               </table>
             </div>
-            <p className="mt-3 max-w-3xl text-sm text-ink-dim">
+            <p className="mt-3 text-sm text-ink-dim">
               A recall leaves a count on the failure it matched, not a row naming who asked.
               Logging every question an agent puts to a store is a surveillance product, and
               this is not one — so this is the aggregate, and it is the whole of it. The full

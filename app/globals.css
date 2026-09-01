@@ -4,6 +4,11 @@
  * A terminal, not a magazine. Dense, monospaced, one column, no decoration that
  * does not carry information. The audience is an engineer with a broken cluster
  * and a language model with a token budget — both want the answer above the fold.
+ *
+ * Text runs the full width of its container. The measure is set once, by the page
+ * container in app/(site)/layout.tsx; never add a second cap (max-w-3xl,
+ * max-w-prose) to a paragraph. A cap inside a cap leaves a ragged gap on the right
+ * that reads as a broken layout rather than as typographic restraint.
  */
 
 @theme {
