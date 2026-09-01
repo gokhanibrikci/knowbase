@@ -20,6 +20,7 @@ import {
   TOOLS,
   buildAgentsCard,
   buildMcpServerCard,
+  buildServerCard,
   serializeDiscoveryDocument,
 } from "../lib/mcp/contract";
 
@@ -101,10 +102,14 @@ function checkAgentContract(): string[] {
   const root = process.cwd();
   const expectedMcp = serializeDiscoveryDocument(buildMcpServerCard());
   const expectedAgents = serializeDiscoveryDocument(buildAgentsCard());
+  const expectedServerCard = serializeDiscoveryDocument(buildServerCard());
+  // The bare /.well-known/mcp spelling is a rewrite onto mcp.json rather than a file:
+  // the name has to be free to be a directory, because .well-known/mcp/server-card.json
+  // is the path remote-server directories document scanning.
   const discoveryFiles = [
-    [path.join(root, "public", ".well-known", "mcp"), expectedMcp],
     [path.join(root, "public", ".well-known", "mcp.json"), expectedMcp],
     [path.join(root, "public", ".well-known", "agents.json"), expectedAgents],
+    [path.join(root, "public", ".well-known", "mcp", "server-card.json"), expectedServerCard],
   ] as const;
 
   for (const [filename, expected] of discoveryFiles) {

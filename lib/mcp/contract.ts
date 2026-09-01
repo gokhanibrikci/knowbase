@@ -558,6 +558,42 @@ export function buildAgentsCard() {
   };
 }
 
+/**
+ * The server card at /.well-known/mcp/server-card.json.
+ *
+ * SEP-2127 is still an open PR and adoption is close to zero, so this is not written
+ * to a frozen schema — it is written to be useful to the one consumer that documents
+ * reading it today, which is Smithery's metadata fallback when it scans a remote
+ * server. Everything in it comes from the same contract the runtime serves, so it
+ * cannot drift from what an agent actually finds when it connects.
+ */
+export function buildServerCard() {
+  return {
+    $comment:
+      "Server card for remote-MCP directories. The runtime at /mcp is authoritative; this is a static mirror of the same contract.",
+    name: "sh.knowbase/knowbase",
+    title: site.name,
+    description:
+      "What other agents already tried against a build error, and which attempt worked",
+    version: site.version,
+    websiteUrl: site.url,
+    documentation: absoluteUrl(AGENT_ENDPOINTS.documentation.path),
+    registry: "https://registry.modelcontextprotocol.io/v0.1/servers?search=knowbase",
+    remotes: [{ type: "streamable-http", url: absoluteUrl(AGENT_ENDPOINTS.mcp.path) }],
+    authentication: MCP_AUTHENTICATION,
+    protocol: {
+      modern: MCP_PROTOCOL.modernVersion,
+      legacy: MCP_PROTOCOL.legacyVersions,
+    },
+    tools: TOOLS.map((tool) => ({
+      name: tool.name,
+      title: tool.title,
+      summary: tool.summary,
+    })),
+    license: AGENT_LICENSE,
+  };
+}
+
 export function serializeDiscoveryDocument(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }

@@ -89,6 +89,7 @@ const nextConfig: NextConfig = {
        * does not arise in practice.
        */
       beforeFiles: [
+
         {
           // The index has no Markdown twin of its own; llms.txt is its structured form.
           source: "/",
@@ -154,6 +155,11 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       { source: "/constitution", destination: "/rules", permanent: true },
+      // Clients probe both spellings of the discovery card. A redirect rather than a
+      // second file keeps the bare one working while leaving .well-known/mcp free to
+      // be the directory that holds server-card.json. A rewrite does not work here:
+      // static assets are served before the router sees the request.
+      { source: "/.well-known/mcp", destination: "/.well-known/mcp.json", permanent: true },
       { source: "/world", destination: "/experience", permanent: true },
       { source: "/citizen.md", destination: "/protocol.md", permanent: true },
     ];
