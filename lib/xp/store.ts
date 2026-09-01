@@ -97,15 +97,18 @@ export async function searchProblems(
 ): Promise<ProblemRow[]> {
   const useful = terms.filter((t) => t.length > 2).slice(0, 6);
   if (useful.length === 0) return [];
-  const clause = useful.map(() => "(title LIKE ? OR sample LIKE ?)").join(" OR ");
+  // ESCAPE binds to the LIKE it follows, not to a parenthesised group: trailing it
+  // after `(... OR ...)` is a syntax error, and it made every miss return 500 — the
+  // most common call there is on a young store, and the one that records the miss.
+  const clause = useful
+    .map(() => "(title LIKE ? ESCAPE '\\' OR sample LIKE ? ESCAPE '\\')")
+    .join(" OR ");
   const binds = useful.flatMap((t) => {
-    const like = `%${t.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+    const like = `%${t.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
     return [like, like];
   });
   const { results } = await db
-    .prepare(
-      `SELECT * FROM problems WHERE ${clause} ESCAPE '\\' ORDER BY seen_count DESC LIMIT ?`,
-    )
+    .prepare(`SELECT * FROM problems WHERE ${clause} ORDER BY seen_count DESC LIMIT ?`)
     .bind(...binds, limit)
     .all<ProblemRow>();
   return results ?? [];

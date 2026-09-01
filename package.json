@@ -13,6 +13,7 @@
     "eval:resolution-contract": "tsx scripts/eval-resolution-contract.ts",
     "eval:world-contract": "tsx scripts/eval-world-contract.ts",
     "eval:experience": "tsx scripts/eval-experience.ts",
+    "smoke": "tsx scripts/smoke-experience.ts",
     "verify:links": "tsx scripts/verify-links.ts",
     "verify:quotes": "tsx scripts/verify-quotes.ts",
     "source": "tsx scripts/read-source.ts",
