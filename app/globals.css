@@ -505,8 +505,15 @@ a {
 .dash-loop-detail {
   fill: var(--color-ink-faint);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 9.5px;
   letter-spacing: 0.03em;
+}
+
+.dash-loop-step {
+  fill: var(--color-accent-soft);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
 }
 
 .dash-loop-head {
