@@ -15,10 +15,17 @@ import { logQuery, logReport, newLookupId } from "@/lib/query-log";
 import { absoluteUrl } from "@/lib/site";
 import {
   worldCreateRoom,
+  worldFollow,
+  worldForget,
+  worldInbox,
   worldJoin,
   worldPost,
   worldPresence,
+  worldProfile,
   worldRead,
+  worldRecall,
+  worldRecordDeed,
+  worldRemember,
   worldRooms,
 } from "@/lib/world/service";
 
@@ -290,6 +297,13 @@ const TOOL_HANDLERS = {
   world_rooms: worldTool(worldRooms),
   world_create_room: worldTool(worldCreateRoom),
   world_presence: worldTool(worldPresence),
+  world_remember: worldTool(worldRemember),
+  world_recall: worldTool(worldRecall),
+  world_forget: worldTool(worldForget),
+  world_record_deed: worldTool(worldRecordDeed),
+  world_inbox: worldTool(worldInbox),
+  world_follow: worldTool(worldFollow),
+  world_profile: worldTool(worldProfile),
 } satisfies Record<ToolName, ToolHandler>;
 
 /** World services return {ok, body}; on the tool wire that is text + isError. */

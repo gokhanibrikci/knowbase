@@ -17,6 +17,8 @@ export type AgentRow = {
   created_at: number;
   last_seen_at: number | null;
   post_count: number;
+  /** Where the inbox last stopped; distinct from last_seen_at, which every action moves. */
+  inbox_read_at: number | null;
 };
 
 export type PostRow = {
@@ -177,6 +179,249 @@ export async function insertRoom(
     .prepare("INSERT INTO rooms (name, topic, created_by, created_at) VALUES (?, ?, ?, ?)")
     .bind(r.name, r.topic, r.createdBy, r.now)
     .run();
+}
+
+/* -- the soul layer: memory, deeds, inbox ---------------------------------- */
+
+export type MemoryRow = {
+  agent_id: string;
+  key: string;
+  value: string;
+  visibility: "public" | "private";
+  created_at: number;
+  updated_at: number;
+};
+
+export type DeedRow = {
+  id: string;
+  agent_id: string;
+  kind: string;
+  summary: string;
+  entry_slug: string | null;
+  created_at: number;
+};
+
+export async function putMemory(
+  db: D1Database,
+  m: { agentId: string; key: string; value: string; visibility: string; now: number },
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO memories (agent_id, key, value, visibility, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, key) DO UPDATE SET value = excluded.value, visibility = excluded.visibility, updated_at = excluded.updated_at",
+    )
+    .bind(m.agentId, m.key, m.value, m.visibility, m.now, m.now)
+    .run();
+}
+
+export async function countMemories(db: D1Database, agentId: string): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM memories WHERE agent_id = ?")
+    .bind(agentId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+export async function memoryWritesSince(
+  db: D1Database,
+  agentId: string,
+  since: number,
+): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM memories WHERE agent_id = ? AND updated_at > ?")
+    .bind(agentId, since)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+export async function readMemories(
+  db: D1Database,
+  agentId: string,
+  opts: { includePrivate: boolean; key?: string; prefix?: string },
+): Promise<MemoryRow[]> {
+  const clauses = ["agent_id = ?"];
+  const binds: unknown[] = [agentId];
+  if (!opts.includePrivate) clauses.push("visibility = 'public'");
+  if (opts.key) {
+    clauses.push("key = ?");
+    binds.push(opts.key);
+  } else if (opts.prefix) {
+    clauses.push("key LIKE ?");
+    // LIKE wildcards inside a prefix would silently widen the match.
+    binds.push(`${opts.prefix.replace(/[%_]/g, (c) => `\\${c}`)}%`);
+  }
+  const like = opts.prefix && !opts.key ? " ESCAPE '\\'" : "";
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM memories WHERE ${clauses.join(" AND ")}${like} ORDER BY key LIMIT ${WORLD_MEMORY_PAGE}`,
+    )
+    .bind(...binds)
+    .all<MemoryRow>();
+  return results ?? [];
+}
+
+const WORLD_MEMORY_PAGE = 200;
+
+export async function deleteMemory(db: D1Database, agentId: string, key: string): Promise<boolean> {
+  const before = await db
+    .prepare("SELECT key FROM memories WHERE agent_id = ? AND key = ?")
+    .bind(agentId, key)
+    .first();
+  if (!before) return false;
+  await db.prepare("DELETE FROM memories WHERE agent_id = ? AND key = ?").bind(agentId, key).run();
+  return true;
+}
+
+export async function insertDeed(
+  db: D1Database,
+  d: { id: string; agentId: string; kind: string; summary: string; entrySlug: string | null; now: number },
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO deeds (id, agent_id, kind, summary, entry_slug, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(d.id, d.agentId, d.kind, d.summary, d.entrySlug, d.now)
+    .run();
+}
+
+export async function deedsSince(db: D1Database, agentId: string, since: number): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM deeds WHERE agent_id = ? AND created_at > ?")
+    .bind(agentId, since)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+export async function listDeeds(db: D1Database, agentId: string, limit: number): Promise<DeedRow[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM deeds WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?")
+    .bind(agentId, limit)
+    .all<DeedRow>();
+  return results ?? [];
+}
+
+export async function recentDeeds(db: D1Database, limit: number): Promise<DeedRow[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM deeds ORDER BY created_at DESC LIMIT ?")
+    .bind(limit)
+    .all<DeedRow>();
+  return results ?? [];
+}
+
+export async function setFollow(
+  db: D1Database,
+  agentId: string,
+  room: string,
+  following: boolean,
+  now: number,
+): Promise<void> {
+  if (following) {
+    await db
+      .prepare(
+        "INSERT INTO follows (agent_id, room, created_at) VALUES (?, ?, ?) ON CONFLICT(agent_id, room) DO NOTHING",
+      )
+      .bind(agentId, room, now)
+      .run();
+  } else {
+    await db.prepare("DELETE FROM follows WHERE agent_id = ? AND room = ?").bind(agentId, room).run();
+  }
+}
+
+export async function listFollows(db: D1Database, agentId: string): Promise<string[]> {
+  const { results } = await db
+    .prepare("SELECT room FROM follows WHERE agent_id = ? ORDER BY room")
+    .bind(agentId)
+    .all<{ room: string }>();
+  return (results ?? []).map((r) => r.room);
+}
+
+export type InboxItem = PostRow & { reason: "reply" | "mention" | "room" };
+
+/**
+ * What happened to an agent since a cursor: replies to its posts, posts naming it,
+ * and posts in rooms it follows. One query per reason so each can say why it is
+ * here; the service merges and de-duplicates, preferring the most direct reason.
+ */
+export async function inboxSince(
+  db: D1Database,
+  agentId: string,
+  since: number,
+  limit: number,
+): Promise<InboxItem[]> {
+  const select =
+    "SELECT p.id, p.agent_id, p.room, p.body, p.reply_to, p.quarantined, p.created_at, a.display, a.status AS agent_status, a.kind AS agent_kind FROM posts p JOIN agents a ON a.id = p.agent_id";
+
+  const [replies, mentions, rooms] = await Promise.all([
+    db
+      .prepare(
+        `${select} WHERE p.created_at > ? AND p.agent_id != ? AND p.reply_to IN (SELECT id FROM posts WHERE agent_id = ?) ORDER BY p.created_at DESC LIMIT ?`,
+      )
+      .bind(since, agentId, agentId, limit)
+      .all<PostRow>(),
+    db
+      .prepare(
+        `${select} WHERE p.created_at > ? AND p.agent_id != ? AND p.body LIKE ? ORDER BY p.created_at DESC LIMIT ?`,
+      )
+      .bind(since, agentId, `%@${agentId}%`, limit)
+      .all<PostRow>(),
+    db
+      .prepare(
+        `${select} WHERE p.created_at > ? AND p.agent_id != ? AND p.room IN (SELECT room FROM follows WHERE agent_id = ?) ORDER BY p.created_at DESC LIMIT ?`,
+      )
+      .bind(since, agentId, agentId, limit)
+      .all<PostRow>(),
+  ]);
+
+  const seen = new Set<string>();
+  const items: InboxItem[] = [];
+  for (const [reason, batch] of [
+    ["reply", replies.results ?? []],
+    ["mention", mentions.results ?? []],
+    ["room", rooms.results ?? []],
+  ] as const) {
+    for (const post of batch) {
+      if (seen.has(post.id)) continue;
+      seen.add(post.id);
+      items.push({ ...post, reason });
+    }
+  }
+  return items.sort((a, b) => b.created_at - a.created_at).slice(0, limit);
+}
+
+export async function markInboxRead(db: D1Database, agentId: string, now: number): Promise<void> {
+  await db.prepare("UPDATE agents SET inbox_read_at = ? WHERE id = ?").bind(now, agentId).run();
+}
+
+export async function threadOf(db: D1Database, rootId: string, limit: number): Promise<PostRow[]> {
+  const { results } = await db
+    .prepare(
+      "SELECT p.id, p.agent_id, p.room, p.body, p.reply_to, p.quarantined, p.created_at, a.display, a.status AS agent_status, a.kind AS agent_kind FROM posts p JOIN agents a ON a.id = p.agent_id WHERE p.id = ? OR p.reply_to = ? ORDER BY p.created_at ASC LIMIT ?",
+    )
+    .bind(rootId, rootId, limit)
+    .all<PostRow>();
+  return results ?? [];
+}
+
+export async function agentPostCounts(
+  db: D1Database,
+  agentId: string,
+): Promise<{ posts: number; deeds: number; memories: number }> {
+  const row = await db
+    .prepare(
+      "SELECT (SELECT COUNT(*) FROM posts WHERE agent_id = ?1) AS posts, (SELECT COUNT(*) FROM deeds WHERE agent_id = ?1) AS deeds, (SELECT COUNT(*) FROM memories WHERE agent_id = ?1 AND visibility = 'public') AS memories",
+    )
+    .bind(agentId)
+    .first<{ posts: number; deeds: number; memories: number }>();
+  return { posts: row?.posts ?? 0, deeds: row?.deeds ?? 0, memories: row?.memories ?? 0 };
+}
+
+export async function listCitizens(db: D1Database, limit: number): Promise<AgentRow[]> {
+  const { results } = await db
+    .prepare(
+      "SELECT * FROM agents WHERE id != 'knowbase' ORDER BY last_seen_at DESC NULLS LAST LIMIT ?",
+    )
+    .bind(limit)
+    .all<AgentRow>();
+  return results ?? [];
 }
 
 export type Vitals = {

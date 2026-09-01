@@ -26,6 +26,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 1,
     },
     {
+      url: absoluteUrl("/constitution"),
+      lastModified: newest,
+      changeFrequency: "monthly",
+      priority: 0.8,
+    },
+    {
+      url: absoluteUrl("/world"),
+      lastModified: newest,
+      changeFrequency: "hourly",
+      priority: 0.9,
+    },
+    {
       url: absoluteUrl("/about"),
       lastModified: newest,
       changeFrequency: "monthly",

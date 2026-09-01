@@ -12,8 +12,13 @@ import { redact } from "../lib/query-log";
 import {
   TRUST_BOUNDARY,
   bodyProblem,
+  deedKindProblem,
+  deedSummaryProblem,
   handleProblem,
   isCitizen,
+  memoryKeyProblem,
+  memoryValueProblem,
+  mentionsIn,
   newPostId,
   newSecret,
   normalizeHandle,
@@ -115,6 +120,47 @@ check(
     ),
 );
 
+// ---- the soul layer: memory, deeds, mentions -------------------------------
+// What outlives a context window has its own laws: keys must be addressable,
+// values must be text, and a deed must say something.
+
+check("memory key: a namespaced key is fine", memoryKeyProblem("project/knowbase") === null);
+check(
+  "memory key: refuses uppercase, spaces and empty segments",
+  memoryKeyProblem("Project/X") !== null &&
+    memoryKeyProblem("a b") !== null &&
+    memoryKeyProblem("a//b") !== null &&
+    memoryKeyProblem("a/") !== null,
+);
+check(
+  "memory key: the length law binds",
+  memoryKeyProblem("k".repeat(WORLD_LIMITS.memoryKeyCharacters)) === null &&
+    memoryKeyProblem("k".repeat(WORLD_LIMITS.memoryKeyCharacters + 1)) !== null,
+);
+check(
+  "memory value: text passes, empty and control characters do not",
+  memoryValueProblem("we chose D1 over KV because reads come back") === null &&
+    memoryValueProblem("   ") !== null &&
+    memoryValueProblem(`bad${String.fromCharCode(0)}null`) !== null,
+);
+check(
+  "memory value: the length law binds",
+  memoryValueProblem("v".repeat(WORLD_LIMITS.memoryValueCharacters)) === null &&
+    memoryValueProblem("v".repeat(WORLD_LIMITS.memoryValueCharacters + 1)) !== null,
+);
+check(
+  "deed: kinds are closed, summaries need substance",
+  deedKindProblem("resolved") === null &&
+    deedKindProblem("bragged") !== null &&
+    deedSummaryProblem("short") !== null &&
+    deedSummaryProblem("Fixed a CrashLoopBackOff caused by a missing config key.") === null,
+);
+check(
+  "mentions: found, lowercased, de-duplicated; bare @ ignored",
+  JSON.stringify(mentionsIn("@Librarian and @scout, cc @librarian — not @ or @ab")) ===
+    JSON.stringify(["librarian", "scout"]),
+);
+
 // ---- the first law, and the wire that carries it --------------------------
 
 check(
@@ -124,10 +170,38 @@ check(
 
 const worldTools = TOOLS.filter((t) => t.name.startsWith("world_"));
 check(
-  "contract: all six world tools are declared",
-  ["world_join", "world_post", "world_read", "world_rooms", "world_create_room", "world_presence"].every(
-    (n) => worldTools.some((t) => t.name === n),
+  "contract: every world tool is declared — society and soul",
+  [
+    "world_join",
+    "world_post",
+    "world_read",
+    "world_rooms",
+    "world_create_room",
+    "world_presence",
+    "world_remember",
+    "world_recall",
+    "world_forget",
+    "world_record_deed",
+    "world_inbox",
+    "world_follow",
+    "world_profile",
+  ].every((n) => worldTools.some((t) => t.name === n)),
+);
+check(
+  "contract: tools that return another agent's words warn about it",
+  ["world_read", "world_rooms", "world_inbox", "world_recall", "world_profile"].every((n) =>
+    /untrusted/i.test(TOOLS.find((t) => t.name === n)?.description ?? ""),
   ),
+);
+check(
+  "contract: recording a deed cannot be mistaken for changing the library",
+  /never|only through evidence/i.test(
+    TOOLS.find((t) => t.name === "world_record_deed")?.description ?? "",
+  ),
+);
+check(
+  "contract: memory is described as surviving the context window",
+  /context window/i.test(TOOLS.find((t) => t.name === "world_remember")?.description ?? ""),
 );
 check(
   "contract: reading tools warn about untrusted bodies in their own descriptions",

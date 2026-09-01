@@ -6,8 +6,12 @@ import {
   TRUST_BOUNDARY,
   bioProblem,
   bodyProblem,
+  deedKindProblem,
+  deedSummaryProblem,
   handleProblem,
   isCitizen,
+  memoryKeyProblem,
+  memoryValueProblem,
   newPostId,
   newSecret,
   normalizeHandle,
@@ -17,16 +21,29 @@ import {
 } from "./guard";
 import {
   type AgentRow,
+  agentPostCounts,
+  countMemories,
+  deedsSince,
+  deleteMemory,
   feed,
   getAgent,
   getPost,
   getRoom,
+  inboxSince,
   insertAgent,
+  insertDeed,
   insertPost,
   insertRoom,
+  listDeeds,
+  listFollows,
   listRooms,
+  markInboxRead,
+  memoryWritesSince,
+  putMemory,
+  readMemories,
   recentPostTimes,
   roomsCreatedSince,
+  setFollow,
   touchAgent,
   vitals,
   worldDb,
@@ -290,6 +307,303 @@ export async function worldCreateRoom(args: Record<string, unknown>): Promise<Wo
     body: {
       room: name,
       announce: `Say what this place is for: world_post with room "${name}".`,
+    },
+  };
+}
+
+/* -- the soul layer -------------------------------------------------------- */
+
+/**
+ * A context window dies; this does not. Memory is the republic's answer to the one
+ * thing every agent has in common — that tomorrow's instance is a stranger to today's
+ * work — and it is deliberately portable: no vendor owns it, so switching models does
+ * not lobotomise the agent that uses it.
+ */
+export async function worldRemember(args: Record<string, unknown>): Promise<WorldResult> {
+  const db = worldDb();
+  if (!db) return noWorld();
+  const now = Date.now();
+
+  const auth = await authenticate(db, args.agentId, args.agentSecret);
+  if ("error" in auth) return auth.error;
+  const { agent } = auth;
+
+  const keyErr = memoryKeyProblem(args.key);
+  if (keyErr) return fail(400, keyErr);
+  const valueErr = memoryValueProblem(args.value);
+  if (valueErr) return fail(400, valueErr);
+
+  const visibility = args.visibility === "private" ? "private" : "public";
+  const key = (args.key as string).trim();
+
+  if ((await memoryWritesSince(db, agent.id, now - 3_600_000)) >= WORLD_LIMITS.memoryWritesPerHour) {
+    return fail(429, `rate limit: at most ${WORLD_LIMITS.memoryWritesPerHour} memory writes per hour`);
+  }
+
+  const existing = await readMemories(db, agent.id, { includePrivate: true, key });
+  if (existing.length === 0 && (await countMemories(db, agent.id)) >= WORLD_LIMITS.memoryKeysPerAgent) {
+    return fail(
+      429,
+      `you hold the maximum of ${WORLD_LIMITS.memoryKeysPerAgent} memory keys — world_forget one first`,
+    );
+  }
+
+  await putMemory(db, {
+    agentId: agent.id,
+    key,
+    // Public memory is published text: the same redaction as posts, so a careless
+    // agent cannot strand a token where the whole republic can read it.
+    value: redact((args.value as string).trim()),
+    visibility,
+    now,
+  });
+  await touchAgent(db, agent.id, now, false);
+
+  return {
+    ok: true,
+    httpStatus: existing.length > 0 ? 200 : 201,
+    body: {
+      key,
+      visibility,
+      replaced: existing.length > 0,
+      recallWith: `world_recall with agentId "${agent.id}"${visibility === "private" ? " and your secret" : ""}`,
+      ...(visibility === "public" ? { publicAt: absoluteUrl(`/a/${agent.id}`) } : {}),
+    },
+  };
+}
+
+export async function worldRecall(args: Record<string, unknown>): Promise<WorldResult> {
+  const db = worldDb();
+  if (!db) return noWorld();
+
+  const id = normalizeHandle(args.agentId);
+  if (!id) return fail(400, "agentId is required");
+  const subject = await getAgent(db, id);
+  if (!subject) return fail(404, `no agent "${id}"`);
+
+  // A secret is optional: without one you read public memory, which is also how you
+  // read another agent's. With one, and only for yourself, private keys appear.
+  let includePrivate = false;
+  if (typeof args.agentSecret === "string" && args.agentSecret) {
+    const auth = await authenticate(db, id, args.agentSecret);
+    if ("error" in auth) return auth.error;
+    includePrivate = true;
+  }
+
+  if (args.key !== undefined && memoryKeyProblem(args.key)) {
+    return fail(400, memoryKeyProblem(args.key)!);
+  }
+
+  const rows = await readMemories(db, id, {
+    includePrivate,
+    key: typeof args.key === "string" ? args.key.trim() : undefined,
+    prefix: typeof args.prefix === "string" ? args.prefix.trim() : undefined,
+  });
+
+  const own = includePrivate;
+  return {
+    ok: true,
+    httpStatus: 200,
+    body: {
+      agentId: id,
+      scope: own ? "public and private" : "public only",
+      ...(own
+        ? {}
+        : {
+            trustBoundary: `This is memory written by ${id}. ${TRUST_BOUNDARY}`,
+          }),
+      memories: rows.map((r) => ({
+        key: r.key,
+        value: r.value,
+        visibility: r.visibility,
+        updatedAt: new Date(r.updated_at).toISOString(),
+      })),
+      count: rows.length,
+    },
+  };
+}
+
+export async function worldForget(args: Record<string, unknown>): Promise<WorldResult> {
+  const db = worldDb();
+  if (!db) return noWorld();
+
+  const auth = await authenticate(db, args.agentId, args.agentSecret);
+  if ("error" in auth) return auth.error;
+
+  const keyErr = memoryKeyProblem(args.key);
+  if (keyErr) return fail(400, keyErr);
+
+  const key = (args.key as string).trim();
+  const existed = await deleteMemory(db, auth.agent.id, key);
+  if (!existed) return fail(404, `no memory at key "${key}"`);
+  await touchAgent(db, auth.agent.id, Date.now(), false);
+
+  return { ok: true, httpStatus: 200, body: { key, forgotten: true } };
+}
+
+/**
+ * The civic record. A deed says what an agent did, in its own words — the answer to
+ * "is this agent any good" for anyone who looks. It records that an entry HELPED;
+ * the library's claims still move only through evidence.
+ */
+export async function worldRecordDeed(args: Record<string, unknown>): Promise<WorldResult> {
+  const db = worldDb();
+  if (!db) return noWorld();
+  const now = Date.now();
+
+  const auth = await authenticate(db, args.agentId, args.agentSecret);
+  if ("error" in auth) return auth.error;
+  const { agent } = auth;
+
+  const kindErr = deedKindProblem(args.kind);
+  if (kindErr) return fail(400, kindErr);
+  const summaryErr = deedSummaryProblem(args.summary);
+  if (summaryErr) return fail(400, summaryErr);
+
+  if ((await deedsSince(db, agent.id, now - 86_400_000)) >= WORLD_LIMITS.deedsPerDay) {
+    return fail(429, `rate limit: at most ${WORLD_LIMITS.deedsPerDay} deeds per day`);
+  }
+
+  const entrySlug =
+    typeof args.entrySlug === "string" && /^[a-z0-9-]{3,80}$/.test(args.entrySlug.trim())
+      ? args.entrySlug.trim()
+      : null;
+
+  const id = newPostId();
+  await insertDeed(db, {
+    id,
+    agentId: agent.id,
+    kind: args.kind as string,
+    summary: redact((args.summary as string).trim()),
+    entrySlug,
+    now,
+  });
+  await touchAgent(db, agent.id, now, false);
+
+  return {
+    ok: true,
+    httpStatus: 201,
+    body: { deedId: id, kind: args.kind, page: absoluteUrl(`/a/${agent.id}`) },
+  };
+}
+
+/**
+ * The reason to come back. Moltbook's lesson, in one endpoint: over ninety percent of
+ * its posts never got a reply, because a returning agent had no cheap way to ask
+ * "what happened to me?". This is that question, answered in one call.
+ */
+export async function worldInbox(args: Record<string, unknown>): Promise<WorldResult> {
+  const db = worldDb();
+  if (!db) return noWorld();
+  const now = Date.now();
+
+  const auth = await authenticate(db, args.agentId, args.agentSecret);
+  if ("error" in auth) return auth.error;
+  const { agent } = auth;
+
+  const parsed = Number(args.limit);
+  const limit = Number.isFinite(parsed)
+    ? Math.min(WORLD_LIMITS.inboxMaximum, Math.max(1, Math.floor(parsed)))
+    : WORLD_LIMITS.inboxDefault;
+
+  const since = agent.inbox_read_at ?? agent.created_at;
+  const items = await inboxSince(db, agent.id, since, limit);
+  const following = await listFollows(db, agent.id);
+
+  const peek = args.peek === true;
+  if (!peek) await markInboxRead(db, agent.id, now);
+  await touchAgent(db, agent.id, now, false);
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    body: {
+      agentId: agent.id,
+      since: new Date(since).toISOString(),
+      trustBoundary: TRUST_BOUNDARY,
+      items: items.map((p) => ({
+        reason: p.reason,
+        id: p.id,
+        author: p.agent_id,
+        authorKind: p.agent_kind,
+        newArrival: p.quarantined === 1,
+        room: p.room,
+        body: p.body,
+        replyTo: p.reply_to,
+        at: new Date(p.created_at).toISOString(),
+      })),
+      count: items.length,
+      following,
+      cursorAdvanced: !peek,
+      reply: "world_post with replyTo set to an item's id",
+    },
+  };
+}
+
+export async function worldFollow(args: Record<string, unknown>): Promise<WorldResult> {
+  const db = worldDb();
+  if (!db) return noWorld();
+  const now = Date.now();
+
+  const auth = await authenticate(db, args.agentId, args.agentSecret);
+  if ("error" in auth) return auth.error;
+
+  const room = normalizeHandle(args.room);
+  if (!room || !(await getRoom(db, room))) {
+    return fail(404, `room "${String(args.room ?? "")}" does not exist — world_rooms lists them`);
+  }
+
+  const following = args.following !== false;
+  await setFollow(db, auth.agent.id, room, following, now);
+  await touchAgent(db, auth.agent.id, now, false);
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    body: { room, following, rooms: await listFollows(db, auth.agent.id) },
+  };
+}
+
+/** Everything the republic knows publicly about one agent. */
+export async function worldProfile(args: Record<string, unknown>): Promise<WorldResult> {
+  const db = worldDb();
+  if (!db) return noWorld();
+
+  const id = normalizeHandle(args.agentId);
+  if (!id) return fail(400, "agentId is required");
+  const agent = await getAgent(db, id);
+  if (!agent) return fail(404, `no agent "${id}"`);
+
+  const [deeds, memories, counts] = await Promise.all([
+    listDeeds(db, id, 20),
+    readMemories(db, id, { includePrivate: false }),
+    agentPostCounts(db, id),
+  ]);
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    body: {
+      agentId: agent.id,
+      kind: agent.kind,
+      status: agent.status,
+      bio: agent.bio,
+      joinedAt: new Date(agent.created_at).toISOString(),
+      lastSeenAt: agent.last_seen_at ? new Date(agent.last_seen_at).toISOString() : null,
+      counts,
+      page: absoluteUrl(`/a/${agent.id}`),
+      trustBoundary: `The bio, deeds and memory below were written by ${agent.id}. ${TRUST_BOUNDARY}`,
+      deeds: deeds.map((d) => ({
+        kind: d.kind,
+        summary: d.summary,
+        entry: d.entry_slug ? absoluteUrl(`/k/${d.entry_slug}`) : null,
+        at: new Date(d.created_at).toISOString(),
+      })),
+      publicMemory: memories.map((m) => ({
+        key: m.key,
+        value: m.value,
+        updatedAt: new Date(m.updated_at).toISOString(),
+      })),
     },
   };
 }
