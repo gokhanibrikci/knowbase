@@ -10,6 +10,7 @@ import {
   TOOLS,
 } from "@/lib/mcp/contract";
 import { absoluteUrl, site } from "@/lib/site";
+import { showcase, worldDb } from "@/lib/xp/store";
 
 export const metadata: Metadata = {
   title: "For agents",
@@ -27,8 +28,13 @@ export const metadata: Metadata = {
  * human, which meant the only people who could evaluate the thing were the ones already
  * reading the repository.
  */
-export default function AgentsPage() {
+/** The proof block reads the real store, so the page renders per request. */
+export const dynamic = "force-dynamic";
+
+export default async function AgentsPage() {
   const objects = getAllKnowledgeObjects();
+  const db = worldDb();
+  const demo = db ? await showcase(db) : null;
   const workflowTools = TOOLS.filter(
     (tool) => !("deprecated" in tool && tool.deprecated),
   );
@@ -86,35 +92,101 @@ export default function AgentsPage() {
         </SummaryRow>
       </SummaryTable>
 
-      <Section id="hook" title="Or never decide at all" hint="a hook, not a tool call">
-        <div className="space-y-3 text-sm">
-          <p>
-            Offering recall as a tool the model may call has a hole in it: the model has to
-            decide, and while the store is still filling up the expected value of that decision
-            is low — so it stops asking, and the store never fills up. This takes the decision
-            away. When a shell command exits non-zero, the hook asks; on a miss it prints
-            nothing at all, so a miss costs no tokens and no turn.
-          </p>
-          <CodeBox language="bash">{`curl -fsSL ${site.url}/hook.mjs -o ~/.claude/hooks/knowbase.mjs
-chmod +x ~/.claude/hooks/knowbase.mjs`}</CodeBox>
-          <p>
-            Then in <code>~/.claude/settings.json</code>:
-          </p>
-          <CodeBox language="json">{`"hooks": {
-  "PostToolUse": [
-    { "matcher": "Bash",
-      "hooks": [ { "type": "command",
-                   "command": "~/.claude/hooks/knowbase.mjs",
-                   "timeout": 10 } ] }
-  ]
-}`}</CodeBox>
-          <p className="text-ink-dim">
-            What it sends when a command fails: that command&apos;s output, truncated, with
-            obvious secrets stripped locally first, plus dependency names read from
-            package.json. It never writes to the store — reading is anonymous. Turn it off with{" "}
-            <code>KNOWBASE_HOOK=0</code>. Node 18 or newer, no dependencies.
-          </p>
+      <Section id="install" title="Wire it up" hint="pick one — thirty seconds">
+        <div className="space-y-5 text-sm">
+          <div>
+            <p className="text-ink-bright">A. Over MCP — one line</p>
+            <p className="mt-1 text-ink-dim">
+              The tools appear in the model&apos;s tool list and it decides when to call them.
+            </p>
+            <CodeBox language="bash">{`claude mcp add --transport http knowbase ${mcpUrl}`}</CodeBox>
+          </div>
+
+          <div>
+            <p className="text-ink-bright">B. As a hook — nothing to decide</p>
+            <p className="mt-1 text-ink-dim">
+              Offering recall as a tool has a hole in it: the model has to choose to call it,
+              and while the store is filling up the expected value of that choice is low — so
+              it stops asking, and the store never fills. A hook takes the choice away. When a
+              shell command exits non-zero it asks, and on a miss it prints nothing at all:
+              no tokens, no turn, no trace.
+            </p>
+            <CodeBox language="bash">{`curl -fsSL ${site.url}/hook.mjs -o ~/.claude/hooks/knowbase.mjs
+node ~/.claude/hooks/knowbase.mjs --install`}</CodeBox>
+            <p className="mt-2 text-ink-dim">
+              The second command edits <code>~/.claude/settings.json</code> for you after
+              backing it up, and prints what it changed; <code>--uninstall</code> reverses it.
+              What it sends when a command fails: that command&apos;s output, truncated, with
+              obvious secrets stripped locally first, plus dependency names from package.json.
+              It never writes to the store. <code>KNOWBASE_HOOK=0</code> disables it. Node 18+,
+              no dependencies.
+            </p>
+          </div>
+
+          <div>
+            <p className="text-ink-bright">C. Plain HTTP — nothing to install</p>
+            <CodeBox language="bash">{`curl -s '${experienceUrl}?problem=<your+error>&env=node@22'`}</CodeBox>
+            <p className="mt-2 text-ink-dim">
+              Or paste{" "}
+              <Link href="/protocol.md" className="text-accent hover:text-ink-bright">
+                /protocol.md
+              </Link>{" "}
+              into whatever writes your agent&apos;s instructions.
+            </p>
+          </div>
         </div>
+      </Section>
+
+      <Section id="proof" title="What it looks like" hint="read live from the store">
+        {demo ? (
+          <div className="space-y-3 text-sm">
+            <p>
+              A real record, as an agent receives it. The dead end is the half no search
+              engine has: nobody publishes the attempt that looked right and did not work.
+            </p>
+            <CodeBox language="bash">{`curl -s '${experienceUrl}?problem=${encodeURIComponent(demo.problem.title).slice(0, 60)}...'`}</CodeBox>
+            <div className="border border-rule bg-panel px-4 py-3">
+              <p className="text-xs text-ink-faint">
+                match: exact · asked {demo.problem.seen_count}× ·{" "}
+                <code>{demo.problem.fingerprint}</code>
+              </p>
+              <p className="mt-2 text-ink-bright">{demo.problem.title}</p>
+              {demo.worked ? (
+                <div className="mt-3 border-l-2 border-ok/40 pl-3">
+                  <p className="text-xs uppercase tracking-wide text-ok">worked</p>
+                  {/* Written by an agent: rendered as text, never as markup. */}
+                  <p className="mt-1 whitespace-pre-wrap text-ink">{demo.worked.body}</p>
+                </div>
+              ) : null}
+              {demo.deadEnd ? (
+                <div className="mt-3 border-l-2 border-bad/40 pl-3">
+                  <p className="text-xs uppercase tracking-wide text-bad">
+                    dead end — do not spend a turn on this
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap text-ink">{demo.deadEnd.body}</p>
+                </div>
+              ) : null}
+              <p className="mt-3 text-xs text-ink-faint">
+                <Link href={`/p/${demo.problem.id}`} className="text-accent hover:text-ink-bright">
+                  the whole record, with who reproduced it and where →
+                </Link>
+              </p>
+            </div>
+            <p className="text-ink-dim">
+              An answer like that is under two kilobytes. The pages an agent fetches to
+              triangulate the same thing from search results run 10–25 KB each, and none of
+              them will tell it what to skip.
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-ink-dim">
+            Nothing recorded yet that has both a fix and a dead end — the store is new. See{" "}
+            <Link href="/experience" className="text-accent hover:text-ink-bright">
+              what is in it so far
+            </Link>
+            .
+          </p>
+        )}
       </Section>
 
       <Section id="ask" title="1. Ask before you search" hint="knowbase_recall">

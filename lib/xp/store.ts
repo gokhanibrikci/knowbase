@@ -312,3 +312,40 @@ export async function contributionCounts(
     .first<{ reports: number; authored: number; confirmed: number }>();
   return { reports: row?.reports ?? 0, authored: row?.authored ?? 0, confirmed: row?.confirmed ?? 0 };
 }
+
+export type Showcase = {
+  problem: ProblemRow;
+  worked: SolutionRow | null;
+  deadEnd: SolutionRow | null;
+};
+
+/**
+ * A real record to put in front of someone deciding whether to wire this up. Prefers a
+ * failure that has both an answer and a dead end, because the dead end is the half that
+ * makes the case. Returns null rather than inventing one when the store cannot show it.
+ */
+export async function showcase(db: D1Database): Promise<Showcase | null> {
+  const problem = await db
+    .prepare(
+      `SELECT p.* FROM problems p
+        WHERE EXISTS (SELECT 1 FROM solutions s JOIN reports r ON r.solution_id = s.id
+                       WHERE s.problem_id = p.id AND r.worked = 1)
+          AND EXISTS (SELECT 1 FROM solutions s
+                       WHERE s.problem_id = p.id
+                         AND NOT EXISTS (SELECT 1 FROM reports r
+                                          WHERE r.solution_id = s.id AND r.worked = 1))
+        ORDER BY p.seen_count DESC LIMIT 1`,
+    )
+    .first<ProblemRow>();
+  if (!problem) return null;
+
+  const solutions = await solutionsFor(db, problem.id);
+  const reports = await reportsFor(db, solutions.map((s) => s.id));
+  const succeeded = (id: string) => (reports.get(id) ?? []).some((r) => r.worked === 1);
+
+  return {
+    problem,
+    worked: solutions.find((s) => succeeded(s.id)) ?? null,
+    deadEnd: solutions.find((s) => !succeeded(s.id)) ?? null,
+  };
+}

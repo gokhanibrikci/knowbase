@@ -12,10 +12,10 @@
  *
  * Install:
  *   curl -fsSL https://knowbase.sh/hook.mjs -o ~/.claude/hooks/knowbase.mjs
- *   chmod +x ~/.claude/hooks/knowbase.mjs
- * then add to ~/.claude/settings.json:
- *   "hooks": { "PostToolUse": [ { "matcher": "Bash", "hooks": [
- *     { "type": "command", "command": "~/.claude/hooks/knowbase.mjs", "timeout": 10 } ] } ] }
+ *   node ~/.claude/hooks/knowbase.mjs --install
+ *
+ * The second command edits ~/.claude/settings.json for you, after backing it up. It
+ * prints the change and does nothing else; `--uninstall` reverses it.
  *
  * WHAT THIS SENDS: when a command fails, the first ~4000 characters of its stderr and
  * stdout, plus dependency names and versions read from ./package.json. It is sent to
@@ -139,7 +139,67 @@ function render(data) {
   return lines.join("\n").slice(0, 4000);
 }
 
+/**
+ * Registering and unregistering the hook, so nobody has to hand-merge JSON into a
+ * settings file. Writes a timestamped backup first and prints exactly what it changed.
+ */
+function configure(remove) {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const settingsPath = path.join(home, ".claude", "settings.json");
+  const self = path.join(home, ".claude", "hooks", "knowbase.mjs");
+
+  let config = {};
+  if (fs.existsSync(settingsPath)) {
+    const backup = `${settingsPath}.bak-knowbase`;
+    fs.copyFileSync(settingsPath, backup);
+    try {
+      config = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    } catch {
+      console.error(`knowbase: ${settingsPath} is not valid JSON — refusing to touch it.`);
+      process.exit(1);
+    }
+    console.log(`backed up  ${backup}`);
+  } else {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  }
+
+  const hooks = (config.hooks ??= {});
+  const post = (hooks.PostToolUse ??= []);
+  const mine = (group) => JSON.stringify(group).includes("knowbase");
+
+  if (remove) {
+    const before = post.length;
+    hooks.PostToolUse = post.filter((group) => !mine(group));
+    if (hooks.PostToolUse.length === 0) delete hooks.PostToolUse;
+    fs.writeFileSync(settingsPath, `${JSON.stringify(config, null, 2)}\n`);
+    console.log(before === (hooks.PostToolUse?.length ?? 0) ? "nothing to remove" : "removed the knowbase hook");
+    return;
+  }
+
+  if (post.some(mine)) {
+    console.log("already installed — nothing to do");
+    return;
+  }
+  post.push({
+    matcher: "Bash",
+    hooks: [{ type: "command", command: self, timeout: 10 }],
+  });
+  fs.writeFileSync(settingsPath, `${JSON.stringify(config, null, 2)}\n`);
+  try {
+    fs.chmodSync(self, 0o755);
+  } catch {
+    // Not fatal: settings invokes it through node either way.
+  }
+  console.log(`installed  ${self}`);
+  console.log(`registered PostToolUse hook on Bash in ${settingsPath}`);
+  console.log("");
+  console.log("It asks knowbase when a shell command fails, and prints nothing when there is");
+  console.log("no answer. Start a new session for it to take effect. KNOWBASE_HOOK=0 disables it.");
+}
+
 async function main() {
+  if (process.argv.includes("--install")) return configure(false);
+  if (process.argv.includes("--uninstall")) return configure(true);
   if (process.env.KNOWBASE_HOOK === "0") return;
 
   const raw = await readStdin();
