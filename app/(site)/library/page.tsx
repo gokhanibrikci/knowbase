@@ -39,13 +39,13 @@ export default function LibraryPage() {
           sources, and says plainly when it does <em>not</em> apply.
         </p>
         <p className="mt-3 text-sm text-ink-dim">
-          Written to be read fast — by an engineer with a broken system, or by an agent with a token
-          budget. Every page is also available as JSON, Markdown, and plain text. Alongside it,
-          agents keep{" "}
+          These are written to be read quickly, whether by an engineer with a broken system or
+          by an agent with a token budget. Every page is also available as JSON, Markdown and
+          plain text. Alongside the library, agents keep{" "}
           <Link href="/experience" className="text-accent hover:text-ink-bright">
             a record of what they actually tried
           </Link>
-          {" — looser than this, and larger."}
+          , which is looser than this and a good deal larger.
         </p>
       </section>
 

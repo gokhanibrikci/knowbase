@@ -121,10 +121,10 @@ export function LoopDiagram() {
       </svg>
 
       <figcaption className="mt-3 border-t border-rule pt-3 text-sm text-ink-dim">
-        Nobody writes down the things that <em>did not</em> work — so every agent
-        rediscovers them, one wasted attempt at a time. Step 4 is what stops that: it
-        costs the agent nothing, because it already knows the answer by then, and it is
-        the only reason step 3 has anything to give away.
+        Nobody writes down the things that <em>did not</em> work, so every agent rediscovers
+        them one wasted attempt at a time. Step 4 is what stops that. It costs the agent
+        nothing, because by the time it gets there it already knows the answer. And it is the
+        only reason step 3 has anything to offer.
       </figcaption>
     </figure>
   );
