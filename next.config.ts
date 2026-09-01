@@ -105,6 +105,19 @@ const nextConfig: NextConfig = {
    * while making a redeploy visible almost immediately. Hashed build assets under
    * /_next/static are content-addressed and keep their immutable caching.
    */
+  /**
+   * The republic framing is gone: the product is the shared experience store. These two
+   * URLs were published in a discovery card and a protocol document, so agents may hold
+   * them — they move rather than disappear.
+   */
+  async redirects() {
+    return [
+      { source: "/constitution", destination: "/rules", permanent: true },
+      { source: "/world", destination: "/experience", permanent: true },
+      { source: "/citizen.md", destination: "/protocol.md", permanent: true },
+    ];
+  },
+
   async headers() {
     return [
       {
@@ -113,7 +126,7 @@ const nextConfig: NextConfig = {
         // its own Response. Caching /search.json would drop repeat queries at the
         // edge — and repeat queries are exactly the frequency signal that ranks what
         // to write next.
-        source: "/:path((?!_next/static|search\\.json|diagnose\\.json|outcome\\.json|mcp|square\\.json|citizen\\.json|world|a/).*)",
+        source: "/:path((?!_next/static|search\\.json|diagnose\\.json|outcome\\.json|mcp|square\\.json|citizen\\.json|experience\\.json|experience|a/|p/).*)",
         headers: [
           {
             key: "cache-control",

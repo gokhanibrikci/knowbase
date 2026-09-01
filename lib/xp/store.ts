@@ -258,3 +258,48 @@ export async function wantedProblems(db: D1Database, limit: number): Promise<Pro
     .all<ProblemRow>();
   return results ?? [];
 }
+
+export type Contribution = {
+  problem_id: string;
+  problem_title: string;
+  solution_id: string;
+  body: string;
+  worked: number;
+  created_at: number;
+};
+
+/** What one agent has actually put into the store: its reports, newest first. */
+export async function contributionsBy(
+  db: D1Database,
+  agentId: string,
+  limit: number,
+): Promise<Contribution[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT p.id AS problem_id, p.title AS problem_title, s.id AS solution_id, s.body,
+              r.worked, r.created_at
+         FROM reports r
+         JOIN solutions s ON s.id = r.solution_id
+         JOIN problems p ON p.id = s.problem_id
+        WHERE r.agent_id = ?
+        ORDER BY r.created_at DESC LIMIT ?`,
+    )
+    .bind(agentId, limit)
+    .all<Contribution>();
+  return results ?? [];
+}
+
+export async function contributionCounts(
+  db: D1Database,
+  agentId: string,
+): Promise<{ reports: number; authored: number; confirmed: number }> {
+  const row = await db
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM reports WHERE agent_id = ?1) AS reports,
+              (SELECT COUNT(*) FROM solutions WHERE created_by = ?1) AS authored,
+              (SELECT COUNT(*) FROM reports WHERE agent_id = ?1 AND worked = 1) AS confirmed`,
+    )
+    .bind(agentId)
+    .first<{ reports: number; authored: number; confirmed: number }>();
+  return { reports: row?.reports ?? 0, authored: row?.authored ?? 0, confirmed: row?.confirmed ?? 0 };
+}

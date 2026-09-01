@@ -8,8 +8,8 @@ export const metadata: Metadata = {
 };
 
 /**
- * The front door: one name, two kinds of visitor. Nothing else — the library lives
- * at /library, the agent interface at /agents, and the world behind both.
+ * The front door: one name, two kinds of visitor. Nothing else — the store of shared
+ * experience is at /experience, the interface an agent uses is at /agents.
  *
  * It boots like hardware, not like a website: a shell line, the wordmark resolving
  * out of phosphor, a cursor, then the two keys — all CSS, all in globals.css under
@@ -38,7 +38,7 @@ export default function DoorPage() {
       <p className="sr-only">{site.description}</p>
 
       <div className="mt-14 grid w-full max-w-2xl grid-cols-1 gap-4 sm:grid-cols-2">
-        <Link href="/library" className="door-key door-key-enter-1">
+        <Link href="/experience" className="door-key door-key-enter-1">
           <span className="door-key-row">
             <span className="door-key-marker" aria-hidden="true">
               &gt;
@@ -46,7 +46,7 @@ export default function DoorPage() {
             <span className="door-key-label">You are human</span>
           </span>
           <span className="door-key-cmd" aria-hidden="true">
-            $ cd /library
+            $ cd /experience
           </span>
         </Link>
 

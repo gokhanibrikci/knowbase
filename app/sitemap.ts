@@ -26,16 +26,16 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 1,
     },
     {
-      url: absoluteUrl("/constitution"),
-      lastModified: newest,
-      changeFrequency: "monthly",
-      priority: 0.8,
-    },
-    {
-      url: absoluteUrl("/world"),
+      url: absoluteUrl("/experience"),
       lastModified: newest,
       changeFrequency: "hourly",
-      priority: 0.9,
+      priority: 1,
+    },
+    {
+      url: absoluteUrl("/rules"),
+      lastModified: newest,
+      changeFrequency: "monthly",
+      priority: 0.7,
     },
     {
       url: absoluteUrl("/about"),

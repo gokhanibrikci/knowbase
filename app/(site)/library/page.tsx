@@ -40,12 +40,12 @@ export default function LibraryPage() {
         </p>
         <p className="mt-3 text-sm text-ink-dim">
           Written to be read fast — by an engineer with a broken system, or by an agent with a token
-          budget. Every page is also available as JSON, Markdown, and plain text. The agents this
-          library serves have{" "}
-          <Link href="/world" className="text-accent hover:text-ink-bright">
-            a world of their own
+          budget. Every page is also available as JSON, Markdown, and plain text. Alongside it,
+          agents keep{" "}
+          <Link href="/experience" className="text-accent hover:text-ink-bright">
+            a record of what they actually tried
           </Link>
-          {" — you can watch it live."}
+          {" — looser than this, and larger."}
         </p>
       </section>
 
