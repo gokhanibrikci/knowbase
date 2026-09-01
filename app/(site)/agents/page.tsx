@@ -86,6 +86,37 @@ export default function AgentsPage() {
         </SummaryRow>
       </SummaryTable>
 
+      <Section id="hook" title="Or never decide at all" hint="a hook, not a tool call">
+        <div className="space-y-3 text-sm">
+          <p>
+            Offering recall as a tool the model may call has a hole in it: the model has to
+            decide, and while the store is still filling up the expected value of that decision
+            is low — so it stops asking, and the store never fills up. This takes the decision
+            away. When a shell command exits non-zero, the hook asks; on a miss it prints
+            nothing at all, so a miss costs no tokens and no turn.
+          </p>
+          <CodeBox language="bash">{`curl -fsSL ${site.url}/hook.mjs -o ~/.claude/hooks/knowbase.mjs
+chmod +x ~/.claude/hooks/knowbase.mjs`}</CodeBox>
+          <p>
+            Then in <code>~/.claude/settings.json</code>:
+          </p>
+          <CodeBox language="json">{`"hooks": {
+  "PostToolUse": [
+    { "matcher": "Bash",
+      "hooks": [ { "type": "command",
+                   "command": "~/.claude/hooks/knowbase.mjs",
+                   "timeout": 10 } ] }
+  ]
+}`}</CodeBox>
+          <p className="text-ink-dim">
+            What it sends when a command fails: that command&apos;s output, truncated, with
+            obvious secrets stripped locally first, plus dependency names read from
+            package.json. It never writes to the store — reading is anonymous. Turn it off with{" "}
+            <code>KNOWBASE_HOOK=0</code>. Node 18 or newer, no dependencies.
+          </p>
+        </div>
+      </Section>
+
       <Section id="ask" title="1. Ask before you search" hint="knowbase_recall">
         <div className="space-y-3 text-sm">
           <p>

@@ -20,6 +20,7 @@ import {
   signatureTokens,
   titleFrom,
 } from "../lib/xp/fingerprint";
+import { packageRefs, packageWarnings } from "../lib/xp/packages";
 import { type Report, rank, summarize } from "../lib/xp/standing";
 
 const RESET = "\x1b[0m";
@@ -303,6 +304,97 @@ async function main() {
         env,
       ),
     ) < 0,
+  );
+
+  // ---- packages a report tells you to install ---------------------------------
+  // The cheapest attack on a store like this is a plausible fix naming a package that
+  // was published this morning, so the names are pulled out of the prose and checked.
+
+  const refs = packageRefs(
+    "The distribution is PyYAML, not yaml: run `pip install PyYAML>=6`. On the JS side, npm install @opennextjs/cloudflare@1.20.2 as well.",
+  );
+  check(
+    "package names are extracted with their registry, version specifiers stripped",
+    refs.some((r) => r.name === "PyYAML" && r.ecosystem === "pypi") &&
+      refs.some((r) => r.name === "@opennextjs/cloudflare" && r.ecosystem === "npm"),
+    JSON.stringify(refs),
+  );
+  check(
+    "a scoped npm name keeps its scope",
+    packageRefs("npm i @scope/thing@2").every((r) => r.name === "@scope/thing"),
+    JSON.stringify(packageRefs("npm i @scope/thing@2")),
+  );
+  check(
+    "the package list ends at the first word that is not a package",
+    JSON.stringify(packageRefs("Run: npm install @scope/real-thing and re-deploy the worker.")) ===
+      JSON.stringify([{ name: "@scope/real-thing", ecosystem: "npm" }]),
+    JSON.stringify(packageRefs("Run: npm install @scope/real-thing and re-deploy the worker.")),
+  );
+  check(
+    "flags between the verb and the name are stepped over",
+    packageRefs("npm install -D --save-exact vitest").some((r) => r.name === "vitest"),
+    JSON.stringify(packageRefs("npm install -D --save-exact vitest")),
+  );
+  check(
+    "a scoped or pinned name is caught even without a tool named",
+    packageRefs("and install @opennextjs/cloudflare@1.20.2 as a dev dependency").some(
+      (r) => r.name === "@opennextjs/cloudflare",
+    ),
+    JSON.stringify(packageRefs("and install @opennextjs/cloudflare@1.20.2 as a dev dependency")),
+  );
+  check(
+    "prose without an installer names no packages",
+    packageRefs("Raise the memory limit and redeploy.").length === 0,
+  );
+
+  const today = Date.parse("2026-09-01");
+  check(
+    "a package the registry does not have is called out, not softened",
+    /do not install/i.test(
+      packageWarnings(
+        [{ name: "totally-made-up", ecosystem: "npm", exists: false, firstPublished: null, repository: null, checkedAt: "2026-09-01" }],
+        [],
+        today,
+      )[0]?.concern ?? "",
+    ),
+  );
+  check(
+    "a package published last week is flagged by age",
+    /first published/i.test(
+      packageWarnings(
+        [{ name: "brand-new-fix", ecosystem: "npm", exists: true, firstPublished: "2026-08-28", repository: null, checkedAt: "2026-09-01" }],
+        [],
+        today,
+      )[0]?.concern ?? "",
+    ),
+  );
+  check(
+    "an established package produces no noise",
+    packageWarnings(
+      [{ name: "react", ecosystem: "npm", exists: true, firstPublished: "2011-10-26", repository: null, checkedAt: "2026-09-01" }],
+      ["next", "node"],
+      today,
+    ).length === 0,
+  );
+  check(
+    "a name one character from something you already depend on is flagged",
+    /characters away/i.test(
+      packageWarnings(
+        [{ name: "reactt", ecosystem: "npm", exists: true, firstPublished: "2011-10-26", repository: null, checkedAt: "2026-09-01" }],
+        ["react", "next"],
+        today,
+      )[0]?.concern ?? "",
+    ),
+  );
+  check(
+    "an unchecked registry says so rather than implying a clean bill",
+    /not checked/i.test(
+      packageWarnings(
+        [{ name: "some.pkg", ecosystem: "other", exists: null, firstPublished: null, repository: null, checkedAt: "2026-09-01" }],
+        [],
+        today,
+      )[0]?.concern ?? "",
+    ),
   );
 
   // ---- limits stay sane ----------------------------------------------------------

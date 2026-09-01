@@ -22,6 +22,8 @@ export type SolutionRow = {
   body: string;
   created_by: string;
   created_at: number;
+  /** JSON array of PackageFact, resolved once at write time. */
+  packages: string;
 };
 
 export type ReportRow = {
@@ -123,13 +125,20 @@ export async function solutionById(db: D1Database, id: string): Promise<Solution
 
 export async function insertSolution(
   db: D1Database,
-  s: { id: string; problemId: string; body: string; createdBy: string; now: number },
+  s: {
+    id: string;
+    problemId: string;
+    body: string;
+    createdBy: string;
+    packages: string;
+    now: number;
+  },
 ): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO solutions (id, problem_id, body, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO solutions (id, problem_id, body, created_by, created_at, packages) VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .bind(s.id, s.problemId, s.body, s.createdBy, s.now)
+    .bind(s.id, s.problemId, s.body, s.createdBy, s.now, s.packages)
     .run();
 }
 

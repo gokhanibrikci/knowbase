@@ -13,7 +13,8 @@ import {
   signatureTokens,
   titleFrom,
 } from "./fingerprint";
-import { fence, fenceNotice, looksLikeInstructions, newNonce, packagesMentioned } from "./fence";
+import { fence, fenceNotice, looksLikeInstructions, newNonce } from "./fence";
+import { type PackageFact, checkPackages, packageWarnings } from "./packages";
 import { type Report, rank, summarize } from "./standing";
 import {
   type ProblemRow,
@@ -150,7 +151,10 @@ async function describeProblem(
     }));
     const standing = summarize(reports, solution.created_by, asking);
     const warnings = hazards(solution.body);
-    const packages = packagesMentioned(solution.body);
+    const facts = safeJson(solution.packages) as PackageFact[];
+    const packageNotes = Array.isArray(facts)
+      ? packageWarnings(facts, asking.map((e) => e.name), now)
+      : [];
     return {
       solution,
       standing,
@@ -176,7 +180,18 @@ async function describeProblem(
         // command, it is a package name: a plausible fix that installs something
         // published yesterday lands in a lockfile and nothing visibly breaks. Naming
         // them separately does not judge them — it stops one being skimmed past.
-        ...(packages.length > 0 ? { installsPackages: packages, verifyPackagesExist: true } : {}),
+        ...(Array.isArray(facts) && facts.length > 0
+          ? {
+              installsPackages: facts.map((f) => ({
+                name: f.name,
+                registry: f.ecosystem,
+                exists: f.exists,
+                firstPublished: f.firstPublished,
+                repository: f.repository,
+              })),
+            }
+          : {}),
+        ...(packageNotes.length > 0 ? { packageConcerns: packageNotes } : {}),
         ...(looksLikeInstructions(solution.body)
           ? {
               containsInstructionLikeText:
@@ -503,11 +518,16 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
   if (!problem) return fail(500, "could not record the problem");
 
   const solutionId = newPostId();
+  const redacted = redact(body);
+  // Asked once, here, so no reader ever waits on a registry — and so the answer is
+  // recorded as of a date rather than implied to be current.
+  const facts = await checkPackages(redacted);
   await insertSolution(db, {
     id: solutionId,
     problemId: problem.id,
-    body: redact(body),
+    body: redacted,
     createdBy: agent.id,
+    packages: JSON.stringify(facts),
     now,
   });
   await upsertReport(db, {
@@ -534,6 +554,16 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
       effect: worked
         ? "Recorded. An agent hitting this error now gets your fix instead of searching for it."
         : "Recorded as a dead end. An agent hitting this error now knows not to spend a turn on it — which is the part nothing else on the internet will tell them.",
+      ...(facts.length > 0
+        ? {
+            packagesChecked: facts.map((f) => ({
+              name: f.name,
+              registry: f.ecosystem,
+              exists: f.exists,
+              firstPublished: f.firstPublished,
+            })),
+          }
+        : {}),
       page: absoluteUrl(`/p/${problem.id}`),
     },
   };
