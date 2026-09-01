@@ -70,6 +70,11 @@ const nextConfig: NextConfig = {
           has: [{ type: "header", key: "accept", value: MARKDOWN_ACCEPT }],
           destination: "/k/:slug/md",
         },
+        {
+          source: "/p/:id",
+          has: [{ type: "header", key: "accept", value: MARKDOWN_ACCEPT }],
+          destination: "/p/:id/md",
+        },
 
         // The same two rules again, for clients that want the cheap rendition but do
         // not know to ask. Asking is rare; every crawler below sends `Accept: */*`.
@@ -83,12 +88,18 @@ const nextConfig: NextConfig = {
           has: [{ type: "header", key: "user-agent", value: AI_CRAWLER_PATTERN }],
           destination: "/k/:slug/md",
         },
+        {
+          source: "/p/:id",
+          has: [{ type: "header", key: "user-agent", value: AI_CRAWLER_PATTERN }],
+          destination: "/p/:id/md",
+        },
       ],
 
       // /k/<slug>.json is the URL an agent guesses; /k/<slug>/json is what the router
       // can express. The rewrite keeps the guessable form as the one we publish.
       afterFiles: [
         { source: "/k/:slug.json", destination: "/k/:slug/json" },
+        { source: "/p/:id.md", destination: "/p/:id/md" },
         { source: "/k/:slug.md", destination: "/k/:slug/md" },
         { source: "/k/:slug.txt", destination: "/k/:slug/txt" },
       ],
@@ -126,7 +137,7 @@ const nextConfig: NextConfig = {
         // its own Response. Caching /search.json would drop repeat queries at the
         // edge — and repeat queries are exactly the frequency signal that ranks what
         // to write next.
-        source: "/:path((?!_next/static|search\\.json|diagnose\\.json|outcome\\.json|mcp|square\\.json|citizen\\.json|experience\\.json|experience|activity|a/|p/).*)",
+        source: "/:path((?!_next/static|search\\.json|diagnose\\.json|outcome\\.json|mcp|square\\.json|citizen\\.json|experience\\.json|experience|activity|a/).*)",
         headers: [
           {
             key: "cache-control",
@@ -148,6 +159,10 @@ const nextConfig: NextConfig = {
        */
       {
         source: "/k/:slug",
+        headers: [{ key: "vary", value: "accept, user-agent" }],
+      },
+      {
+        source: "/p/:id",
         headers: [{ key: "vary", value: "accept, user-agent" }],
       },
       {

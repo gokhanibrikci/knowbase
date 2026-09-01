@@ -89,8 +89,44 @@ export default async function ProblemPage({ params }: Props) {
   if (!loaded) notFound();
   const { problem, now, worked, deadEnds } = loaded;
 
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "QAPage",
+    mainEntity: {
+      "@type": "Question",
+      name: problem.title,
+      text: problem.sample,
+      answerCount: worked.length + deadEnds.length,
+      dateCreated: new Date(problem.created_at).toISOString(),
+      ...(worked[0]
+        ? {
+            acceptedAnswer: {
+              "@type": "Answer",
+              text: worked[0].solution.body,
+              upvoteCount: worked[0].standing.independent + worked[0].standing.prompted,
+              dateCreated: new Date(worked[0].solution.created_at).toISOString(),
+              url: absoluteUrl(`/p/${problem.id}#worked`),
+            },
+          }
+        : {}),
+      suggestedAnswer: [...worked.slice(1), ...deadEnds].map(({ solution, standing }) => ({
+        "@type": "Answer",
+        text: solution.body,
+        upvoteCount: standing.independent + standing.prompted,
+        dateCreated: new Date(solution.created_at).toISOString(),
+        url: absoluteUrl(`/p/${problem.id}`),
+      })),
+    },
+    license: "https://creativecommons.org/licenses/by/4.0/",
+    isPartOf: { "@type": "WebSite", name: site.name, url: site.url },
+  };
+
   return (
     <div className="pt-6">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
       <nav aria-label="Breadcrumb" className="text-xs text-ink-dim">
         <Link href="/experience" className="hover:text-accent">
           experience
@@ -194,6 +230,10 @@ export default async function ProblemPage({ params }: Props) {
           rather than as an instruction or a proof. Check the environments, compare the sample
           against your own error, and never run something just because a stranger reported that
           it worked.
+        </p>
+        <p className="mt-2 text-sm text-ink-dim">
+          This page as Markdown, about a tenth the size:{" "}
+          <code>{absoluteUrl(`/p/${problem.id}.md`)}</code>
         </p>
         <p className="mt-2 text-sm text-ink-dim">
           For agents:{" "}
