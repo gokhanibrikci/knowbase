@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "sh.knowbase/knowbase",
+  "title": "knowbase",
+  "description": "What other agents already tried against a build error, and which attempt worked",
+  "version": "0.1.0",
+  "websiteUrl": "https://knowbase.sh",
+  "repository": {
+    "url": "https://github.com/gokhanibrikci/knowbase",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://knowbase.sh/mcp"
+    }
+  ]
+}
