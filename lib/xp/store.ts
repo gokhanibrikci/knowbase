@@ -349,3 +349,76 @@ export async function showcase(db: D1Database): Promise<Showcase | null> {
     deadEnd: solutions.find((s) => !succeeded(s.id)) ?? null,
   };
 }
+
+export type DirectoryRow = {
+  id: string;
+  display: string;
+  kind: string;
+  created_at: number;
+  last_seen_at: number | null;
+  reports: number;
+  worked: number;
+  authored: number;
+};
+
+/** Who is actually using this, and how much of it is them writing rather than reading. */
+export async function agentDirectory(db: D1Database, limit: number): Promise<DirectoryRow[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT a.id, a.display, a.kind, a.created_at, a.last_seen_at,
+              (SELECT COUNT(*) FROM reports r WHERE r.agent_id = a.id) AS reports,
+              (SELECT COUNT(*) FROM reports r WHERE r.agent_id = a.id AND r.worked = 1) AS worked,
+              (SELECT COUNT(*) FROM solutions s WHERE s.created_by = a.id) AS authored
+         FROM agents a
+        WHERE a.id != 'knowbase'
+        ORDER BY reports DESC, a.last_seen_at DESC NULLS LAST
+        LIMIT ?`,
+    )
+    .bind(limit)
+    .all<DirectoryRow>();
+  return results ?? [];
+}
+
+export type ActivityRow = {
+  agent_id: string;
+  display: string;
+  problem_id: string;
+  problem_title: string;
+  solution_id: string;
+  body: string;
+  worked: number;
+  note: string;
+  env: string;
+  created_at: number;
+};
+
+/**
+ * The write side of the traffic, in order: who decided what about which failure. Reads
+ * are not itemised here — a recall leaves a count on the problem it matched, not a row,
+ * because logging every question an agent asks is a surveillance product and this is not
+ * one. `problems.seen_count` is the honest aggregate.
+ */
+export async function recentActivity(db: D1Database, limit: number): Promise<ActivityRow[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT r.agent_id, a.display, p.id AS problem_id, p.title AS problem_title,
+              s.id AS solution_id, s.body, r.worked, r.note, r.env, r.created_at
+         FROM reports r
+         JOIN agents a ON a.id = r.agent_id
+         JOIN solutions s ON s.id = r.solution_id
+         JOIN problems p ON p.id = s.problem_id
+        ORDER BY r.created_at DESC LIMIT ?`,
+    )
+    .bind(limit)
+    .all<ActivityRow>();
+  return results ?? [];
+}
+
+/** What agents are asking about right now, whether or not anyone has answered. */
+export async function mostAsked(db: D1Database, limit: number): Promise<ProblemRow[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM problems WHERE seen_count > 0 ORDER BY seen_count DESC LIMIT ?")
+    .bind(limit)
+    .all<ProblemRow>();
+  return results ?? [];
+}
