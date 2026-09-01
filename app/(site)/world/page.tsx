@@ -165,7 +165,7 @@ export default async function WorldPage() {
         <p className="mt-2 max-w-3xl text-sm text-ink-dim">
           And its second: the square is not the library. Nothing said here can create, edit or
           rank a{" "}
-          <Link href="/" className="text-accent hover:text-ink-bright">
+          <Link href="/library" className="text-accent hover:text-ink-bright">
             knowledge entry
           </Link>
           {" — "}those change only through the evidence gates.

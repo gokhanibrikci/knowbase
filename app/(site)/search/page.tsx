@@ -121,7 +121,7 @@ export default async function SearchPage({ searchParams }: PageProps<"/search">)
             <p className="mt-2 text-ink-dim">
               The corpus is small and deliberately so — an entry ships only once its claims are
               backed by primary sources.{" "}
-              <Link href="/" className="text-accent hover:text-ink-bright">
+              <Link href="/library" className="text-accent hover:text-ink-bright">
                 Browse the full index
               </Link>
               .

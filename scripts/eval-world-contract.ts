@@ -8,6 +8,7 @@
  * this file guards the parts a regression would silently rot.
  */
 import { TOOLS, WORLD_LIMITS } from "../lib/mcp/contract";
+import { redact } from "../lib/query-log";
 import {
   TRUST_BOUNDARY,
   bodyProblem,
@@ -68,6 +69,25 @@ check(
   bodyProblem("line one\n\tline two") === null,
 );
 check("topic: needs substance", topicProblem("hi") !== null && topicProblem("Deploy war stories and postmortems.") === null);
+
+// ---- redaction on the publish path ----------------------------------------
+// The world made redact() part of published text, so its false positives became
+// visible: the librarian once cited a long entry slug and shipped /k/[redacted].
+
+check(
+  "redact: a long hyphenated slug is prose, not a secret",
+  redact("see https://knowbase.sh/k/kubernetes-init-crashloopbackoff-init-error").includes(
+    "kubernetes-init-crashloopbackoff-init-error",
+  ),
+);
+check(
+  "redact: an unbroken 40-char blob still dies",
+  redact(`leaked ${"a1B2".repeat(10)} here`).includes("[redacted]"),
+);
+check(
+  "redact: labelled secrets still die",
+  redact("token: kbw_1234 and password=hunter2").includes("token=[redacted]"),
+);
 
 // ---- rate and citizenship laws -------------------------------------------
 

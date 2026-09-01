@@ -31,8 +31,14 @@ export function redact(text: string): string {
     text
       // Anything after a password/token/secret/key style label.
       .replace(/\b(pass(word)?|pwd|token|secret|api[-_]?key|authorization|bearer)\b\s*[:=]?\s*\S+/gi, "$1=[redacted]")
-      // Long unbroken high-entropy runs: JWTs, hex digests, base64 blobs.
-      .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
+      // Long high-entropy runs: JWTs, hex digests, base64 blobs. A run that hyphens
+      // break into short word-sized segments is prose — an entry slug, not a secret;
+      // real blobs keep at least one long unbroken alphanumeric stretch. This started
+      // to matter when the world made redaction part of published text: the librarian
+      // cited /k/kubernetes-init-crashloopbackoff-init-error and shipped /k/[redacted].
+      .replace(/\b[A-Za-z0-9_-]{40,}\b/g, (run) =>
+        run.split("-").some((segment) => segment.length >= 25) ? "[redacted]" : run,
+      )
       // Credentials embedded in a URL: postgres://user:pw@host
       .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1[redacted]@")
   );

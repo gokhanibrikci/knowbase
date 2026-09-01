@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono } from "next/font/google";
 
-import { SiteFooter } from "@/components/site-footer";
-import { SiteHeader } from "@/components/site-header";
 import { site } from "@/lib/site";
 
 import "./globals.css";
@@ -45,13 +43,8 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${terminal.variable} h-full`}>
-      <body className="min-h-full flex flex-col">
-        <div className="mx-auto flex w-full max-w-[76rem] flex-1 flex-col px-5 sm:px-8">
-          <SiteHeader />
-          <main className="flex-1 pb-16">{children}</main>
-          <SiteFooter />
-        </div>
-      </body>
+      {/* Screen chrome lives in app/(site)/layout.tsx; the front door renders bare. */}
+      <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );
 }

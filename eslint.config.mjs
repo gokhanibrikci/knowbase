@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Cloudflare adapter output — generated bundles, not ours to lint.
     ".open-next/**",
+    // wrangler dev's scratch bundles; they appear the moment a dev session runs.
+    ".wrangler/**",
     // Compiled from content/ko/*.yaml on every build.
     "lib/ko/content.generated.ts",
   ]),
