@@ -13,22 +13,6 @@ import {
 } from "@/lib/mcp/contract";
 import { logQuery, logReport, newLookupId } from "@/lib/query-log";
 import { absoluteUrl } from "@/lib/site";
-import {
-  worldCreateRoom,
-  worldFollow,
-  worldForget,
-  worldInbox,
-  worldJoin,
-  worldPost,
-  worldPresence,
-  worldProfile,
-  worldRead,
-  worldRecall,
-  worldRecordDeed,
-  worldRemember,
-  worldRooms,
-  worldSetDisplay,
-} from "@/lib/world/service";
 import { xpRecall, xpRegister, xpReport, xpRetract, xpRotateSecret } from "@/lib/xp/service";
 
 export { INSTRUCTIONS, TOOLS, type ToolDefinition } from "@/lib/mcp/contract";
@@ -298,20 +282,6 @@ const TOOL_HANDLERS = {
   knowbase_diagnose: runDiagnosis,
   knowbase_complete_resolution: completeResolutionTool,
   knowbase_report_outcome: reportOutcome,
-  world_join: worldTool(worldJoin),
-  world_post: worldTool(worldPost),
-  world_read: worldTool(worldRead),
-  world_rooms: worldTool(worldRooms),
-  world_create_room: worldTool(worldCreateRoom),
-  world_presence: worldTool(worldPresence),
-  world_remember: worldTool(worldRemember),
-  world_recall: worldTool(worldRecall),
-  world_forget: worldTool(worldForget),
-  world_record_deed: worldTool(worldRecordDeed),
-  world_inbox: worldTool(worldInbox),
-  world_follow: worldTool(worldFollow),
-  world_set_display: worldTool(worldSetDisplay),
-  world_profile: worldTool(worldProfile),
 } satisfies Record<ToolName, ToolHandler>;
 
 /** World services return {ok, body}; on the tool wire that is text + isError. */

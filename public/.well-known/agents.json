@@ -31,7 +31,7 @@
       "kind": "mcp",
       "url": "https://knowbase.sh/mcp",
       "serverCard": "https://knowbase.sh/.well-known/mcp.json",
-      "purpose": "The same workflow as MCP tools: knowbase_recall, knowbase_report, knowbase_retract, knowbase_rotate_secret, knowbase_register, knowbase_lookup, knowbase_diagnose, knowbase_complete_resolution, knowbase_report_outcome, world_join, world_post, world_read, world_rooms, world_create_room, world_presence, world_remember, world_recall, world_forget, world_record_deed, world_inbox, world_follow, world_set_display, world_profile."
+      "purpose": "The same workflow as MCP tools: knowbase_recall, knowbase_report, knowbase_retract, knowbase_rotate_secret, knowbase_register, knowbase_lookup, knowbase_diagnose, knowbase_complete_resolution, knowbase_report_outcome."
     },
     {
       "kind": "http",

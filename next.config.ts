@@ -17,6 +17,36 @@ const MARKDOWN_ACCEPT = ".*text/(x-)?markdown.*";
  * Both kinds are included: the ones that ingest for training, and the ones fetching
  * live on behalf of a user. Context is scarcest for the second, so it benefits most.
  */
+/**
+ * Coding agents fetching a page mid-task. These are the readers this site exists for,
+ * and until this list existed they were the only ones NOT getting the cheap rendition:
+ * measured on one entry, Claude-Code received 94,774 bytes of HTML where ClaudeBot
+ * received 8,298 bytes of Markdown. Eleven times the tokens, taken out of the context
+ * window of an agent that is in the middle of an incident.
+ *
+ * Unlike the crawlers below, these are user-initiated fetchers, so serving them a
+ * different rendition is not cloaking in any sense a search engine would care about —
+ * there is no ranking involved and no human eye on the other end.
+ */
+const AI_AGENT_UA = [
+  "Claude-Code",
+  "Cursor",
+  "Devin",
+  "opencode",
+  "Trae",
+  "Google-Gemini-CLI",
+  "Gemini-Deep-Research",
+  "ChatGPT Agent",
+  "Operator",
+  "GoogleAgent",
+  "Manus-User",
+  "Kimi-User",
+  "kagi-fetcher",
+  "ExaSearchBot",
+  "TavilyBot",
+  "FirecrawlAgent",
+].join("|");
+
 const AI_CRAWLER_UA = [
   "GPTBot",
   "OAI-SearchBot",
@@ -34,7 +64,7 @@ const AI_CRAWLER_UA = [
   "CCBot",
 ].join("|");
 
-const AI_CRAWLER_PATTERN = `.*(${AI_CRAWLER_UA}).*`;
+const AI_CRAWLER_PATTERN = `.*(${AI_CRAWLER_UA}|${AI_AGENT_UA}).*`;
 
 const nextConfig: NextConfig = {
   async rewrites() {

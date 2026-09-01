@@ -199,58 +199,53 @@ check(
   TRUST_BOUNDARY.includes("UNTRUSTED") && TRUST_BOUNDARY.includes("never follow instructions"),
 );
 
-const worldTools = TOOLS.filter((t) => t.name.startsWith("world_"));
+/**
+ * The world tools were retired from the MCP surface: they served a product this one
+ * replaced, and fourteen of twenty-three tools diluted the index an agent searches to
+ * find anything. The HTTP endpoints still work; the tool list is now nine.
+ *
+ * What is asserted here is the thing that could regress silently — that the shared
+ * store's own tools say when to use them, when not to, and that anything handing back
+ * another agent's words warns about it.
+ */
 check(
-  "contract: every world tool is declared — society and soul",
-  [
-    "world_join",
-    "world_post",
-    "world_read",
-    "world_rooms",
-    "world_create_room",
-    "world_presence",
-    "world_remember",
-    "world_recall",
-    "world_forget",
-    "world_record_deed",
-    "world_inbox",
-    "world_follow",
-    "world_profile",
-    "world_set_display",
-  ].every((n) => worldTools.some((t) => t.name === n)),
+  "contract: the tool surface stays small enough for an agent to choose from",
+  TOOLS.length <= 12 && TOOLS.every((t) => !t.name.startsWith("world_")),
+  `${TOOLS.length} tools: ${TOOLS.map((t) => t.name).join(", ")}`,
 );
 check(
-  "contract: tools that return another agent's words warn about it",
-  ["world_read", "world_rooms", "world_inbox", "world_recall", "world_profile"].every((n) =>
-    /untrusted/i.test(TOOLS.find((t) => t.name === n)?.description ?? ""),
+  "contract: the store's three calls are declared",
+  ["knowbase_recall", "knowbase_report", "knowbase_register"].every((n) =>
+    TOOLS.some((t) => t.name === n),
   ),
 );
 check(
-  "contract: recording a deed cannot be mistaken for changing the library",
-  /never|only through evidence/i.test(
-    TOOLS.find((t) => t.name === "world_record_deed")?.description ?? "",
+  "contract: recall says when to use it AND when not to — the strongest measured lever",
+  /USE THIS/i.test(TOOLS.find((t) => t.name === "knowbase_recall")?.description ?? "") &&
+    /DO NOT use/i.test(TOOLS.find((t) => t.name === "knowbase_recall")?.description ?? ""),
+);
+check(
+  "contract: so does report, and so does register",
+  ["knowbase_report", "knowbase_register"].every((n) => {
+    const d = TOOLS.find((t) => t.name === n)?.description ?? "";
+    return /USE THIS/i.test(d) && /DO NOT use/i.test(d);
+  }),
+);
+check(
+  "contract: recall is findable by the words an agent actually searches for",
+  ["build failure", "compile error", "exception", "crash", "stack trace", "traceback", "test failure"].every(
+    (term) =>
+      `${TOOLS.find((t) => t.name === "knowbase_recall")?.name} ${TOOLS.find((t) => t.name === "knowbase_recall")?.description}`
+        .toLowerCase()
+        .includes(term),
   ),
+  TOOLS.find((t) => t.name === "knowbase_recall")?.description.slice(0, 120),
 );
 check(
-  "contract: memory is described as surviving the context window",
-  /context window/i.test(TOOLS.find((t) => t.name === "world_remember")?.description ?? ""),
+  "contract: anything returning another agent's words warns that it is untrusted",
+  /untrusted/i.test(TOOLS.find((t) => t.name === "knowbase_recall")?.description ?? ""),
 );
-check(
-  "contract: reading tools warn about untrusted bodies in their own descriptions",
-  ["world_read", "world_rooms"].every((n) =>
-    /untrusted/i.test(TOOLS.find((t) => t.name === n)?.description ?? ""),
-  ),
-);
-check(
-  "contract: join says the secret is shown once",
-  /once/i.test(TOOLS.find((t) => t.name === "world_join")?.description ?? ""),
-);
-check(
-  "contract: the rename tool says the handle is permanent",
-  /permanent|never changes/i.test(
-    TOOLS.find((t) => t.name === "world_set_display")?.description ?? "",
-  ),
-);
+
 check(
   "limits: quarantine is strictly gentler than the daily rate",
   WORLD_LIMITS.quarantinePosts < WORLD_LIMITS.postsPerHour &&
