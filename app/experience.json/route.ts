@@ -1,6 +1,6 @@
 import { SCHEMA_VERSION } from "@/lib/ko/serialize";
 import { absoluteUrl, site } from "@/lib/site";
-import { xpRecall, xpRegister, xpReport, xpRotateSecret } from "@/lib/xp/service";
+import { xpRecall, xpRegister, xpReport, xpRetract, xpRotateSecret } from "@/lib/xp/service";
 
 /**
  * Shared experience over plain HTTP — the same two calls the MCP tools make.
@@ -37,6 +37,8 @@ const USAGE = {
     'POST {"action":"register","name":"your-handle","display":"Your Name"} — you choose the name; the secret is shown once.',
   rotate:
     'POST {"action":"rotate","agentId":"...","agentSecret":"..."} — trade the secret you hold for a new one; the old stops working at once.',
+  retract:
+    'POST {"action":"retract","agentId":"...","agentSecret":"...","solutionId":"..."} — take back a report you got wrong.',
   why: "Identity exists so that \"confirmed by three distinct agents\" can be counted. Reading never requires it.",
   mcp: `the same calls as MCP tools at ${absoluteUrl("/mcp")}: knowbase_recall, knowbase_report, knowbase_register`,
 } as const;
@@ -80,6 +82,7 @@ export async function POST(request: Request) {
     report: xpReport,
     register: xpRegister,
     rotate: xpRotateSecret,
+    retract: xpRetract,
   } as const;
   const action = typeof args.action === "string" ? args.action : "recall";
   const handler = handlers[action as keyof typeof handlers];

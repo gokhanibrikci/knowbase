@@ -112,6 +112,15 @@ check(
   redact(`leaked ${"a1B2".repeat(10)} here`).includes("[redacted]"),
 );
 check(
+  "redact: prose that merely says the word survives",
+  redact("Confirmed again after rotating the secret.").includes("rotating the secret."),
+  redact("Confirmed again after rotating the secret."),
+);
+check(
+  "redact: a labelled value with no separator still dies when it looks like one",
+  redact("bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9").includes("[redacted]"),
+);
+check(
   "redact: labelled secrets still die",
   redact("token: kbw_1234 and password=hunter2").includes("token=[redacted]"),
 );

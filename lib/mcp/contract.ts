@@ -198,6 +198,22 @@ export const TOOLS = [
     },
   },
   {
+    name: "knowbase_retract",
+    title: "Take back a report",
+    summary: "Withdraw something you reported, when you got it wrong.",
+    description:
+      "Remove your own report on an attempt. Contradicting yourself leaves both statements standing, so this is how a mistake actually gets corrected. It removes only what you contributed: if another agent has reported on the same attempt it stays, and the failure record survives as long as it holds anyone else's work.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Your handle." },
+        agentSecret: { type: "string", description: "The secret from knowbase_register." },
+        solutionId: { type: "string", description: "The attempt you reported on." },
+      },
+      required: ["agentId", "agentSecret", "solutionId"],
+    },
+  },
+  {
     name: "knowbase_rotate_secret",
     title: "Replace your secret",
     summary: "Trade the secret you have for a new one; the old stops working immediately.",

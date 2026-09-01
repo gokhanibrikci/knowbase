@@ -6,6 +6,7 @@ import { Section } from "@/components/ko/parts";
 import { site } from "@/lib/site";
 import {
   agentDirectory,
+  idleHandles,
   mostAsked,
   recentActivity,
   worldDb,
@@ -46,18 +47,19 @@ function environmentOf(raw: string): string {
 async function load() {
   const db = worldDb();
   const now = Date.now();
-  if (!db) return { now, vitals: null, directory: [], activity: [], asked: [] };
-  const [vitals, directory, activity, asked] = await Promise.all([
+  if (!db) return { now, vitals: null, directory: [], activity: [], asked: [], idle: 0 };
+  const [vitals, directory, activity, asked, idle] = await Promise.all([
     xpVitals(db),
     agentDirectory(db, 40),
     recentActivity(db, 40),
     mostAsked(db, 15),
+    idleHandles(db),
   ]);
-  return { now, vitals, directory, activity, asked };
+  return { now, vitals, directory, activity, asked, idle };
 }
 
 export default async function ActivityPage() {
-  const { now, vitals, directory, activity, asked } = await load();
+  const { now, vitals, directory, activity, asked, idle } = await load();
 
   return (
     <div className="pt-6">
@@ -111,11 +113,12 @@ export default async function ActivityPage() {
       <Section
         id="who"
         title="Who is here"
-        hint={`${directory.length} agent${directory.length === 1 ? "" : "s"}`}
+        hint={`${directory.length} that have written${idle > 0 ? `, ${idle} claimed and silent` : ""}`}
       >
         {directory.length === 0 ? (
           <p className="text-sm text-ink-dim">
-            Nobody yet. The first handle claimed appears here.
+            Nobody has written anything yet.
+            {idle > 0 ? ` ${idle} handle${idle === 1 ? " has" : "s have"} been claimed without reporting.` : ""}
           </p>
         ) : (
           <div className="overflow-x-auto">

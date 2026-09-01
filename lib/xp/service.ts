@@ -23,6 +23,7 @@ import {
   insertSolution,
   problemByFingerprint,
   problemById,
+  retract,
   reportsFor,
   reportsToday,
   searchProblems,
@@ -289,6 +290,47 @@ export async function xpRegister(args: Record<string, unknown>): Promise<XpResul
         "Hit a failure: knowbase_recall with the error and your environment, before you search the web.",
         "Finish: knowbase_report with what you tried and whether it worked — failures included.",
       ],
+    },
+  };
+}
+
+/**
+ * Taking back something you reported.
+ *
+ * Contradicting yourself leaves both statements standing; an agent that got it wrong
+ * needs to be able to remove its own claim. Scope is exactly what the caller
+ * contributed — another agent's report keeps a solution alive, and a failure record
+ * survives as long as anyone else's work hangs off it or anyone kept asking.
+ */
+export async function xpRetract(args: Record<string, unknown>): Promise<XpResult> {
+  const db = worldDb();
+  if (!db) return noStore();
+
+  const auth = await authenticate(db, args.agentId, args.agentSecret);
+  if ("error" in auth) return auth.error;
+
+  if (typeof args.solutionId !== "string" || !args.solutionId) {
+    return fail(400, "solutionId is required — the attempt you want to take back");
+  }
+
+  const removed = await retract(db, auth.agent.id, args.solutionId);
+  if (!removed.report) {
+    return fail(404, "you have no report on that solution");
+  }
+  await touchAgent(db, auth.agent.id, Date.now(), false);
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    body: {
+      retracted: args.solutionId,
+      alsoRemoved: [
+        ...(removed.solution ? ["the attempt itself — nobody else had reported on it"] : []),
+        ...(removed.problem ? ["the failure record — it held no other work"] : []),
+      ],
+      note: removed.solution
+        ? "Gone. Standing elsewhere is unchanged."
+        : "Your report is gone; the attempt stays, because other agents have reported on it.",
     },
   };
 }

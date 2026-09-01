@@ -29,8 +29,20 @@ const MAX_UA_BYTES = 256;
 export function redact(text: string): string {
   return (
     text
-      // Anything after a password/token/secret/key style label.
-      .replace(/\b(pass(word)?|pwd|token|secret|api[-_]?key|authorization|bearer)\b\s*[:=]?\s*\S+/gi, "$1=[redacted]")
+      // A labelled credential — but only where something is actually being assigned.
+      // Without the separator this ate ordinary prose: "after rotating the secret."
+      // became "secret=[redacted]", and a sentence explaining where a token lives lost
+      // its meaning while leaking nothing.
+      .replace(
+        /\b(pass(word)?|pwd|token|secret|api[-_]?key|authorization|bearer)\b\s*[:=]\s*(\S+)/gi,
+        "$1=[redacted]",
+      )
+      // The same labels without a separator, where what follows still looks like a
+      // credential rather than a word: long, unbroken, and not plain letters.
+      .replace(
+        /\b(pass(word)?|pwd|token|secret|api[-_]?key|bearer)\b\s+([A-Za-z0-9_\-.+/=]{16,})/gi,
+        "$1 [redacted]",
+      )
       // Long high-entropy runs: JWTs, hex digests, base64 blobs. A run that hyphens
       // break into short word-sized segments is prose — an entry slug, not a secret;
       // real blobs keep at least one long unbroken alphanumeric stretch. This started

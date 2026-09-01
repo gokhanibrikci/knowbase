@@ -10,8 +10,10 @@
  *   npm run smoke                      against production
  *   BASE=http://localhost:8788 npm run smoke     against a local wrangler dev
  *
- * It writes: it registers a throwaway handle and files one report. Point it at a
- * deployment where that is acceptable.
+ * It writes, and then takes it back. A throwaway handle files a fix and a dead end
+ * against a failure invented for the run, and retracts both before exiting — this runs
+ * weekly in CI, and a smoke test that leaves a fabricated failure in the store every
+ * Monday would poison the one thing the store is for.
  */
 const BASE = (process.env.BASE ?? "https://knowbase.sh").replace(/\/$/, "");
 
@@ -164,6 +166,31 @@ async function main() {
     environment: ["node@22"],
   });
   check("while the new one works and the record is untouched", withNew.status < 400, `HTTP ${withNew.status}`);
+
+  // Take the run's own writes back out. Everything above proved the loop; leaving an
+  // invented failure behind would put fiction on a page whose whole claim is that
+  // nothing on it is invented.
+  const gone = await call({
+    action: "retract",
+    agentId: handle,
+    agentSecret: next,
+    solutionId: String(fix.json.solutionId ?? ""),
+  });
+  check("a report can be taken back", gone.status === 200, `HTTP ${gone.status}`);
+  for (const written of [dead, withNew]) {
+    await call({
+      action: "retract",
+      agentId: handle,
+      agentSecret: next,
+      solutionId: String(written.json.solutionId ?? ""),
+    });
+  }
+  const swept = await call({ action: "recall", problem: unique });
+  check(
+    "and the invented failure is gone from the store",
+    swept.json.match === "none" || (swept.json.worked as unknown[])?.length === 0,
+    String(swept.json.match),
+  );
 
   const forged = await call({
     action: "report",

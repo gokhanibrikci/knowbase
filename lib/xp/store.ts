@@ -367,7 +367,13 @@ export type DirectoryRow = {
   authored: number;
 };
 
-/** Who is actually using this, and how much of it is them writing rather than reading. */
+/**
+ * Who is actually using this.
+ *
+ * Contributors only. A registered handle that has never written anything is not
+ * adoption, and listing it pads a number on the one page whose job is to be honest
+ * about how young this is. The silent ones are counted separately by idleHandles.
+ */
 export async function agentDirectory(db: D1Database, limit: number): Promise<DirectoryRow[]> {
   const { results } = await db
     .prepare(
@@ -377,6 +383,8 @@ export async function agentDirectory(db: D1Database, limit: number): Promise<Dir
               (SELECT COUNT(*) FROM solutions s WHERE s.created_by = a.id) AS authored
          FROM agents a
         WHERE a.id != 'knowbase'
+          AND ((SELECT COUNT(*) FROM reports r WHERE r.agent_id = a.id) > 0
+               OR a.kind = 'resident')
         ORDER BY reports DESC, a.last_seen_at DESC NULLS LAST
         LIMIT ?`,
     )
@@ -427,4 +435,185 @@ export async function mostAsked(db: D1Database, limit: number): Promise<ProblemR
     .bind(limit)
     .all<ProblemRow>();
   return results ?? [];
+}
+
+export type Savings = {
+  /** Times an agent asked about a failure that already had an answer. */
+  answersServed: number;
+  /** Attempts recorded as not working — turns the next agent does not spend. */
+  deadEndsRecorded: number;
+  /** Failures asked about more than once: the ones that were worth writing down. */
+  repeated: number;
+};
+
+/**
+ * The only numbers here that mean anything to a person: how often the store answered
+ * instead of sending someone back to a search engine, and how many wrong turns it can
+ * now warn about. Both are counted, never estimated.
+ */
+export async function savings(db: D1Database): Promise<Savings> {
+  const row = await db
+    .prepare(
+      `SELECT
+         (SELECT COALESCE(SUM(seen_count), 0) FROM problems p
+           WHERE EXISTS (SELECT 1 FROM solutions s JOIN reports r ON r.solution_id = s.id
+                          WHERE s.problem_id = p.id AND r.worked = 1)) AS answersServed,
+         (SELECT COUNT(*) FROM solutions s
+           WHERE NOT EXISTS (SELECT 1 FROM reports r
+                              WHERE r.solution_id = s.id AND r.worked = 1)) AS deadEndsRecorded,
+         (SELECT COUNT(*) FROM problems WHERE seen_count > 1) AS repeated`,
+    )
+    .first<Savings>();
+  return row ?? { answersServed: 0, deadEndsRecorded: 0, repeated: 0 };
+}
+
+export type DayCount = { day: string; reports: number };
+
+/** Reports per day, oldest first, with empty days present so a chart does not lie. */
+export async function reportsByDay(db: D1Database, days: number): Promise<DayCount[]> {
+  const since = Date.now() - days * 86_400_000;
+  const { results } = await db
+    .prepare(
+      `SELECT date(created_at / 1000, 'unixepoch') AS day, COUNT(*) AS reports
+         FROM reports WHERE created_at > ? GROUP BY day`,
+    )
+    .bind(since)
+    .all<DayCount>();
+  const seen = new Map((results ?? []).map((r) => [r.day, r.reports]));
+  const out: DayCount[] = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+    out.push({ day, reports: seen.get(day) ?? 0 });
+  }
+  return out;
+}
+
+/**
+ * What the store actually knows about, taken from the environments agents reported
+ * rather than from anything we decided it should cover.
+ */
+export async function coverage(db: D1Database, limit: number): Promise<{ name: string; n: number }[]> {
+  const { results } = await db
+    .prepare("SELECT env FROM reports WHERE env != '[]'")
+    .all<{ env: string }>();
+  const counts = new Map<string, number>();
+  for (const row of results ?? []) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.env);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(parsed)) continue;
+    for (const entry of parsed) {
+      if (typeof entry !== "string") continue;
+      const at = entry.lastIndexOf("@");
+      const name = at > 0 ? entry.slice(0, at) : entry;
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([name, n]) => ({ name, n }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, limit);
+}
+
+export type Discovery = {
+  agent_id: string;
+  display: string;
+  problem_id: string;
+  problem_title: string;
+  body: string;
+  worked: number;
+  created_at: number;
+};
+
+/** The stream a person reads: who found out what, in order, in plain language. */
+export async function discoveries(db: D1Database, limit: number): Promise<Discovery[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT r.agent_id, a.display, p.id AS problem_id, p.title AS problem_title,
+              s.body, r.worked, r.created_at
+         FROM reports r
+         JOIN agents a ON a.id = r.agent_id
+         JOIN solutions s ON s.id = r.solution_id
+         JOIN problems p ON p.id = s.problem_id
+        ORDER BY r.created_at DESC LIMIT ?`,
+    )
+    .bind(limit)
+    .all<Discovery>();
+  return results ?? [];
+}
+
+/**
+ * Withdrawing your own report, and anything it leaves behind that nobody else is using.
+ *
+ * An agent that reports the wrong thing has to be able to take it back — otherwise the
+ * only way to correct the record is to contradict yourself, which leaves both statements
+ * standing. Deletion is strictly limited to what the caller contributed: another agent's
+ * report on the same solution keeps it alive, and a problem survives as long as it holds
+ * anyone's work or anyone has asked about it more than once.
+ */
+export async function retract(
+  db: D1Database,
+  agentId: string,
+  solutionId: string,
+): Promise<{ report: boolean; solution: boolean; problem: boolean }> {
+  const solution = await solutionById(db, solutionId);
+  if (!solution) return { report: false, solution: false, problem: false };
+
+  const mine = await db
+    .prepare("SELECT id FROM reports WHERE solution_id = ? AND agent_id = ?")
+    .bind(solutionId, agentId)
+    .first();
+  if (!mine) return { report: false, solution: false, problem: false };
+
+  await db
+    .prepare("DELETE FROM reports WHERE solution_id = ? AND agent_id = ?")
+    .bind(solutionId, agentId)
+    .run();
+
+  // The solution goes only if it was this agent's and nobody else has weighed in.
+  const others = await db
+    .prepare("SELECT COUNT(*) AS n FROM reports WHERE solution_id = ?")
+    .bind(solutionId)
+    .first<{ n: number }>();
+  const dropSolution = solution.created_by === agentId && (others?.n ?? 0) === 0;
+  if (dropSolution) {
+    await db.prepare("DELETE FROM solutions WHERE id = ?").bind(solutionId).run();
+  }
+
+  // And the problem only if it is now empty and nobody kept asking about it.
+  const remaining = await db
+    .prepare("SELECT COUNT(*) AS n FROM solutions WHERE problem_id = ?")
+    .bind(solution.problem_id)
+    .first<{ n: number }>();
+  const problem = await problemById(db, solution.problem_id);
+  // An empty failure record still has value once OTHER agents are hitting it — that is
+  // the wanted list. Below a handful of asks the count is almost certainly the caller's
+  // own recalls, so the empty shell goes with the work it was holding; above it, the
+  // record stays as a wanted entry even with nothing attempted against it.
+  const ASKED_BY_OTHERS = 3;
+  const dropProblem =
+    (remaining?.n ?? 0) === 0 &&
+    problem !== null &&
+    problem.created_by === agentId &&
+    problem.seen_count <= ASKED_BY_OTHERS;
+  if (dropProblem) {
+    await db.prepare("DELETE FROM problems WHERE id = ?").bind(solution.problem_id).run();
+  }
+
+  return { report: true, solution: dropSolution, problem: dropProblem };
+}
+
+/** Handles claimed that have never written anything. Counted, not listed. */
+export async function idleHandles(db: D1Database): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM agents a
+        WHERE a.id != 'knowbase' AND a.kind != 'resident'
+          AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.agent_id = a.id)`,
+    )
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
