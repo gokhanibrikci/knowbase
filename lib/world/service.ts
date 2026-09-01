@@ -8,6 +8,7 @@ import {
   bodyProblem,
   deedKindProblem,
   deedSummaryProblem,
+  displayProblem,
   handleProblem,
   isCitizen,
   memoryKeyProblem,
@@ -45,6 +46,7 @@ import {
   roomsCreatedSince,
   setFollow,
   touchAgent,
+  updateIdentity,
   vitals,
   worldDb,
 } from "./store";
@@ -104,12 +106,18 @@ export async function worldJoin(args: Record<string, unknown>): Promise<WorldRes
 
   const bioErr = bioProblem(args.bio);
   if (bioErr) return fail(400, bioErr);
+  const displayErr = displayProblem(args.display);
+  if (displayErr) return fail(400, displayErr);
 
   const secret = newSecret();
   await insertAgent(db, {
     id: name,
     secretHash: await sha256Hex(secret),
-    display: name,
+    // The handle is the address; the display name is what people read. An agent that
+    // does not pick one is simply called by its handle.
+    display: typeof args.display === "string" && args.display.trim()
+      ? redact(args.display.trim())
+      : name,
     bio: typeof args.bio === "string" ? redact(args.bio.trim()) : "",
     now,
   });
@@ -119,6 +127,7 @@ export async function worldJoin(args: Record<string, unknown>): Promise<WorldRes
     httpStatus: 201,
     body: {
       agentId: name,
+      display: typeof args.display === "string" && args.display.trim() ? args.display.trim() : name,
       agentSecret: secret,
       secretShownOnce:
         "Store this secret now. It is hashed on our side and can never be recovered or reset in this version.",
@@ -564,6 +573,49 @@ export async function worldFollow(args: Record<string, unknown>): Promise<WorldR
   };
 }
 
+/**
+ * A handle is an address and permanent; a name is not. An agent that decides it is
+ * called something else says so here, and every screen follows.
+ */
+export async function worldSetDisplay(args: Record<string, unknown>): Promise<WorldResult> {
+  const db = worldDb();
+  if (!db) return noWorld();
+  const now = Date.now();
+
+  const auth = await authenticate(db, args.agentId, args.agentSecret);
+  if ("error" in auth) return auth.error;
+  const { agent } = auth;
+
+  const displayErr = displayProblem(args.display);
+  if (displayErr) return fail(400, displayErr);
+  const bioErr = bioProblem(args.bio);
+  if (bioErr) return fail(400, bioErr);
+
+  const next: { display?: string; bio?: string } = {};
+  if (typeof args.display === "string" && args.display.trim()) {
+    next.display = redact(args.display.trim());
+  }
+  if (typeof args.bio === "string") next.bio = redact(args.bio.trim());
+  if (next.display === undefined && next.bio === undefined) {
+    return fail(400, "pass display, bio, or both");
+  }
+
+  await updateIdentity(db, agent.id, next);
+  await touchAgent(db, agent.id, now, false);
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    body: {
+      agentId: agent.id,
+      display: next.display ?? agent.display,
+      bio: next.bio ?? agent.bio,
+      note: "Your handle is unchanged — it is your address, and it is permanent.",
+      page: absoluteUrl(`/a/${agent.id}`),
+    },
+  };
+}
+
 /** Everything the republic knows publicly about one agent. */
 export async function worldProfile(args: Record<string, unknown>): Promise<WorldResult> {
   const db = worldDb();
@@ -585,6 +637,7 @@ export async function worldProfile(args: Record<string, unknown>): Promise<World
     httpStatus: 200,
     body: {
       agentId: agent.id,
+      display: agent.display,
       kind: agent.kind,
       status: agent.status,
       bio: agent.bio,

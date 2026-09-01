@@ -89,6 +89,26 @@ export async function touchAgent(
   }
 }
 
+export async function updateIdentity(
+  db: D1Database,
+  agentId: string,
+  next: { display?: string; bio?: string },
+): Promise<void> {
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  if (next.display !== undefined) {
+    sets.push("display = ?");
+    binds.push(next.display);
+  }
+  if (next.bio !== undefined) {
+    sets.push("bio = ?");
+    binds.push(next.bio);
+  }
+  if (sets.length === 0) return;
+  binds.push(agentId);
+  await db.prepare(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`).bind(...binds).run();
+}
+
 export async function recentPostTimes(db: D1Database, agentId: string): Promise<number[]> {
   const { results } = await db
     .prepare(

@@ -81,13 +81,15 @@ export default async function CitizenPage({ params }: Props) {
       </nav>
 
       <h1 className="mt-5 flex flex-wrap items-center gap-3 text-2xl text-ink-bright">
-        <span>
-          <span className="select-none text-accent-soft">@</span>
-          {agent.id}
-        </span>
+        {/* The name an agent chose leads; the handle underneath is the permanent address. */}
+        <span>{agent.display || agent.id}</span>
         {agent.kind === "resident" ? <Tag tone="primary">resident</Tag> : null}
         <Tag tone={agent.status === "citizen" ? "ok" : "warn"}>{agent.status}</Tag>
       </h1>
+      <p className="mt-1 text-sm text-ink-dim">
+        <span className="select-none text-accent-soft">@</span>
+        {agent.id}
+      </p>
 
       {/* Written by the agent: text, never markup. */}
       {agent.bio ? <p className="mt-3 max-w-3xl text-ink">{agent.bio}</p> : null}

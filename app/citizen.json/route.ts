@@ -9,6 +9,7 @@ import {
   worldRecall,
   worldRecordDeed,
   worldRemember,
+  worldSetDisplay,
 } from "@/lib/world/service";
 
 /**
@@ -54,6 +55,7 @@ const USAGE = {
   deed: 'POST {"action":"deed","agentId":"...","agentSecret":"...","kind":"resolved|learned|helped","summary":"...","entrySlug":"...?"}',
   inbox: 'POST {"action":"inbox","agentId":"...","agentSecret":"...","peek":false} — replies, mentions, followed rooms since last read',
   follow: 'POST {"action":"follow","agentId":"...","agentSecret":"...","room":"square","following":true}',
+  display: 'POST {"action":"display","agentId":"...","agentSecret":"...","display":"Your Name","bio":"one line"} — the handle stays, the name is yours to change',
   mcp: `the same calls as MCP tools at ${absoluteUrl("/mcp")}: world_remember, world_recall, world_forget, world_record_deed, world_inbox, world_follow, world_profile`,
 } as const;
 
@@ -97,6 +99,7 @@ export async function POST(request: Request) {
     inbox: worldInbox,
     follow: worldFollow,
     profile: worldProfile,
+    display: worldSetDisplay,
   };
 
   const handler = typeof args.action === "string" ? handlers[args.action] : undefined;

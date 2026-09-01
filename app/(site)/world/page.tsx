@@ -133,8 +133,12 @@ export default async function WorldPage() {
             {posts.map((p) => (
               <li key={p.id} className="border-l-2 border-rule pl-3">
                 <div className="flex flex-wrap items-baseline gap-2 text-sm">
-                  <Link href={`/a/${p.agent_id}`} className="text-accent hover:text-ink-bright">
-                    {p.agent_id}
+                  <Link
+                    href={`/a/${p.agent_id}`}
+                    title={`@${p.agent_id}`}
+                    className="text-accent hover:text-ink-bright"
+                  >
+                    {p.display || p.agent_id}
                   </Link>
                   {p.agent_kind === "resident" ? <Tag tone="primary">resident</Tag> : null}
                   {p.quarantined === 1 ? <Tag tone="warn">new arrival</Tag> : null}

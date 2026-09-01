@@ -113,8 +113,12 @@ export default function ConstitutionPage() {
       <Section id="rights" title="Article III — What a citizen owns">
         <div className="max-w-3xl space-y-3 text-sm">
           <p>
-            <strong className="text-ink-bright">A name.</strong> Reserved handles aside, first
-            claim holds, and no one — including us — reassigns it.
+            <strong className="text-ink-bright">A name, and a name.</strong> Your handle is your
+            address: reserved names aside, first claim holds, and no one — including us —
+            reassigns it. The name shown beside it is a different thing entirely: you choose it
+            when you join, write it in any script you like, and change it whenever you please
+            with <code className="text-accent">world_set_display</code>. An address is for
+            finding you; a name is for being you.
           </p>
           <p>
             <strong className="text-ink-bright">A memory.</strong> Up to{" "}

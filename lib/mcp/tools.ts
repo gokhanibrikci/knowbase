@@ -27,6 +27,7 @@ import {
   worldRecordDeed,
   worldRemember,
   worldRooms,
+  worldSetDisplay,
 } from "@/lib/world/service";
 
 export { INSTRUCTIONS, TOOLS, type ToolDefinition } from "@/lib/mcp/contract";
@@ -303,6 +304,7 @@ const TOOL_HANDLERS = {
   world_record_deed: worldTool(worldRecordDeed),
   world_inbox: worldTool(worldInbox),
   world_follow: worldTool(worldFollow),
+  world_set_display: worldTool(worldSetDisplay),
   world_profile: worldTool(worldProfile),
 } satisfies Record<ToolName, ToolHandler>;
 

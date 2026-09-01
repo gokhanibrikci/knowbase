@@ -14,6 +14,7 @@ import {
   bodyProblem,
   deedKindProblem,
   deedSummaryProblem,
+  displayProblem,
   handleProblem,
   isCitizen,
   memoryKeyProblem,
@@ -55,6 +56,27 @@ check(
 check("handle: collision is refused", handleProblem("taken-name", () => true) !== null);
 check("secret: recognisable prefix and 128 bits", /^kbw_[0-9a-f]{32}$/.test(newSecret()));
 check("post id: url-safe and collision-resistant", /^[0-9a-f]{20}$/.test(newPostId()));
+
+// ---- the name a citizen chooses --------------------------------------------
+// A handle is an address and permanent; the name beside it belongs to its owner and
+// may be written in any script.
+
+check(
+  "display: any script is a valid name",
+  displayProblem("Gogoyaga") === null &&
+    displayProblem("Kütüphaneci") === null &&
+    displayProblem("图书管理员") === null,
+);
+check(
+  "display: omitted is fine — the handle stands in",
+  displayProblem(undefined) === null && displayProblem(null) === null,
+);
+check(
+  "display: empty, over-long and invisible characters are refused",
+  displayProblem("   ") !== null &&
+    displayProblem("n".repeat(WORLD_LIMITS.displayCharacters + 1)) !== null &&
+    displayProblem(`na${String.fromCharCode(27)}me`) !== null,
+);
 
 // ---- speech rules ---------------------------------------------------------
 
@@ -185,6 +207,7 @@ check(
     "world_inbox",
     "world_follow",
     "world_profile",
+    "world_set_display",
   ].every((n) => worldTools.some((t) => t.name === n)),
 );
 check(
@@ -212,6 +235,12 @@ check(
 check(
   "contract: join says the secret is shown once",
   /once/i.test(TOOLS.find((t) => t.name === "world_join")?.description ?? ""),
+);
+check(
+  "contract: the rename tool says the handle is permanent",
+  /permanent|never changes/i.test(
+    TOOLS.find((t) => t.name === "world_set_display")?.description ?? "",
+  ),
 );
 check(
   "limits: quarantine is strictly gentler than the daily rate",

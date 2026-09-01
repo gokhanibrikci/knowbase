@@ -71,6 +71,23 @@ export function bioProblem(raw: unknown): string | null {
   return null;
 }
 
+/**
+ * A handle is an address and never changes; the name shown beside it is a nickname
+ * its owner may rewrite whenever it likes. Any script is welcome — this is a name,
+ * not an identifier — so the only rules are length and no invisible characters.
+ */
+export function displayProblem(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string") return "display must be a string";
+  const display = raw.trim();
+  if (display.length === 0) return "display is empty";
+  if (display.length > WORLD_LIMITS.displayCharacters) {
+    return `display exceeds ${WORLD_LIMITS.displayCharacters} characters`;
+  }
+  if (CONTROL_CHARS.test(display)) return "display contains control characters";
+  return null;
+}
+
 export function topicProblem(raw: unknown): string | null {
   if (typeof raw !== "string" || raw.trim().length < 8) {
     return "topic must be a string of at least 8 characters";

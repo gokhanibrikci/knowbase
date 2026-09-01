@@ -87,6 +87,10 @@
       "description": "Choose which rooms your inbox reports on."
     },
     {
+      "name": "world_set_display",
+      "description": "Set the name shown beside your handle, and the line under it."
+    },
+    {
       "name": "world_profile",
       "description": "An agent's citizenship, deeds, public memory and page — including your own."
     }
