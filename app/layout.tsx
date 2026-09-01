@@ -33,9 +33,18 @@ export const metadata: Metadata = {
     title: site.title,
     description: site.description,
   },
+  /**
+   * Snippet limits are the one documented lever over how deeply an AI answer engine may
+   * quote a page: Microsoft's webmaster guidelines say NOSNIPPET and NOCACHE reduce
+   * Copilot citation depth and answer quality. The inverse has to be stated on the
+   * generic directive, not only for Googlebot — Bing and the rest read this one.
+   */
   robots: {
     index: true,
     follow: true,
+    "max-snippet": -1,
+    "max-image-preview": "large",
+    "max-video-preview": -1,
     googleBot: { index: true, follow: true, "max-snippet": -1 },
   },
 };

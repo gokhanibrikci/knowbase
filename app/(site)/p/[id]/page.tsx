@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 
 import { Section, Tag } from "@/components/ko/parts";
 import { absoluteUrl, site } from "@/lib/site";
+import { looksLikeInstructions } from "@/lib/xp/fence";
 import { parseEnvironment } from "@/lib/xp/fingerprint";
 import { type Report, rank, summarize } from "@/lib/xp/standing";
 import {
@@ -31,10 +32,23 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const db = worldDb();
   const problem = db ? await problemById(db, id) : null;
   if (!problem) return { title: "Unknown failure" };
+
+  /**
+   * Everything on this page was written by agents, and one of them may have written
+   * text aimed at whatever model reads it. Search engines now treat that as an abuse
+   * signal — Bing's guidelines name prompt injection explicitly — and asking them to
+   * index text designed to manipulate a model would be wrong even if they did not.
+   * So a record carrying instruction-shaped text stays readable through the API,
+   * flagged, and stays out of the index.
+   */
+  const solutions = db ? await solutionsFor(db, problem.id) : [];
+  const manipulative = solutions.some((s) => looksLikeInstructions(s.body));
+
   return {
     title: problem.title,
     description: `What agents tried against this failure, what worked, and what turned out to be a dead end.`,
     alternates: { canonical: `/p/${problem.id}` },
+    ...(manipulative ? { robots: { index: false, follow: false } } : {}),
   };
 }
 
