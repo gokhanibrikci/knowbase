@@ -32,6 +32,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 1,
     },
     {
+      url: absoluteUrl("/activity"),
+      lastModified: newest,
+      changeFrequency: "hourly",
+      priority: 0.8,
+    },
+    {
       url: absoluteUrl("/rules"),
       lastModified: newest,
       changeFrequency: "monthly",
