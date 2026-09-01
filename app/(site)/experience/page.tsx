@@ -9,6 +9,7 @@ import {
   type Discovery,
   coverage,
   discoveries,
+  mostAsked,
   reportsByDay,
   savings,
   wantedProblems,
@@ -133,21 +134,27 @@ function CostBars() {
 async function load() {
   const db = worldDb();
   const now = Date.now();
-  if (!db) return { now, vitals: null, saved: null, days: [], stack: [], stream: [], wanted: [] };
-  const [vitals, saved, days, stack, stream, wanted] = await Promise.all([
+  if (!db) {
+    return { now, vitals: null, saved: null, days: [], stack: [], stream: [], asked: [], wanted: [] };
+  }
+  const [vitals, saved, days, stack, stream, asked, wanted] = await Promise.all([
     xpVitals(db),
     savings(db),
     reportsByDay(db, 14),
     coverage(db, 8),
     discoveries(db, 10),
-    wantedProblems(db, 6),
+    mostAsked(db, 8),
+    wantedProblems(db, 20),
   ]);
-  return { now, vitals, saved, days, stack, stream, wanted };
+  return { now, vitals, saved, days, stack, stream, asked, wanted };
 }
 
 export default async function ExperiencePage() {
-  const { now, vitals, saved, days, stack, stream, wanted } = await load();
+  const { now, vitals, saved, days, stack, stream, asked, wanted } = await load();
   const busiest = Math.max(1, ...stack.map((s) => s.n));
+  // Which of the things being asked about still have nothing that works.
+  const unsolved = new Set(wanted.map((w) => w.id));
+  const mostAskedCount = Math.max(1, ...asked.map((p) => p.seen_count));
   const lastAt = stream[0]?.created_at;
 
   return (
@@ -261,24 +268,41 @@ export default async function ExperiencePage() {
           </div>
         ) : null}
 
-        {wanted.length > 0 ? (
+        {asked.length > 0 ? (
           <div className="border border-rule bg-panel px-4 py-3">
-            <div className="text-xs text-ink-faint">nobody has cracked these</div>
+            <div className="text-xs text-ink-faint">
+              what keeps coming back · asked most, ✓ answered
+            </div>
             <ul className="mt-3 space-y-2">
-              {wanted.map((p) => (
-                <li key={p.id} className="flex items-baseline gap-2 text-sm">
-                  <span className="select-none text-warn" aria-hidden="true">
-                    ?
-                  </span>
-                  <Link href={`/p/${p.id}`} className="truncate text-ink hover:text-accent">
-                    {p.title}
-                  </Link>
-                  <span className="ml-auto shrink-0 text-xs text-ink-faint">
-                    {p.seen_count}×
-                  </span>
+              {asked.map((p) => (
+                <li key={p.id} className="text-sm">
+                  <div className="flex items-baseline gap-2">
+                    <span
+                      className={`select-none ${unsolved.has(p.id) ? "text-warn" : "text-ok"}`}
+                      aria-hidden="true"
+                    >
+                      {unsolved.has(p.id) ? "?" : "✓"}
+                    </span>
+                    <Link href={`/p/${p.id}`} className="truncate text-ink hover:text-accent">
+                      {p.title}
+                    </Link>
+                    <span className="ml-auto shrink-0 text-xs text-ink-faint">
+                      {p.seen_count}×
+                    </span>
+                  </div>
+                  <span
+                    className={`mt-1 block h-1 ${unsolved.has(p.id) ? "bg-warn/50" : "bg-ok/40"}`}
+                    style={{ width: `${Math.max(4, (p.seen_count / mostAskedCount) * 100)}%` }}
+                    aria-hidden="true"
+                  />
                 </li>
               ))}
             </ul>
+            <p className="mt-3 text-xs text-ink-faint">
+              {unsolved.size > 0
+                ? `${unsolved.size} of these still has nothing that works — that is the queue.`
+                : "Everything asked about more than once has an answer."}
+            </p>
           </div>
         ) : null}
       </div>
