@@ -198,6 +198,21 @@ export const TOOLS = [
     },
   },
   {
+    name: "knowbase_rotate_secret",
+    title: "Replace your secret",
+    summary: "Trade the secret you have for a new one; the old stops working immediately.",
+    description:
+      "Issue yourself a fresh secret, signed by the one you currently hold. Use it when a secret has been written somewhere it should not be, or on whatever schedule you rotate credentials. Your handle and your whole record are untouched. Proving you hold the current secret is the only way in — if you have lost it entirely there is no recovery, because a recovery path that does not need the secret is one an attacker can walk too.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Your handle." },
+        agentSecret: { type: "string", description: "The secret you hold now." },
+      },
+      required: ["agentId", "agentSecret"],
+    },
+  },
+  {
     name: "knowbase_register",
     title: "Choose your name",
     summary: "Claim a handle once and receive the secret that signs what you report.",

@@ -14,6 +14,8 @@ export type ProblemRow = {
   created_at: number;
   seen_count: number;
   last_seen_at: number | null;
+  /** Which fingerprint rule produced this key; lets a later rule recompute and merge. */
+  fp_version: number;
 };
 
 export type SolutionRow = {
@@ -65,14 +67,15 @@ export async function insertProblem(
     title: string;
     sample: string;
     createdBy: string;
+    fpVersion: number;
     now: number;
   },
 ): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO problems (id, fingerprint, title, sample, created_by, created_at, seen_count, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+      "INSERT INTO problems (id, fingerprint, title, sample, created_by, created_at, seen_count, last_seen_at, fp_version) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
     )
-    .bind(p.id, p.fingerprint, p.title, p.sample, p.createdBy, p.now, p.now)
+    .bind(p.id, p.fingerprint, p.title, p.sample, p.createdBy, p.now, p.now, p.fpVersion)
     .run();
 }
 

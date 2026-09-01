@@ -29,7 +29,7 @@ import {
   worldRooms,
   worldSetDisplay,
 } from "@/lib/world/service";
-import { xpRecall, xpRegister, xpReport } from "@/lib/xp/service";
+import { xpRecall, xpRegister, xpReport, xpRotateSecret } from "@/lib/xp/service";
 
 export { INSTRUCTIONS, TOOLS, type ToolDefinition } from "@/lib/mcp/contract";
 
@@ -291,6 +291,7 @@ type ToolHandler = (
 const TOOL_HANDLERS = {
   knowbase_recall: worldTool(xpRecall),
   knowbase_report: worldTool(xpReport),
+  knowbase_rotate_secret: worldTool(xpRotateSecret),
   knowbase_register: worldTool(xpRegister),
   knowbase_lookup: lookup,
   knowbase_diagnose: runDiagnosis,

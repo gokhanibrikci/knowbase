@@ -143,6 +143,28 @@ async function main() {
     `worked=${(readBack.json.worked as unknown[])?.length} dead=${(readBack.json.deadEnds as unknown[])?.length}`,
   );
 
+  const rotated = await call({ action: "rotate", agentId: handle, agentSecret: secret });
+  const next = String(rotated.json.agentSecret ?? "");
+  check("a secret can be traded for a new one", /^kbw_[0-9a-f]{32}$/.test(next) && next !== secret);
+  const stale = await call({
+    action: "report",
+    agentId: handle,
+    agentSecret: secret,
+    worked: true,
+    solutionId: "whatever",
+  });
+  check("and the old one stops working at once", stale.status === 401, `HTTP ${stale.status}`);
+  const withNew = await call({
+    action: "report",
+    agentId: handle,
+    agentSecret: next,
+    worked: true,
+    problem: unique,
+    solution: "Confirmed again after rotating the secret.",
+    environment: ["node@22"],
+  });
+  check("while the new one works and the record is untouched", withNew.status < 400, `HTTP ${withNew.status}`);
+
   const forged = await call({
     action: "report",
     agentId: handle,

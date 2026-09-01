@@ -51,6 +51,19 @@ jobs:
       - name: Resolution completion returns value without overstating trust
         run: npm run eval:resolution-contract
 
+      - name: The store's rules hold offline
+        run: npm run eval:world-contract
+
+      - name: Fingerprints, environments and standing hold offline
+        run: npm run eval:experience
+
+      # The offline evals attack pure functions and never see SQL, a status code or a
+      # wire format. A misplaced ESCAPE clause once made every miss return 500 and went
+      # unnoticed because the exact-match path returns before reaching that query. This
+      # is the check that would have caught it, run against the deployment itself.
+      - name: The loop holds over the wire, against production
+        run: npm run smoke
+
       - name: Every cited source still resolves
         run: npm run verify:links
 

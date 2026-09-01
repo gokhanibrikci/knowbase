@@ -1,11 +1,12 @@
 import { XP_LIMITS } from "@/lib/mcp/contract";
 import { redact } from "@/lib/query-log";
 import { absoluteUrl } from "@/lib/site";
-import { newPostId, normalizeHandle, sha256Hex } from "@/lib/world/guard";
+import { newPostId, newSecret, normalizeHandle, sha256Hex } from "@/lib/world/guard";
 import { type AgentRow, getAgent, touchAgent } from "@/lib/world/store";
 
 import {
   type Environment,
+  FINGERPRINT_VERSION,
   fingerprint,
   insufficientSignal,
   formatEnvironment,
@@ -13,7 +14,7 @@ import {
   signatureTokens,
   titleFrom,
 } from "./fingerprint";
-import { fence, fenceNotice, looksLikeInstructions, newNonce } from "./fence";
+import { commandsIn, fence, fenceNotice, looksLikeInstructions, newNonce } from "./fence";
 import { type PackageFact, checkPackages, packageWarnings } from "./packages";
 import { type Report, rank, summarize } from "./standing";
 import {
@@ -150,6 +151,7 @@ async function describeProblem(
       at: r.created_at,
     }));
     const standing = summarize(reports, solution.created_by, asking);
+    const commands = commandsIn(solution.body);
     const warnings = hazards(solution.body);
     const facts = safeJson(solution.packages) as PackageFact[];
     const packageNotes = Array.isArray(facts)
@@ -175,6 +177,16 @@ async function describeProblem(
         workedIn: standing.workedIn,
         failedIn: standing.failedIn,
         verdict: standing.claim,
+        // Lifted out of the prose so the thing that will actually be executed is the
+        // thing that gets read, each with what is worth pausing over.
+        ...(commands.length > 0
+          ? {
+              commands: commands.map((c) => ({
+                command: c.command,
+                ...(c.risks.length > 0 ? { inspectBecause: c.risks } : {}),
+              })),
+            }
+          : {}),
         ...(warnings.length > 0 ? { inspectBeforeRunning: warnings } : {}),
         // The highest-value thing to write into a store like this is not a destructive
         // command, it is a package name: a plausible fix that installs something
@@ -277,6 +289,46 @@ export async function xpRegister(args: Record<string, unknown>): Promise<XpResul
         "Hit a failure: knowbase_recall with the error and your environment, before you search the web.",
         "Finish: knowbase_report with what you tried and whether it worked — failures included.",
       ],
+    },
+  };
+}
+
+/**
+ * Replacing a secret with a new one, signed by the old.
+ *
+ * The first version of this said a secret "can never be recovered or reset", which is
+ * true of a hash and was the wrong promise to make about an account: an agent whose
+ * owner rotates credentials, or who leaks one into a log, had no way back and its whole
+ * record became unreachable. Proving possession of the current secret is enough to issue
+ * the next one — it grants nothing an attacker did not already have.
+ *
+ * Losing the secret entirely is still terminal, and says so. A recovery path that does
+ * not require the secret is a recovery path an attacker can walk.
+ */
+export async function xpRotateSecret(args: Record<string, unknown>): Promise<XpResult> {
+  const db = worldDb();
+  if (!db) return noStore();
+
+  const auth = await authenticate(db, args.agentId, args.agentSecret);
+  if ("error" in auth) return auth.error;
+  const { agent } = auth;
+
+  const next = newSecret();
+  await db
+    .prepare("UPDATE agents SET secret_hash = ? WHERE id = ?")
+    .bind(await sha256Hex(next), agent.id)
+    .run();
+  await touchAgent(db, agent.id, Date.now(), false);
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    body: {
+      agentId: agent.id,
+      agentSecret: next,
+      secretShownOnce:
+        "Store this now. The previous secret stopped working the moment this response was written, and this one is kept only as a hash.",
+      unchanged: "Your handle, your reports and everything counted from them are untouched.",
     },
   };
 }
@@ -398,6 +450,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
         title: titleFrom(text),
         sample: redact(text).slice(0, XP_LIMITS.sampleCharacters),
         createdBy: asker,
+        fpVersion: FINGERPRINT_VERSION,
         now,
       });
     }
@@ -511,6 +564,7 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
       title: typeof args.title === "string" && args.title.trim() ? redact(args.title.trim()).slice(0, 140) : titleFrom(text),
       sample: redact(text).slice(0, XP_LIMITS.sampleCharacters),
       createdBy: agent.id,
+      fpVersion: FINGERPRINT_VERSION,
       now,
     });
     problem = await problemById(db, id);

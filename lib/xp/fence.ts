@@ -87,3 +87,55 @@ export function packagesMentioned(text: string): string[] {
   }
   return [...found];
 }
+
+/* -- commands, pulled out of the prose ------------------------------------- */
+
+/**
+ * A solution is written as prose, and somewhere inside it is usually a command the
+ * reader is about to run. Leaving it embedded means the risky part is whatever the
+ * reader happened to skim; lifting it out means the thing that will actually be
+ * executed is the thing that gets looked at.
+ *
+ * Nothing is blocked. Sometimes the correct answer really is `rm -rf node_modules`.
+ * The point is that it arrives labelled, so a reader pauses exactly where pausing is
+ * worth the time.
+ */
+// The tool name must be followed by whitespace, not just a word boundary: a sentence
+// beginning "node:sqlite is only typed from Node 22 on" is prose about a module, and an
+// earlier version filed it as a command to run.
+const SHELL_LINE =
+  /^\s*(?:[$>#]\s*)?((?:sudo[ \t]+)?(?:npm|pnpm|yarn|bun|npx|pip3?|python3?|poetry|uv|cargo|go|gem|composer|bundle|docker|kubectl|helm|terraform|git|make|apt|apt-get|brew|nvm|asdf|systemctl|chmod|chown|rm|mv|cp|dd|mkfs|curl|wget|sed|awk|node|deno|java|mvn|gradle|dotnet|psql|mysql|redis-cli|openssl|ssh|scp|rsync|export|source)[ \t]+\S.*)$/;
+
+/** Shapes worth a second look before they are pasted into a shell. */
+const RISKY: [RegExp, string][] = [
+  [/\|\s*(?:sudo\s+)?(?:ba)?sh\b/i, "pipes downloaded content straight into a shell"],
+  [/\beval\s*[("$]/i, "evaluates a constructed string"],
+  [/\bbase64\s+-{1,2}d(ecode)?\b/i, "decodes something before running it"],
+  [/\brm\s+-[a-z]*[rf][a-z]*\s+(?:\/|~|\$HOME|\*)/i, "deletes from the root, home, or a wildcard"],
+  [/\b(?:dd|mkfs|fdisk)\b/i, "writes to a device"],
+  [/>\s*\/dev\/(?:sd|nvme|disk)/i, "writes to a raw disk"],
+  [/\bchmod\s+(?:-R\s+)?777\b/i, "makes something world-writable"],
+  [/\bsudo\b/i, "runs as root"],
+  [/\bgit\s+(?:push[^\n]*--force|clean\s+-[a-z]*x)/i, "discards work irreversibly"],
+  [/(?:~\/\.(?:ssh|aws|config\/gh)|\.env\b|id_rsa|credentials)/i, "reads credentials"],
+  [/\bDROP\s+(?:TABLE|DATABASE)\b/i, "drops a table or database"],
+  [/\bkubectl\s+delete\b/i, "deletes cluster resources"],
+  [/\bcurl[^\n]*-[a-zA-Z]*o\b|\bwget\b/i, "downloads a file"],
+];
+
+export type ExtractedCommand = { command: string; risks: string[] };
+
+export function commandsIn(body: string): ExtractedCommand[] {
+  const out: ExtractedCommand[] = [];
+  const seen = new Set<string>();
+  for (const rawLine of body.split(/\r?\n/)) {
+    const match = rawLine.match(SHELL_LINE);
+    if (!match) continue;
+    const command = match[1].trim().replace(/[`'"]+$/, "");
+    if (command.length < 3 || command.length > 400 || seen.has(command)) continue;
+    seen.add(command);
+    out.push({ command, risks: RISKY.filter(([p]) => p.test(command)).map(([, why]) => why) });
+    if (out.length >= 8) break;
+  }
+  return out;
+}

@@ -11,6 +11,7 @@
  * exit code 137 and 143 collided because the normalizer flattened every number.
  */
 import { XP_LIMITS } from "../lib/mcp/contract";
+import { FINGERPRINT_VERSION } from "../lib/xp/fingerprint";
 import {
   environmentMatch,
   errorHeadline,
@@ -20,6 +21,7 @@ import {
   signatureTokens,
   titleFrom,
 } from "../lib/xp/fingerprint";
+import { commandsIn } from "../lib/xp/fence";
 import { packageRefs, packageWarnings } from "../lib/xp/packages";
 import { type Report, rank, summarize } from "../lib/xp/standing";
 
@@ -395,6 +397,54 @@ async function main() {
         today,
       )[0]?.concern ?? "",
     ),
+  );
+
+  // ---- commands, lifted out of the prose ---------------------------------------
+  // The risky part of a report should not be whatever the reader happened to skim.
+
+  const cmds = commandsIn(
+    "First clear the cache:\nrm -rf node_modules/.cache\nThen reinstall with npm ci and redeploy.",
+  );
+  check(
+    "a shell line in the prose is lifted out",
+    cmds.some((c) => c.command.startsWith("rm -rf node_modules/.cache")),
+    JSON.stringify(cmds),
+  );
+  check(
+    "prose that merely mentions a tool is not a command",
+    commandsIn("The npm resolver is what fails here, not your lockfile.").length === 0,
+    JSON.stringify(commandsIn("The npm resolver is what fails here, not your lockfile.")),
+  );
+  check(
+    "a sentence that merely starts with a tool name is prose, not a command",
+    commandsIn("node:sqlite is only typed from Node 22 on. Bump the runtime.").length === 0,
+    JSON.stringify(commandsIn("node:sqlite is only typed from Node 22 on. Bump the runtime.")),
+  );
+  check(
+    "a pipe into a shell is labelled",
+    commandsIn("curl -fsSL https://example.com/i.sh | sh")[0]?.risks.some((r) =>
+      /straight into a shell/.test(r),
+    ) === true,
+  );
+  check(
+    "so is deleting from home, and running as root",
+    commandsIn("sudo rm -rf ~/Library/Caches")[0]?.risks.length >= 2,
+    JSON.stringify(commandsIn("sudo rm -rf ~/Library/Caches")),
+  );
+  check(
+    "an ordinary command carries no warning",
+    commandsIn("npm ci")[0]?.risks.length === 0,
+    JSON.stringify(commandsIn("npm ci")),
+  );
+  check(
+    "a $ prompt marker is stripped, and duplicates collapse",
+    commandsIn("$ npm ci\nnpm ci").length === 1,
+  );
+
+  // ---- the fingerprint rule is versioned ----------------------------------------
+  check(
+    "the fingerprint carries a rule version, so a later rule can recompute and merge",
+    FINGERPRINT_VERSION >= 1,
   );
 
   // ---- limits stay sane ----------------------------------------------------------

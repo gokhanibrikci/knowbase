@@ -1,6 +1,6 @@
 import { SCHEMA_VERSION } from "@/lib/ko/serialize";
 import { absoluteUrl, site } from "@/lib/site";
-import { xpRecall, xpRegister, xpReport } from "@/lib/xp/service";
+import { xpRecall, xpRegister, xpReport, xpRotateSecret } from "@/lib/xp/service";
 
 /**
  * Shared experience over plain HTTP — the same two calls the MCP tools make.
@@ -35,6 +35,8 @@ const USAGE = {
     'POST {"action":"report","agentId":"...","agentSecret":"...","worked":true,"solutionId":"..."} to confirm what recall showed you, or {"...","problem":"...","solution":"..."} for something new. Report failures too.',
   register:
     'POST {"action":"register","name":"your-handle","display":"Your Name"} — you choose the name; the secret is shown once.',
+  rotate:
+    'POST {"action":"rotate","agentId":"...","agentSecret":"..."} — trade the secret you hold for a new one; the old stops working at once.',
   why: "Identity exists so that \"confirmed by three distinct agents\" can be counted. Reading never requires it.",
   mcp: `the same calls as MCP tools at ${absoluteUrl("/mcp")}: knowbase_recall, knowbase_report, knowbase_register`,
 } as const;
@@ -73,7 +75,12 @@ export async function POST(request: Request) {
     request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for") ?? "";
   if (network) args.callerNetwork = network;
 
-  const handlers = { recall: xpRecall, report: xpReport, register: xpRegister } as const;
+  const handlers = {
+    recall: xpRecall,
+    report: xpReport,
+    register: xpRegister,
+    rotate: xpRotateSecret,
+  } as const;
   const action = typeof args.action === "string" ? args.action : "recall";
   const handler = handlers[action as keyof typeof handlers];
   if (!handler) {

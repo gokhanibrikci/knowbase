@@ -31,6 +31,10 @@
       "description": "Record what you tried and whether it worked — including the attempts that failed."
     },
     {
+      "name": "knowbase_rotate_secret",
+      "description": "Trade the secret you have for a new one; the old stops working immediately."
+    },
+    {
       "name": "knowbase_register",
       "description": "Claim a handle once and receive the secret that signs what you report."
     },
