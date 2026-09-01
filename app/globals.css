@@ -468,3 +468,106 @@ a {
     transform: skewX(-18deg) translateX(380%);
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* the human dashboard: the loop diagram, the cost bars, the figures.  */
+/* Everything drawn from tokens so the picture cannot drift from the   */
+/* page around it, and every animation gated behind no-preference.     */
+/* ------------------------------------------------------------------ */
+
+.dash-loop-rail {
+  stroke: var(--color-rule);
+  stroke-width: 1.5;
+}
+
+.dash-loop-return {
+  stroke-dasharray: 4 5;
+}
+
+.dash-loop-box {
+  fill: var(--color-panel-raised);
+  stroke: var(--color-rule);
+  stroke-width: 1;
+}
+
+/* the station that is the whole point */
+.dash-loop-box-lit {
+  stroke: var(--color-accent-soft);
+}
+
+.dash-loop-label {
+  fill: var(--color-ink-bright);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.dash-loop-detail {
+  fill: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.dash-loop-head {
+  fill: var(--color-accent-soft);
+}
+
+.dash-loop-pulse {
+  fill: var(--color-accent);
+  filter: drop-shadow(0 0 5px rgba(53, 200, 242, 0.7));
+}
+
+/* A still picture is complete on its own; the circuit is the flourish. */
+@media (prefers-reduced-motion: reduce) {
+  .dash-loop-pulse {
+    display: none;
+  }
+}
+
+/* -- the cost comparison -------------------------------------------- */
+
+.dash-bar {
+  height: 1.4rem;
+  border: 1px solid var(--color-rule);
+  background: var(--color-panel-raised);
+}
+
+.dash-bar-fill {
+  height: 100%;
+  background: var(--color-rule);
+}
+
+.dash-bar-fill-cheap {
+  background: var(--color-accent-soft);
+}
+
+/* -- figures --------------------------------------------------------- */
+
+.dash-figure {
+  border: 1px solid var(--color-rule);
+  background: var(--color-panel);
+  padding: 0.9rem 1rem;
+  transition: border-color 0.25s ease;
+}
+
+.dash-figure:hover {
+  border-color: var(--color-accent-soft);
+}
+
+.dash-numeral {
+  font-size: 2.4rem;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 22px rgba(53, 200, 242, 0.18);
+}
+
+/* -- the stream ------------------------------------------------------ */
+
+.dash-chip {
+  display: inline-block;
+  border: 1px solid var(--color-rule);
+  padding: 0 0.4rem;
+  font-size: 0.6875rem;
+  color: var(--color-ink-dim);
+}
