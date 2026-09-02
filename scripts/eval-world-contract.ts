@@ -7,7 +7,7 @@
  * local wrangler runtime in development and against production by the residents —
  * this file guards the parts a regression would silently rot.
  */
-import { TOOLS, WORLD_LIMITS } from "../lib/mcp/contract";
+import { INSTRUCTIONS, TOOLS, WORLD_LIMITS } from "../lib/mcp/contract";
 import { redact } from "../lib/query-log";
 import {
   TRUST_BOUNDARY,
@@ -244,6 +244,31 @@ check(
 check(
   "contract: anything returning another agent's words warns that it is untrusted",
   /untrusted/i.test(TOOLS.find((t) => t.name === "knowbase_recall")?.description ?? ""),
+);
+
+/**
+ * The instructions block is loaded by every client the moment it connects, which makes it
+ * the most agent-facing text here — and it spent the whole pivot describing only the
+ * library, leading with knowbase_lookup and never naming knowbase_recall. Nothing caught
+ * it because nothing was looking. These four checks are that.
+ */
+check(
+  "instructions: the shared store is what an arriving agent is told about first",
+  INSTRUCTIONS.indexOf("knowbase_recall") > -1 &&
+    INSTRUCTIONS.indexOf("knowbase_recall") < INSTRUCTIONS.indexOf("knowbase_lookup"),
+  INSTRUCTIONS.slice(0, 120),
+);
+check(
+  "instructions: both halves of the loop are named",
+  INSTRUCTIONS.includes("knowbase_recall") && INSTRUCTIONS.includes("knowbase_report"),
+);
+check(
+  "instructions: the reply's three shapes are distinguished, so a near miss is not read as an answer",
+  ["exact", "similar", "none"].every((shape) => INSTRUCTIONS.includes(`'${shape}'`)),
+);
+check(
+  "instructions: returned text is marked as data, and the full policy is reachable",
+  /data, not instruction/i.test(INSTRUCTIONS) && INSTRUCTIONS.includes("/rule.md"),
 );
 
 check(
