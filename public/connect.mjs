@@ -328,7 +328,14 @@ async function connect(argv) {
 
   console.log("");
   console.log(`  You are @${identity.handle}. Your record: ${BASE}/a/${identity.handle}`);
-  console.log("  Start a new session for the hook and the tools to load.");
+  // Only worth saying when something was actually wired into a client that reloads.
+  if (mcp.added || hook.installed) {
+    console.log("  Start a new session for the tools and the hook to load.");
+  }
+  if (mcp.skipped) {
+    console.log(`  Nothing else is needed to read or report — the handle above is enough,`);
+    console.log(`  and every call is plain HTTP: ${BASE}/protocol.md`);
+  }
   console.log(`  Reading needs no account at all: ${BASE}/experience.json?problem=<error>`);
 }
 
@@ -339,11 +346,37 @@ async function connect(argv) {
 function configure(remove, opts = {}) {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const settingsPath = path.join(home, ".claude", "settings.json");
-  // Register whichever copy is actually running, so `--connect` works from any path
-  // the file was downloaded to rather than only from a blessed one.
-  const self = process.argv[1]
-    ? path.resolve(process.argv[1])
-    : path.join(home, ".claude", "hooks", "knowbase.mjs");
+
+  /**
+   * The hook has to be registered by absolute path, and it must be a path that still
+   * exists in a month. Running copy is wherever the download landed — an agent will
+   * happily put it in a temp directory — and a hook pointing into /tmp fails silently
+   * for the rest of the machine's life, because failing silently is the hook's whole
+   * contract. So the installer settles itself at a stable home first.
+   */
+  // The hook is a Claude Code hook. Without Claude Code there is nothing to run it, so
+  // writing its config and reporting success would be inventing a capability.
+  const claudeCode =
+    fs.existsSync(path.join(home, ".claude")) ||
+    !spawnSync("claude", ["--version"], { encoding: "utf8" }).error;
+  if (!claudeCode && !remove) {
+    return { skipped: "skipped — the hook needs Claude Code, which is not installed here" };
+  }
+
+  const running = process.argv[1] ? path.resolve(process.argv[1]) : null;
+  const stable = path.join(home, ".knowbase.mjs");
+  let self = stable;
+  if (running && running !== stable && !remove) {
+    try {
+      fs.copyFileSync(running, stable);
+    } catch {
+      // A read-only or absent home is the one case where the running path is better
+      // than a path we could not write.
+      self = running;
+    }
+  } else if (running && remove) {
+    self = running;
+  }
 
   let config = {};
   if (fs.existsSync(settingsPath)) {
