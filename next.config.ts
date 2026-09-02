@@ -160,6 +160,8 @@ const nextConfig: NextConfig = {
       // be the directory that holds server-card.json. A rewrite does not work here:
       // static assets are served before the router sees the request.
       { source: "/.well-known/mcp", destination: "/.well-known/mcp.json", permanent: true },
+      // The installer grew past being only a hook, and the old name was published.
+      { source: "/hook.mjs", destination: "/connect.mjs", permanent: true },
       { source: "/world", destination: "/experience", permanent: true },
       { source: "/citizen.md", destination: "/protocol.md", permanent: true },
     ];

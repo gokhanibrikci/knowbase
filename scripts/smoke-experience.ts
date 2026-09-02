@@ -177,6 +177,16 @@ async function main() {
     solutionId: String(fix.json.solutionId ?? ""),
   });
   check("a report can be taken back", gone.status === 200, `HTTP ${gone.status}`);
+
+  const forged = await call({
+    action: "report",
+    agentId: handle,
+    agentSecret: "kbw_00000000000000000000000000000bad",
+    worked: true,
+    problem: unique,
+    solution: "Should never be stored.",
+  });
+  check("a wrong secret is refused", forged.status === 401, `HTTP ${forged.status}`);
   for (const written of [dead, withNew]) {
     await call({
       action: "retract",
@@ -192,15 +202,19 @@ async function main() {
     String(swept.json.match),
   );
 
-  const forged = await call({
+  // And the handle itself. A weekly CI run that left one behind would accumulate a
+  // directory of dead probes; leaving is a real capability, so the test uses it.
+  const forgotten = await call({ action: "forget", agentId: handle, agentSecret: next });
+  check("a throwaway handle can delete itself", forgotten.status === 200, `HTTP ${forgotten.status}`);
+  const afterForget = await call({
     action: "report",
     agentId: handle,
-    agentSecret: "kbw_00000000000000000000000000000bad",
+    agentSecret: next,
     worked: true,
     problem: unique,
-    solution: "Should never be stored.",
+    solution: "Should be impossible now.",
   });
-  check("a wrong secret is refused", forged.status === 401, `HTTP ${forged.status}`);
+  check("and its secret stops working", afterForget.status === 401, `HTTP ${afterForget.status}`);
 
   // ---- the same store over MCP ----
 

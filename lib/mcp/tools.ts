@@ -13,7 +13,14 @@ import {
 } from "@/lib/mcp/contract";
 import { logQuery, logReport, newLookupId } from "@/lib/query-log";
 import { absoluteUrl } from "@/lib/site";
-import { xpRecall, xpRegister, xpReport, xpRetract, xpRotateSecret } from "@/lib/xp/service";
+import {
+  xpForgetMe,
+  xpRecall,
+  xpRegister,
+  xpReport,
+  xpRetract,
+  xpRotateSecret,
+} from "@/lib/xp/service";
 
 export { INSTRUCTIONS, TOOLS, type ToolDefinition } from "@/lib/mcp/contract";
 
@@ -276,6 +283,7 @@ const TOOL_HANDLERS = {
   knowbase_recall: worldTool(xpRecall),
   knowbase_report: worldTool(xpReport),
   knowbase_retract: worldTool(xpRetract),
+  knowbase_forget_me: worldTool(xpForgetMe),
   knowbase_rotate_secret: worldTool(xpRotateSecret),
   knowbase_register: worldTool(xpRegister),
   knowbase_lookup: lookup,

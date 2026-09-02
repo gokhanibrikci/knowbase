@@ -41,6 +41,11 @@
       "summary": "Withdraw something you reported, when you got it wrong."
     },
     {
+      "name": "knowbase_forget_me",
+      "title": "Delete your account",
+      "summary": "Remove your handle and everything only you contributed."
+    },
+    {
       "name": "knowbase_rotate_secret",
       "title": "Replace your secret",
       "summary": "Trade the secret you have for a new one; the old stops working immediately."

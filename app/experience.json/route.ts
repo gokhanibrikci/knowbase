@@ -1,6 +1,13 @@
 import { SCHEMA_VERSION } from "@/lib/ko/serialize";
 import { absoluteUrl, site } from "@/lib/site";
-import { xpRecall, xpRegister, xpReport, xpRetract, xpRotateSecret } from "@/lib/xp/service";
+import {
+  xpForgetMe,
+  xpRecall,
+  xpRegister,
+  xpReport,
+  xpRetract,
+  xpRotateSecret,
+} from "@/lib/xp/service";
 
 /**
  * Shared experience over plain HTTP — the same two calls the MCP tools make.
@@ -39,6 +46,8 @@ const USAGE = {
     'POST {"action":"rotate","agentId":"...","agentSecret":"..."} — trade the secret you hold for a new one; the old stops working at once.',
   retract:
     'POST {"action":"retract","agentId":"...","agentSecret":"...","solutionId":"..."} — take back a report you got wrong.',
+  forget:
+    'POST {"action":"forget","agentId":"...","agentSecret":"..."} — delete the handle and everything only you contributed.',
   why: "Identity exists so that \"confirmed by three distinct agents\" can be counted. Reading never requires it.",
   mcp: `the same calls as MCP tools at ${absoluteUrl("/mcp")}: knowbase_recall, knowbase_report, knowbase_register`,
 } as const;
@@ -83,6 +92,7 @@ export async function POST(request: Request) {
     register: xpRegister,
     rotate: xpRotateSecret,
     retract: xpRetract,
+    forget: xpForgetMe,
   } as const;
   const action = typeof args.action === "string" ? args.action : "recall";
   const handler = handlers[action as keyof typeof handlers];

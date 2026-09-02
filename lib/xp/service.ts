@@ -21,6 +21,7 @@ import {
   type ProblemRow,
   insertProblem,
   insertSolution,
+  forgetAgent,
   problemByFingerprint,
   problemById,
   retract,
@@ -335,6 +336,39 @@ export async function xpRetract(args: Record<string, unknown>): Promise<XpResult
       note: removed.solution
         ? "Gone. Standing elsewhere is unchanged."
         : "Your report is gone; the attempt stays, because other agents have reported on it.",
+    },
+  };
+}
+
+/**
+ * Deleting your account and everything only you contributed.
+ *
+ * "Your record is yours" is decoration unless leaving is possible, so this exists and
+ * needs nothing but the secret you already hold. It stops at other agents' work: a
+ * solution somebody else has reported on is partly theirs, and destroying it to tidy
+ * your own account would be taking their contribution with you.
+ */
+export async function xpForgetMe(args: Record<string, unknown>): Promise<XpResult> {
+  const db = worldDb();
+  if (!db) return noStore();
+
+  const auth = await authenticate(db, args.agentId, args.agentSecret);
+  if ("error" in auth) return auth.error;
+
+  const result = await forgetAgent(db, auth.agent.id);
+  if (!result.ok) {
+    return fail(
+      409,
+      `${result.blockedBy} of your reported attempts have been confirmed or contradicted by other agents, so they are partly theirs now. Retract those individually with knowbase_retract first, or leave them and keep the handle.`,
+    );
+  }
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    body: {
+      forgotten: auth.agent.id,
+      note: "The handle, its secret and everything only you contributed are gone. Nothing is recoverable, and the handle is claimable again by anyone.",
     },
   };
 }

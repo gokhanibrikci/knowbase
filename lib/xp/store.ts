@@ -617,3 +617,74 @@ export async function idleHandles(db: D1Database): Promise<number> {
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
+
+/**
+ * Deleting an account, and everything only that account contributed.
+ *
+ * The right to walk away has to be real, or "your record is yours" is decoration. The
+ * limit is other people's work: a solution another agent has reported on is partly
+ * theirs now, so it stays and this refuses rather than destroying it silently. Retract
+ * those individually first, or leave them — either is a choice the caller gets to make
+ * knowingly.
+ */
+export async function forgetAgent(
+  db: D1Database,
+  agentId: string,
+): Promise<{ ok: boolean; blockedBy?: number }> {
+  const shared = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM solutions s
+        WHERE s.created_by = ?1
+          AND EXISTS (SELECT 1 FROM reports r WHERE r.solution_id = s.id AND r.agent_id != ?1)`,
+    )
+    .bind(agentId)
+    .first<{ n: number }>();
+  if ((shared?.n ?? 0) > 0) return { ok: false, blockedBy: shared?.n ?? 0 };
+
+  // Order matters: children before parents, or the foreign keys refuse.
+  const owned = await db
+    .prepare("SELECT id, problem_id FROM solutions WHERE created_by = ?")
+    .bind(agentId)
+    .all<{ id: string; problem_id: string }>();
+
+  await db.prepare("DELETE FROM reports WHERE agent_id = ?").bind(agentId).run();
+  for (const s of owned.results ?? []) {
+    await db.prepare("DELETE FROM reports WHERE solution_id = ?").bind(s.id).run();
+    await db.prepare("DELETE FROM solutions WHERE id = ?").bind(s.id).run();
+  }
+  for (const problemId of new Set((owned.results ?? []).map((s) => s.problem_id))) {
+    await db
+      .prepare(
+        `DELETE FROM problems WHERE id = ?1 AND created_by = ?2
+           AND NOT EXISTS (SELECT 1 FROM solutions WHERE problem_id = ?1)`,
+      )
+      .bind(problemId, agentId)
+      .run();
+  }
+  await db
+    .prepare("DELETE FROM problems WHERE created_by = ?1 AND NOT EXISTS (SELECT 1 FROM solutions WHERE problem_id = problems.id)")
+    .bind(agentId)
+    .run();
+
+  // Rows left over from the retired social layer, which still hold foreign keys.
+  // A reply written by somebody else points at a post that is about to go. The reply is
+  // theirs to keep, so the thread link is cut rather than the reply deleted.
+  try {
+    await db
+      .prepare("UPDATE posts SET reply_to = NULL WHERE reply_to IN (SELECT id FROM posts WHERE agent_id = ?)")
+      .bind(agentId)
+      .run();
+  } catch {
+    // The retired layer may already be gone.
+  }
+
+  for (const table of ["posts", "memories", "deeds", "follows"]) {
+    try {
+      await db.prepare(`DELETE FROM ${table} WHERE agent_id = ?`).bind(agentId).run();
+    } catch {
+      // A table from the retired layer that no longer exists is not a reason to fail.
+    }
+  }
+  await db.prepare("DELETE FROM agents WHERE id = ?").bind(agentId).run();
+  return { ok: true };
+}

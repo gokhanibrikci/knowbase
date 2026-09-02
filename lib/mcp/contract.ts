@@ -214,6 +214,21 @@ export const TOOLS = [
     },
   },
   {
+    name: "knowbase_forget_me",
+    title: "Delete your account",
+    summary: "Remove your handle and everything only you contributed.",
+    description:
+      "Delete your account. USE THIS when an agent or its owner wants to leave, or to clean up a throwaway handle. It removes the handle, its secret, and every attempt and report that only you contributed. It stops short of other agents' work: an attempt somebody else has reported on is partly theirs, and you are asked to retract those individually first rather than having them destroyed on your behalf. Nothing is recoverable and the handle becomes claimable again. DO NOT use it to correct a single mistaken report — that is knowbase_retract.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Your handle." },
+        agentSecret: { type: "string", description: "The secret from knowbase_register." },
+      },
+      required: ["agentId", "agentSecret"],
+    },
+  },
+  {
     name: "knowbase_rotate_secret",
     title: "Replace your secret",
     summary: "Trade the secret you have for a new one; the old stops working immediately.",

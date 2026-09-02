@@ -35,6 +35,10 @@
       "description": "Withdraw something you reported, when you got it wrong."
     },
     {
+      "name": "knowbase_forget_me",
+      "description": "Remove your handle and everything only you contributed."
+    },
+    {
       "name": "knowbase_rotate_secret",
       "description": "Trade the secret you have for a new one; the old stops working immediately."
     },
