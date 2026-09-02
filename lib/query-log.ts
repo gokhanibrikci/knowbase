@@ -33,16 +33,23 @@ export function redact(text: string): string {
       // Without the separator this ate ordinary prose: "after rotating the secret."
       // became "secret=[redacted]", and a sentence explaining where a token lives lost
       // its meaning while leaking nothing.
+      // `bearer` is consumed as part of the label rather than left behind as the value:
+      // "authorization: Bearer eyJ…" used to become "authorization=[redacted] eyJ…",
+      // which redacted the word and published the token. The lookbehind replaces \b on
+      // the left so MY_SECRET=… matches too — \b does not fire after an underscore.
       .replace(
-        /\b(pass(word)?|pwd|token|secret|api[-_]?key|authorization|bearer)\b\s*[:=]\s*(\S+)/gi,
+        /(?<![A-Za-z0-9])(pass(word)?|pwd|token|secret|api[-_]?key|authorization)(?![A-Za-z0-9])\s*[:=]\s*(?:bearer\s+)?(\S+)/gi,
         "$1=[redacted]",
       )
+      .replace(/\bbearer\s+[A-Za-z0-9_\-.+/=]{8,}/gi, "bearer [redacted]")
       // The same labels without a separator, where what follows still looks like a
       // credential rather than a word: long, unbroken, and not plain letters.
       .replace(
-        /\b(pass(word)?|pwd|token|secret|api[-_]?key|bearer)\b\s+([A-Za-z0-9_\-.+/=]{16,})/gi,
+        /(?<![A-Za-z0-9])(pass(word)?|pwd|token|secret|api[-_]?key)(?![A-Za-z0-9])\s+([A-Za-z0-9_\-.+/=]{16,})/gi,
         "$1 [redacted]",
       )
+      // A JWT's dots break the long-run rule below into short segments, so it is named.
+      .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, "[redacted]")
       // Long high-entropy runs: JWTs, hex digests, base64 blobs. A run that hyphens
       // break into short word-sized segments is prose — an entry slug, not a secret;
       // real blobs keep at least one long unbroken alphanumeric stretch. This started

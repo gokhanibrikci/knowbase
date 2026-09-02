@@ -1,5 +1,6 @@
 import { XP_LIMITS } from "@/lib/mcp/contract";
 import { redact } from "@/lib/query-log";
+import { placehold, refusalMessage, refusals } from "./sensitive";
 import { absoluteUrl } from "@/lib/site";
 import { newPostId, newSecret, normalizeHandle, sha256Hex } from "@/lib/world/guard";
 import { type AgentRow, getAgent, touchAgent } from "@/lib/world/store";
@@ -419,6 +420,17 @@ export async function xpRotateSecret(args: Record<string, unknown>): Promise<XpR
  * Open to anyone, no secret required: a store you must sign up to read is a store nobody
  * reads. The secret only matters when you write.
  */
+/**
+ * Everything that gets stored goes through here, and in this order: credentials first,
+ * then the values that are not credentials but must not be published either. Applied to
+ * the sample, the derived title and every solution body — the title used to bypass it
+ * entirely, which put whatever was on the error's first line into the page <title>, the
+ * meta description and the JSON-LD.
+ */
+function forPublication(text: string): string {
+  return placehold(redact(text));
+}
+
 export async function xpRecall(args: Record<string, unknown>): Promise<XpResult> {
   const db = worldDb();
   if (!db) return noStore();
@@ -515,26 +527,13 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
     };
   }
 
-  // A miss, recorded. This is the queue: what agents keep needing that nobody has answered.
-  const auth =
-    typeof args.agentId === "string"
-      ? await authenticate(db, args.agentId, args.agentSecret)
-      : null;
-  const asker = auth && !("error" in auth) ? auth.agent.id : "anonymous";
-  if (asker !== "anonymous") {
-    const existing = await problemByFingerprint(db, print);
-    if (!existing) {
-      await insertProblem(db, {
-        id: newPostId(),
-        fingerprint: print,
-        title: titleFrom(text),
-        sample: redact(text).slice(0, XP_LIMITS.sampleCharacters),
-        createdBy: asker,
-        fpVersion: FINGERPRINT_VERSION,
-        now,
-      });
-    }
-  }
+  /**
+   * Reading no longer publishes. Supplying a handle used to insert the problem row on a
+   * miss, which made a page at /p/<id>, put it in the sitemap and offered it to search
+   * engines — off a call whose own parameter documentation called it "records the miss so
+   * the failure enters the queue", which reads like private telemetry. Publication now
+   * happens only through report, which is deliberate and documented as public.
+   */
 
   return {
     ok: true,
@@ -546,7 +545,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
       // the reader a whole turn to discover it was wrong.
       worked: [],
       deadEnds: [],
-      recorded: asker !== "anonymous",
+      recorded: false,
       next: "Nobody has recorded this failure. Solve it however you would have anyway, then knowbase_report what you tried — including the attempts that failed. The next agent to hit this will skip everything you just burned tokens on.",
     },
   };
@@ -573,8 +572,27 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
   }
   const worked = args.worked;
   const env = parseEnvironment(args.environment);
+
+  /**
+   * The write boundary, before anything is stored or a rate limit is spent.
+   *
+   * Every field a report can carry is checked together, because the value that must not
+   * be published does not care which parameter it arrived in. A refusal is louder than a
+   * silent scrub on purpose: the report failing is what teaches whoever wrote it, and a
+   * report that succeeded quietly with the card number removed teaches nothing.
+   */
+  const offered = [args.problem, args.solution, args.title, args.note]
+    .filter((v): v is string => typeof v === "string")
+    .join("\n");
+  const found = refusals(offered);
+  if (found.length > 0) {
+    return fail(422, refusalMessage(found));
+  }
+
   const note =
-    typeof args.note === "string" ? redact(args.note.trim()).slice(0, XP_LIMITS.noteCharacters) : "";
+    typeof args.note === "string"
+      ? forPublication(args.note.trim()).slice(0, XP_LIMITS.noteCharacters)
+      : "";
 
   if ((await reportsToday(db, agent.id, now - 86_400_000)) >= XP_LIMITS.reportsPerDay) {
     return fail(429, `rate limit: at most ${XP_LIMITS.reportsPerDay} reports per day`);
@@ -638,11 +656,15 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
   let problem = await problemByFingerprint(db, print);
   if (!problem) {
     const id = newPostId();
+    const safeText = forPublication(text);
     await insertProblem(db, {
       id,
       fingerprint: print,
-      title: typeof args.title === "string" && args.title.trim() ? redact(args.title.trim()).slice(0, 140) : titleFrom(text),
-      sample: redact(text).slice(0, XP_LIMITS.sampleCharacters),
+      title:
+        typeof args.title === "string" && args.title.trim()
+          ? forPublication(args.title.trim()).slice(0, 140)
+          : titleFrom(safeText),
+      sample: safeText.slice(0, XP_LIMITS.sampleCharacters),
       createdBy: agent.id,
       fpVersion: FINGERPRINT_VERSION,
       now,
@@ -652,7 +674,7 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
   if (!problem) return fail(500, "could not record the problem");
 
   const solutionId = newPostId();
-  const redacted = redact(body);
+  const redacted = forPublication(body);
   // Asked once, here, so no reader ever waits on a registry — and so the answer is
   // recorded as of a date rather than implied to be current.
   const facts = await checkPackages(redacted);

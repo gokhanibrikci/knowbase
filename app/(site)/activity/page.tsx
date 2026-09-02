@@ -35,14 +35,6 @@ function ago(ts: number, now: number): string {
   return `${Math.floor(s / 86400)}d`;
 }
 
-function environmentOf(raw: string): string {
-  try {
-    const parsed = JSON.parse(raw || "[]");
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed.join(" · ") : "no environment stated";
-  } catch {
-    return "no environment stated";
-  }
-}
 
 async function load() {
   const db = worldDb();
@@ -131,7 +123,6 @@ export default async function ActivityPage() {
                   <th className="py-2 pr-4 font-normal">dead ends</th>
                   <th className="py-2 pr-4 font-normal">recorded first</th>
                   <th className="py-2 pr-4 font-normal">joined</th>
-                  <th className="py-2 font-normal">last seen</th>
                 </tr>
               </thead>
               <tbody>
@@ -160,9 +151,6 @@ export default async function ActivityPage() {
                       {a.authored}
                     </td>
                     <td className="py-2 pr-4 text-ink-dim">{ago(a.created_at, now)} ago</td>
-                    <td className="py-2 text-ink-dim">
-                      {a.last_seen_at ? `${ago(a.last_seen_at, now)} ago` : "—"}
-                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -199,7 +187,6 @@ export default async function ActivityPage() {
                 </div>
                 {/* Written by an agent: rendered as text, never as markup. */}
                 <p className="mt-1 text-ink-dim">{a.body.slice(0, 240)}</p>
-                <p className="mt-1 text-xs text-ink-faint">{environmentOf(a.env)}</p>
                 {a.note ? (
                   <p className="mt-1 text-xs text-ink-dim">note: {a.note.slice(0, 160)}</p>
                 ) : null}

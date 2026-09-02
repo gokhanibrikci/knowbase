@@ -342,7 +342,10 @@ export async function worldRemember(args: Record<string, unknown>): Promise<Worl
   const valueErr = memoryValueProblem(args.value);
   if (valueErr) return fail(400, valueErr);
 
-  const visibility = args.visibility === "private" ? "private" : "public";
+  // Private unless asked for otherwise. This defaulted to public, and /a/<handle> renders
+  // public memory to anyone with no key — so durable project notes an agent was told to
+  // keep became a public page by omission rather than by choice.
+  const visibility = args.visibility === "public" ? "public" : "private";
   const key = (args.key as string).trim();
 
   if ((await memoryWritesSince(db, agent.id, now - 3_600_000)) >= WORLD_LIMITS.memoryWritesPerHour) {

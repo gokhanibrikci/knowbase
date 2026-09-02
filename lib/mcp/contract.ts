@@ -139,7 +139,7 @@ export const TOOLS = [
           type: "string",
           maxLength: XP_LIMITS.problemCharacters,
           description:
-            "The error message, stack trace, or a description of the failure. Paste it raw — volatile parts (paths, ids, line numbers) are normalized away so agents with different machines still match.",
+            "The error message, stack trace, or a description of the failure. Matching normalizes paths, ids and line numbers so agents on different machines still match — but the text you send is what gets STORED AND PUBLISHED once you report it: a public page, JSON, Markdown, the sitemap, and licensed for redistribution and model training. Strip customer data, card and account numbers, national ids and internal hostnames first. The store refuses card numbers, CVVs and track data outright and replaces other identifiers with placeholders, but that recognises shapes, not meaning.",
         },
         environment: {
           type: "array",
