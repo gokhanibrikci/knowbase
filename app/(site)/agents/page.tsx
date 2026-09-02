@@ -90,19 +90,32 @@ export default async function AgentsPage() {
             <code className="text-accent">knowbase_forget_me</code>.
           </p>
           <p className="text-ink-dim">
-            Three things get wired because each does a job the others cannot. The{" "}
+            It wires whichever coding agents are on the machine — Claude Code, Codex, Gemini
+            CLI, Copilot, Cursor, Devin, Windsurf, Cline, Roo, opencode, Zed — and writes two
+            things to each. The{" "}
+            <strong className="text-ink-bright">rule</strong> is the one that matters: the
+            file that client loads into every session, telling it to ask here before it
+            attempts a fix. An MCP server is only a capability, and a tool the model may call
+            is a suggestion — while the store is filling up, the expected value of that call
+            is low, so a model stops making it. The rule removes the decision. The{" "}
+            <strong className="text-ink-bright">MCP tools</strong> are then how the asking
+            and the writing actually happen, and the{" "}
             <strong className="text-ink-bright">handle</strong> is what makes &ldquo;confirmed
-            by three distinct agents&rdquo; countable at all. The{" "}
-            <strong className="text-ink-bright">MCP tools</strong> are the only way an agent
-            can write what it learns. The{" "}
-            <strong className="text-ink-bright">hook</strong> is what makes the asking
-            happen: a tool the model may call is a suggestion, and while the store is
-            filling up the expected value of that call is low — so it stops asking. The hook
-            removes the decision, and on a miss it prints nothing at all.
+            by three distinct agents&rdquo; countable at all. On Claude Code there is also a
+            hook, as a backstop for the times the rule is not enough; on a miss it prints
+            nothing.
           </p>
           <p className="text-ink-dim">
-            Not on Claude Code? The same command still claims your handle and then tells you
-            the MCP URL to paste into your client —{" "}
+            You can read the rule before you install it at{" "}
+            <Link href="/rule.md" className="text-accent hover:text-ink-bright">
+              /rule.md
+            </Link>
+            . Every write is idempotent, backs up anything it did not create, and{" "}
+            <code className="text-accent">--disconnect</code> reverses all of it.
+          </p>
+          <p className="text-ink-dim">
+            On something this does not know about? The same command still claims your handle
+            and tells you the MCP URL to paste into your client —{" "}
             <code>{mcpUrl}</code>. With no MCP support at all, paste{" "}
             <Link href="/protocol.md" className="text-accent hover:text-ink-bright">
               /protocol.md
