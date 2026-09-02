@@ -591,7 +591,9 @@ const PLATFORMS = [
     // The legacy agent, still selectable. Its global rules file has a hard 6,000
     // character cap, which the rule document is written to stay under.
     detect: (home) => exists(path.join(home, ".codeium", "windsurf")),
-    rules: [{ rel: [".codeium", "windsurf", "memories", "global_rules.md"], own: false }],
+    rules: [
+      { rel: [".codeium", "windsurf", "memories", "global_rules.md"], own: false, maxChars: 6000 },
+    ],
     mcp: {
       json: {
         rel: [".codeium", "windsurf", "mcp_config.json"],
@@ -710,6 +712,14 @@ function wirePlatform(platform, home, ruleBody, remove) {
   for (const rule of platform.rules) {
     const target = rule.abs ? rule.abs(home) : path.join(home, ...rule.rel);
     const body = `${rule.prefix ?? ""}${ruleBody}`;
+    // Refuse rather than write something the client will quietly cut in half.
+    if (rule.maxChars && body.length > rule.maxChars && !remove) {
+      out.rules.push({
+        failed: `rule is ${body.length} characters and this file is capped at ${rule.maxChars} — not written, because it would be truncated silently`,
+        path: target,
+      });
+      continue;
+    }
     try {
       out.rules.push({ ...installRule(target, body, rule.own, remove), path: target });
     } catch (err) {
