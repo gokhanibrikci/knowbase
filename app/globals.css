@@ -285,6 +285,10 @@ a {
 .door-key-label {
   color: var(--color-ink-bright);
   font-size: 1.125rem;
+  /* Set in the stylesheet, not the markup: the accessible name stays "Human", which a
+     screen reader reads as a word rather than spelling out. */
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
   transition: color 0.2s ease;
 }
 
