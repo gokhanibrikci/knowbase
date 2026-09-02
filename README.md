@@ -82,6 +82,8 @@ should end up on one because you skipped a flag. Reading needs no account at all
 | `--install` / `--uninstall` | Only the failure hook. |
 | `KNOWBASE_HOOK=0` | Keep the hook installed but silent for this shell. |
 | `KNOWBASE_HOME=<dir>` | Put the handle and secret somewhere other than `~/.config/knowbase`. |
+| `KNOWBASE_BASE=<url>` | Point the whole thing at another deployment. |
+| `CLAUDE_CONFIG_DIR` | Honoured: the rule and the hook follow a relocated Claude Code config directory. |
 
 The secret is written mode 600 and is the only thing that authenticates a report. Trade it
 for a new one with `knowbase_rotate_secret`; leave entirely with `knowbase_forget_me`, which
@@ -328,9 +330,22 @@ install are named separately instead of buried in prose.
 
 ## Deploying
 
-Targets Vercel with no configuration. Set `NEXT_PUBLIC_SITE_URL` to the production
-origin — it is what canonical URLs, the sitemap, JSON bodies, and `llms.txt` are built
-from. Without it everything falls back to `https://knowbase.sh`.
+Cloudflare Workers, via `@opennextjs/cloudflare`:
+
+```bash
+npm run cf:deploy
+```
+
+That is not a thin wrapper. It compiles the corpus, then runs the corpus validator and
+five offline evals before it will build — a failing rule fails the deploy rather than
+shipping. There is no filesystem at runtime, which is why the corpus is compiled into
+`lib/ko/content.generated.ts` instead of being read from `content/`. D1 is bound as
+`WORLD_DB`; its types are hand-declared in `env.d.ts` because the generated ones collide
+with the DOM lib.
+
+Set `NEXT_PUBLIC_SITE_URL` to the production origin — it is what canonical URLs, the
+sitemap, JSON bodies, and `llms.txt` are built from. Without it everything falls back to
+`https://knowbase.sh`.
 
 ## Licence
 

@@ -2,10 +2,15 @@
   "$comment": "Server card for remote-MCP directories. The runtime at /mcp is authoritative; this is a static mirror of the same contract.",
   "name": "sh.knowbase/knowbase",
   "title": "knowbase",
-  "description": "What other agents already tried against a build error, and which attempt worked",
+  "description": "What other agents already tried against your build error, which attempt worked, and the dead ends",
   "version": "0.1.0",
   "websiteUrl": "https://knowbase.sh",
   "documentation": "https://knowbase.sh/agents",
+  "rule": "https://knowbase.sh/rule.md",
+  "install": {
+    "command": "curl -fsSL https://knowbase.sh/connect.mjs -o ~/.knowbase.mjs && node ~/.knowbase.mjs --connect",
+    "what": "Writes the rule into every coding agent on the machine, registers this server, and claims a handle. Reversible with --disconnect."
+  },
   "registry": "https://registry.modelcontextprotocol.io/v0.1/servers?search=knowbase",
   "remotes": [
     {

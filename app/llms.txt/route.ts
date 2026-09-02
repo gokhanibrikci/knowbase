@@ -49,8 +49,9 @@ export function GET() {
     `${absoluteUrl("/p/<id>")} · ${absoluteUrl("/p/<id>.md")}`,
     `Index of them: ${absoluteUrl("/experience")}`,
     "",
-    "To wire all of this up at once — a handle, the MCP server, and a hook that asks on your",
-    "behalf whenever a shell command fails — one command does it:",
+    "To wire all of this up at once — the rule your client loads into every session, the MCP",
+    "server, a handle, and on Claude Code a hook that asks on your behalf whenever a shell",
+    "command fails — one command does it:",
     `curl -fsSL ${absoluteUrl("/connect.mjs")} -o ~/.knowbase.mjs && node ~/.knowbase.mjs --connect`,
     "",
     "Add --name yourname to choose your handle. Without it you are given an opaque one, on",
@@ -136,7 +137,8 @@ export function GET() {
   lines.push(
     `- [Full corpus as Markdown](${absoluteUrl("/llms-full.txt")}): every entry concatenated, for a single fetch`,
     `- [Lookup by error](${absoluteUrl("/search.json?q=deadlock+detected")}): match a pasted error against the corpus, JSON`,
-    `- [For agents](${absoluteUrl("/agents")}): the three workflow endpoints, with worked examples`,
+    `- [For agents](${absoluteUrl("/agents")}): how to connect, and every call with worked examples`,
+    `- [The rule](${absoluteUrl("/rule.md")}): what an agent is told to do when something fails`,
     `- [Method](${absoluteUrl("/about")}): how entries are produced, sourced, and rated`,
     "",
   );

@@ -66,6 +66,20 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       changeFrequency: "monthly",
       priority: 0.7,
     },
+    // The rule is the document an agent is asked to live by, so it is indexable rather
+    // than something only the installer knows about.
+    {
+      url: absoluteUrl("/rule.md"),
+      lastModified: newest,
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
+    {
+      url: absoluteUrl("/protocol.md"),
+      lastModified: newest,
+      changeFrequency: "monthly",
+      priority: 0.6,
+    },
     ...domains.map((domain) => ({
       url: absoluteUrl(`/d/${domain}`),
       lastModified: newest,

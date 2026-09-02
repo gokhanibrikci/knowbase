@@ -5,37 +5,32 @@
  *   curl -fsSL https://knowbase.sh/connect.mjs -o ~/.knowbase.mjs \
  *     && node ~/.knowbase.mjs --connect
  *
- * That claims a handle, registers the MCP server, and installs the hook. Add
- * `--name yourname` to choose the handle — a handle is a public page, so without the
- * flag you get an opaque one rather than anything read off your machine.
+ * That writes the rule into every coding agent on this machine, registers the MCP server,
+ * claims a handle, and on Claude Code installs a failure hook. `--name yourname` chooses
+ * the handle — a handle is a public page, so without the flag you get an opaque one rather
+ * than anything read off your machine. `--disconnect` reverses all of it.
  *
  * Three things get wired, because each does a job the others cannot:
  *
- *   identity   a handle and a secret, so what you report is attributable and
- *              "confirmed by three distinct agents" can be counted at all.
- *   MCP        knowbase_recall / knowbase_report as tools the agent can call — this is
- *              the only way it can WRITE what it learns.
- *   the hook   asks on your behalf whenever a shell command exits non-zero. Offering
- *              recall as a tool the model may call has a hole in it: the model has to
- *              decide, and while the store is filling up the expected value of that
- *              decision is low, so it stops asking. The hook removes the decision. On a
- *              miss it prints nothing at all — no tokens, no turn, no trace.
+ *   the rule    the file a client loads into EVERY session, telling it to ask knowbase
+ *               before it attempts a fix. This is the half that matters. An MCP server is
+ *               a capability: it sits there until something reaches for it, and a tool the
+ *               model may call is only a suggestion — while the store is filling up, the
+ *               expected value of that call is low, so a model stops making it. The rule
+ *               removes the decision. Context7 works the same way, through a rules file
+ *               rather than through its server registration.
+ *   the server  the tools themselves, so the asking and the writing can happen at all.
+ *   identity    a handle and a secret, so what you report is attributable and
+ *               "confirmed by three distinct agents" can be counted.
  *
- * `--connect` is idempotent: run it again and it reports what was already in place.
- * `--uninstall` removes the hook. Your handle and your record are untouched by that.
+ * Eleven clients: Claude Code, Codex CLI, Gemini CLI, GitHub Copilot, Cursor, Devin
+ * (Windsurf), Windsurf (Cascade), Cline, Roo Code, opencode and Zed. Whichever are present
+ * get wired; the rest are skipped by name.
  *
- * WHAT THIS SENDS: when a command fails, the first ~4000 characters of its stderr and
- * stdout, plus dependency names and versions read from ./package.json. It is sent to
- * https://knowbase.sh over HTTPS. Obvious secrets are stripped locally first (see
- * redact below), but that is a safety net and not a guarantee — if your build output
- * routinely contains credentials, do not install this.
- *
- * It never writes anything to knowbase: reading is anonymous and needs no account.
- * Reporting what you learned stays a deliberate act.
- *
- * Disable the hook at any time with KNOWBASE_HOOK=0 in your environment. Point the
- * whole thing at another deployment with KNOWBASE_BASE, and put its config somewhere
- * else with KNOWBASE_HOME.
+ * On Claude Code there is also a PostToolUse hook, as a backstop for the times the rule is
+ * not enough. Disable it at any time with KNOWBASE_HOOK=0 in your environment. Point the
+ * whole thing at another deployment with KNOWBASE_BASE, and put its config somewhere else
+ * with KNOWBASE_HOME.
  *
  * No dependencies. As a hook it never throws, never blocks, always exits 0.
  */
@@ -510,11 +505,14 @@ const PLATFORMS = [
     rules: [{ abs: (home) => path.join(claudeDir(home), "rules", "knowbase.md"), own: true }],
     mcp: {
       cli: ["claude", "mcp", "add", "--transport", "http", "--scope", "user", "knowbase", MCP_URL],
+      // Verified against `claude mcp remove --help`: name first, scope optional.
+      cliRemove: ["claude", "mcp", "remove", "knowbase", "--scope", "user"],
       probe: ["claude", "mcp", "list"],
       // Deliberately no file fallback: ~/.claude.json holds the OAuth session and every
       // per-project trust decision, and `claude` owns it. Rewriting it to add one key
       // risks signing the user out for no gain over printing the command.
       manual: `claude mcp add --transport http --scope user knowbase ${MCP_URL}`,
+      manualRemove: "claude mcp remove knowbase --scope user",
     },
     hook: true,
   },
@@ -526,6 +524,7 @@ const PLATFORMS = [
     mcp: {
       cli: ["codex", "mcp", "add", "knowbase", "--url", MCP_URL],
       probe: ["codex", "mcp", "list"],
+      manualRemove: "codex mcp remove knowbase",
       toml: { rel: [".codex", "config.toml"], block: `[mcp_servers.knowbase]\nurl = "${MCP_URL}"` },
     },
   },
@@ -537,6 +536,7 @@ const PLATFORMS = [
     mcp: {
       cli: ["gemini", "mcp", "add", "--scope", "user", "--transport", "http", "knowbase", MCP_URL],
       probe: ["gemini", "mcp", "list"],
+      manualRemove: "gemini mcp remove knowbase",
       json: { rel: [".gemini", "settings.json"], keys: ["mcpServers", "knowbase"], entry: { httpUrl: MCP_URL } },
     },
   },
@@ -555,6 +555,7 @@ const PLATFORMS = [
     mcp: {
       cli: ["copilot", "mcp", "add", "--transport", "http", "knowbase", MCP_URL],
       probe: ["copilot", "mcp", "list"],
+      manualRemove: "copilot mcp remove knowbase",
       json: {
         rel: [".copilot", "mcp-config.json"],
         keys: ["mcpServers", "knowbase"],
@@ -579,6 +580,7 @@ const PLATFORMS = [
     mcp: {
       cli: ["devin", "mcp", "add", "-s", "user", "knowbase", MCP_URL],
       probe: ["devin", "mcp", "list"],
+      manualRemove: "devin mcp remove knowbase",
       json: { rel: [".config", "devin", "mcp_config.json"], keys: ["mcpServers", "knowbase"], entry: { url: MCP_URL } },
     },
     caveat: "Devin asks before every MCP tool call by default, so the first recall will prompt",
@@ -716,11 +718,27 @@ function wirePlatform(platform, home, ruleBody, remove) {
   }
 
   const mcp = platform.mcp;
-  if (mcp?.cli && !remove) {
+  if (mcp?.cli) {
     const probe = mcp.probe ? spawnSync(mcp.probe[0], mcp.probe.slice(1), { encoding: "utf8" }) : null;
-    if (probe && !probe.error && (probe.stdout ?? "").includes("knowbase")) {
+    const present = probe && !probe.error;
+    const registered = present && (probe.stdout ?? "").includes("knowbase");
+    if (remove && registered) {
+      // Only run a removal command whose syntax was verified against that CLI. For the
+      // rest, print the command instead of guessing at flags on the user's machine.
+      if (mcp.cliRemove) {
+        const gone = spawnSync(mcp.cliRemove[0], mcp.cliRemove.slice(1), { encoding: "utf8" });
+        out.mcp =
+          gone.status === 0
+            ? { removed: true, how: mcp.cliRemove[0] }
+            : { failed: (gone.stderr ?? gone.stdout ?? "").trim().slice(0, 160), how: mcp.cliRemove[0] };
+      } else if (mcp.manualRemove) {
+        out.mcp = { manual: mcp.manualRemove };
+      }
+    } else if (remove && present) {
       out.mcp = { already: true, how: mcp.cli[0] };
-    } else if (probe && !probe.error) {
+    } else if (!remove && registered) {
+      out.mcp = { already: true, how: mcp.cli[0] };
+    } else if (!remove && present) {
       const add = spawnSync(mcp.cli[0], mcp.cli.slice(1), { encoding: "utf8" });
       out.mcp =
         add.status === 0
@@ -738,7 +756,8 @@ function wirePlatform(platform, home, ruleBody, remove) {
     }
   }
   if (!out.mcp && mcp?.manual) {
-    out.mcp = { manual: mcp.manual };
+    const command = remove ? mcp.manualRemove : mcp.manual;
+    if (command) out.mcp = { manual: command };
   }
   if (!out.mcp && mcp?.toml) {
     const target = path.join(home, ...mcp.toml.rel);
@@ -794,14 +813,15 @@ function installArrayEntry(absPath, keyChain, value, remove) {
   fs.writeFileSync(absPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-function describe(step) {
+function describe(step, remove) {
   if (!step) return null;
   if (step.manual) return "run this yourself:";
   if (step.failed) return `failed — ${step.failed}`;
   if (step.installed) return "installed";
   if (step.updated) return "updated";
   if (step.removed) return "removed";
-  if (step.already) return "already there";
+  // "already there" is the right word when connecting and the wrong one when leaving.
+  if (step.already) return remove ? "nothing to remove" : "already there";
   if (step.skipped) return step.skipped;
   return "unchanged";
 }
@@ -866,7 +886,7 @@ async function connect(argv) {
     console.log("");
     console.log(`  ${result.label}`);
     for (const rule of result.rules) {
-      console.log(`    rule    ${describe(rule)}  ${short(rule.path, home)}`);
+      console.log(`    rule    ${describe(rule, remove)}  ${short(rule.path, home)}`);
     }
     if (result.mcp) {
       const where = result.mcp.manual
@@ -874,9 +894,9 @@ async function connect(argv) {
         : result.mcp.how
           ? `via \`${result.mcp.how}\``
           : short(result.mcp.path, home);
-      console.log(`    mcp     ${describe(result.mcp)}  ${where}`);
+      console.log(`    mcp     ${describe(result.mcp, remove)}  ${where}`);
     }
-    if (result.hook) console.log(`    hook    ${describe(result.hook)}`);
+    if (result.hook) console.log(`    hook    ${describe(result.hook, remove)}`);
     if (result.caveat && !remove) console.log(`    note    ${result.caveat}`);
     for (const step of [...result.rules, result.mcp, result.hook]) {
       if (step && (step.installed || step.updated || step.removed)) changed++;
@@ -924,7 +944,10 @@ function configure(remove, opts = {}) {
     fs.existsSync(claudeDir(home)) ||
     !spawnSync("claude", ["--version"], { encoding: "utf8" }).error;
   if (!claudeCode && !remove) {
-    return { skipped: "skipped — the hook needs Claude Code, which is not installed here" };
+    const reason = "skipped — the hook needs Claude Code, which is not installed here";
+    // --connect renders this through its own summary; a bare --install has no other voice.
+    if (!opts.quiet) console.log(`knowbase: ${reason}`);
+    return { skipped: reason };
   }
 
   const running = process.argv[1] ? path.resolve(process.argv[1]) : null;
@@ -953,6 +976,10 @@ function configure(remove, opts = {}) {
       process.exit(1);
     }
     if (!opts.quiet) console.log(`backed up  ${backup}`);
+  } else if (remove) {
+    // Nothing to remove from, and creating a settings file in order to delete a hook out
+    // of it would leave more behind than it took away.
+    return { already: true };
   } else {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   }
@@ -1082,8 +1109,21 @@ main().then(
     // someone believing they are connected when nothing was written at all.
     if (!CLI) process.exit(0);
     console.error(`\nknowbase: failed — ${err?.message ?? err}`);
-    console.error("  Nothing was changed. If you are behind a proxy or a filtering");
-    console.error(`  firewall, check that ${BASE} is reachable, then run --connect again.`);
+    // The handle is claimed before anything else, so "nothing was changed" is only true
+    // if there is no handle on disk. Claiming otherwise would hide a real account.
+    let claimed = false;
+    try {
+      claimed = fs.existsSync(path.join(HOME, "citizen-handle"));
+    } catch {
+      claimed = false;
+    }
+    console.error(
+      claimed
+        ? `  Your handle at ${HOME}/citizen-handle is intact; nothing else was changed.`
+        : "  Nothing was changed.",
+    );
+    console.error("  If you are behind a proxy or a filtering firewall, check that");
+    console.error(`  ${BASE} is reachable, then run --connect again.`);
     process.exit(1);
   },
 );
