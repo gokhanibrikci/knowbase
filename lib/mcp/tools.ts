@@ -241,7 +241,7 @@ function runDiagnosis(args: Record<string, unknown>, userAgent: string): ToolOut
     );
   }
 
-  lines.push("", `source: ${absoluteUrl(`/k/${ko.slug}`)} (CC-BY-4.0)`);
+  lines.push("", `source: ${absoluteUrl(`/k/${ko.slug}`)} (CC-BY-SA-4.0)`);
 
   return { text: lines.join("\n") };
 }

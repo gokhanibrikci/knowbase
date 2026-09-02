@@ -21,11 +21,11 @@ export function SiteFooter() {
             sitemap
           </Link>
           <a
-            href="https://creativecommons.org/licenses/by/4.0/"
+            href="https://creativecommons.org/licenses/by-sa/4.0/"
             rel="license noopener"
             className="hover:text-accent"
           >
-            CC-BY-4.0
+            CC-BY-SA-4.0
           </a>
         </nav>
         <span>

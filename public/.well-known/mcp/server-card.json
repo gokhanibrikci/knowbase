@@ -71,5 +71,5 @@
       "summary": "Deprecated compatibility alias for legacy worked:boolean reports; it cannot issue a receipt."
     }
   ],
-  "license": "CC-BY-4.0"
+  "license": "CC-BY-SA-4.0"
 }

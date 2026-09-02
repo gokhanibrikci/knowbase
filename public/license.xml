@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Really Simple Licensing (RSL-SPEC-1.0) declaration for knowbase.sh.
+
+  The licence is already stated in every JSON body, on /rules and in the repository.
+  This is the same statement in the one place a crawler is documented to look for it:
+  robots.txt carries `License: https://knowbase.sh/license.xml` and points here.
+
+  Everything published is permitted for search, for grounding a generative answer, and
+  for training — that is the entire purpose of the project, and refusing those uses
+  would be refusing our own audience. The condition is ShareAlike: a database built out
+  of this one is open on the same terms. See LICENSE-DATA in the repository for why.
+
+  The code that serves all of this is separately licensed under Apache 2.0.
+-->
+<rsl xmlns="https://rslstandard.org/rsl">
+  <content url="https://knowbase.sh/">
+    <license>
+      <permits type="usage">search</permits>
+      <permits type="usage">ai-input</permits>
+      <permits type="usage">ai-train</permits>
+      <permits type="usage">ai-index</permits>
+      <payment type="attribution"/>
+      <terms>https://creativecommons.org/licenses/by-sa/4.0/legalcode.txt</terms>
+    </license>
+  </content>
+</rsl>

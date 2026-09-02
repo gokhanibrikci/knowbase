@@ -53,7 +53,7 @@ function usage(status: number, error?: string) {
         },
       },
       corpusSize: getAllKnowledgeObjects().length,
-      license: "CC-BY-4.0",
+      license: "CC-BY-SA-4.0",
       source: site.url,
     },
     { status, headers: CORS },
@@ -178,7 +178,7 @@ export async function GET(request: Request) {
         };
       }),
       corpusSize: all.length,
-      license: "CC-BY-4.0",
+      license: "CC-BY-SA-4.0",
       source: site.url,
     },
     { headers: CORS },

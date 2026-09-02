@@ -170,7 +170,7 @@ export default function AboutPage() {
       <Section id="license" title="License and reuse">
         <div className="space-y-3 text-sm">
           <p>
-            Content is CC-BY-4.0. Copy it, quote it, feed it to a model, ship it in a product.
+            Content is CC-BY-SA-4.0. Copy it, quote it, feed it to a model, ship it in a product.
             Attribution is the canonical URL of the entry.
           </p>
           <p className="text-ink-dim">

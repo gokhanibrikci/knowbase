@@ -42,7 +42,7 @@ function usage(status: number, error?: string) {
         returns:
           "The cause your observations identify, its cause-specific resolution recipe when available, and the completion call that returns a receipt or next action.",
       },
-      license: "CC-BY-4.0",
+      license: "CC-BY-SA-4.0",
       source: site.url,
     },
     { status, headers: CORS },
@@ -174,7 +174,7 @@ export async function POST(request: Request) {
         },
         note: "Compatibility only. This records a claim and cannot return a resolved receipt.",
       },
-      license: "CC-BY-4.0",
+      license: "CC-BY-SA-4.0",
       source: site.url,
     },
     { headers: CORS },

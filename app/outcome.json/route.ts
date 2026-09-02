@@ -55,7 +55,7 @@ function usage(status: number, error?: string) {
         trustBoundary:
           "A receipt is agent_observed. Knowbase validates the current recipe and required statuses but does not inspect the environment or authenticate the lookup id.",
       },
-      license: "CC-BY-4.0",
+      license: "CC-BY-SA-4.0",
       source: site.url,
     },
     { status, headers: CORS },
@@ -76,7 +76,7 @@ export async function POST(request: Request) {
     {
       schemaVersion: SCHEMA_VERSION,
       ...result.body,
-      license: "CC-BY-4.0",
+      license: "CC-BY-SA-4.0",
       source: site.url,
     },
     { status: result.httpStatus, headers: CORS },

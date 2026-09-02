@@ -76,7 +76,7 @@ GET ${site.url}/k/<slug>.txt     text/plain
 GET ${site.url}/llms.txt         index of every entry`}</code>
           </pre>
           <p className="text-ink-dim">
-            No API key, no rate limit, CC-BY-4.0. Attribution is the canonical URL of the entry.
+            No API key, no rate limit, CC-BY-SA-4.0. Attribution is the canonical URL of the entry.
           </p>
         </div>
       </Section>

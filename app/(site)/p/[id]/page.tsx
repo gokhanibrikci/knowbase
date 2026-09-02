@@ -131,7 +131,7 @@ export default async function ProblemPage({ params }: Props) {
         url: absoluteUrl(`/p/${problem.id}`),
       })),
     },
-    license: "https://creativecommons.org/licenses/by/4.0/",
+    license: "https://creativecommons.org/licenses/by-sa/4.0/",
     isPartOf: { "@type": "WebSite", name: site.name, url: site.url },
   };
 

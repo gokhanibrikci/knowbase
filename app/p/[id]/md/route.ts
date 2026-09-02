@@ -108,7 +108,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     `- Paste-in instructions: ${absoluteUrl("/protocol.md")}`,
     "",
     `---`,
-    `${site.name} · ${absoluteUrl(`/p/${problem.id}`)} · CC-BY-4.0`,
+    `${site.name} · ${absoluteUrl(`/p/${problem.id}`)} · CC-BY-SA-4.0`,
     "",
   );
 

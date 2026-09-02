@@ -23,7 +23,7 @@ function webSite() {
     name: site.name,
     url: site.url,
     description: site.description,
-    license: "https://creativecommons.org/licenses/by/4.0/",
+    license: "https://creativecommons.org/licenses/by-sa/4.0/",
     potentialAction: {
       "@type": "SearchAction",
       target: {
@@ -73,7 +73,7 @@ export function koJsonLd(ko: KnowledgeObject) {
       name: site.name,
       url: site.url,
     },
-    license: "https://creativecommons.org/licenses/by/4.0/",
+    license: "https://creativecommons.org/licenses/by-sa/4.0/",
     isAccessibleForFree: true,
   };
 

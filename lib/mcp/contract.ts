@@ -28,7 +28,7 @@ export const MCP_SERVER_INFO = { name: site.name, version: site.version } as con
 export const MCP_SERVER_CAPABILITIES = { tools: { listChanged: false } } as const;
 export const MCP_AUTHENTICATION = { type: "none" } as const;
 export const MCP_CACHE_HINT = { ttlMs: 300_000, cacheScope: "public" } as const;
-export const AGENT_LICENSE = "CC-BY-4.0";
+export const AGENT_LICENSE = "CC-BY-SA-4.0";
 
 export const AGENT_ENDPOINTS = {
   lookup: { method: "GET", path: "/search.json" },

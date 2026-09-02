@@ -91,7 +91,7 @@ export function toJson(ko: KnowledgeObject, now: Date = new Date()) {
     },
     related: ko.related.map((slug) => ({ id: slug, url: absoluteUrl(`/k/${slug}`) })),
     next: nextSteps(ko),
-    license: "CC-BY-4.0",
+    license: "CC-BY-SA-4.0",
     source: site.url,
   };
 }
@@ -177,7 +177,7 @@ export function toMarkdown(ko: KnowledgeObject, now: Date = new Date()): string 
   out.push(
     "---",
     "",
-    `Retrieved from ${absoluteUrl(`/k/${ko.slug}`)} · ${site.name} · CC-BY-4.0`,
+    `Retrieved from ${absoluteUrl(`/k/${ko.slug}`)} · ${site.name} · CC-BY-SA-4.0`,
     "",
   );
 
@@ -262,7 +262,7 @@ export function toPlainText(ko: KnowledgeObject, now: Date = new Date()): string
     "",
   );
 
-  out.push(rule, `${site.name} ${site.version} — CC-BY-4.0`, "");
+  out.push(rule, `${site.name} ${site.version} — CC-BY-SA-4.0`, "");
 
   return out.join("\n");
 }

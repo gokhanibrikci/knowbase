@@ -104,7 +104,7 @@ export function GET() {
     `Both protocol eras are supported — per-request metadata (${MCP_PROTOCOL.modernVersion}) and the`,
     `older initialize handshake (${MCP_PROTOCOL.legacyVersions.join(", ")}).`,
     "",
-    "License: CC-BY-4.0. Attribution is the canonical URL of the entry.",
+    "License: CC-BY-SA-4.0. Attribution is the canonical URL of the entry.",
     "",
   );
 

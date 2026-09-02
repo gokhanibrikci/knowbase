@@ -31,7 +31,7 @@ const CORS = {
 
 function respond(status: number, body: Record<string, unknown>) {
   return Response.json(
-    { schemaVersion: SCHEMA_VERSION, ...body, license: "CC-BY-4.0", source: site.url },
+    { schemaVersion: SCHEMA_VERSION, ...body, license: "CC-BY-SA-4.0", source: site.url },
     { status, headers: CORS },
   );
 }

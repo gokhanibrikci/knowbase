@@ -16,7 +16,7 @@ export function GET() {
     "",
     site.description,
     "",
-    `${objects.length} knowledge objects. License CC-BY-4.0; attribute the canonical URL of each entry.`,
+    `${objects.length} knowledge objects. License CC-BY-SA-4.0; attribute the canonical URL of each entry.`,
     "",
     "---",
     "",
