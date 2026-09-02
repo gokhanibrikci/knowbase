@@ -40,8 +40,15 @@ It writes two things to each client it finds, and the first one is the point:
   rule, knowbase is a tool an agent has and never uses.
 - **the MCP server**, so the tools are there when the rule asks for them.
 
-Plus, on Claude Code, a `PostToolUse` hook that asks knowbase whenever a shell command
-fails — a backstop for the times the rule is not enough.
+Nothing else. In particular **no hook is installed unless you ask for one**: there is an
+optional `PostToolUse` hook for Claude Code that asks knowbase automatically whenever a
+shell command fails, and it is the only component that would transmit anything without
+your agent deciding to. `--what-it-sends` prints exactly what it would transmit, with a
+real example; `--with-hook` adds it.
+
+Context7, which this borrows its whole idea from, installs a trigger automatically and has
+no hook at all. The rule is the part with precedent; automatic transmission is not, and it
+is what made the first reviewer of this installer stop and say nobody would trust it.
 
 | Client | Rule | MCP |
 | ------ | ---- | --- |
@@ -75,11 +82,14 @@ should end up on one because you skipped a flag. Reading needs no account at all
 
 | Flag | What it does |
 | ---- | ------------ |
-| `--connect` | Rule, MCP server and hook, on every client found. Safe to re-run; each part is skipped if already done. |
+| `--connect` | Rule and MCP server, on the clients you confirm. Safe to re-run; each part is skipped if already done. |
+| `--with-hook` | Also install the Claude Code failure hook. Off by default. |
+| `--what-it-sends` | Print exactly what the hook would transmit, with a worked example. Writes nothing. |
+| `--all` | Skip the confirmation and wire every client found. |
 | `--disconnect` | Removes every rule and registration it wrote. Leaves the handle alone. |
 | `--only <id>` | Wire one client: `claude-code`, `codex`, `gemini`, `copilot`, `cursor`, `devin`, `windsurf-cascade`, `cline`, `roo`, `opencode`, `zed`. |
 | `--name <handle>` | Choose the public handle instead of being given an opaque one. |
-| `--install` / `--uninstall` | Only the failure hook. |
+| `--install` / `--uninstall` | Only the failure hook, nothing else. |
 | `KNOWBASE_HOOK=0` | Keep the hook installed but silent for this shell. |
 | `KNOWBASE_HOME=<dir>` | Put the handle and secret somewhere other than `~/.config/knowbase`. |
 | `KNOWBASE_BASE=<url>` | Point the whole thing at another deployment. |

@@ -5,10 +5,15 @@
  *   curl -fsSL https://knowbase.sh/connect.mjs -o ~/.knowbase.mjs \
  *     && node ~/.knowbase.mjs --connect
  *
- * That writes the rule into every coding agent on this machine, registers the MCP server,
- * claims a handle, and on Claude Code installs a failure hook. `--name yourname` chooses
- * the handle — a handle is a public page, so without the flag you get an opaque one rather
- * than anything read off your machine. `--disconnect` reverses all of it.
+ * That writes the rule into the coding agents you confirm, registers the MCP server, and
+ * claims a handle. `--name yourname` chooses the handle — a handle is a public page, so
+ * without the flag you get an opaque one rather than anything read off your machine.
+ * `--disconnect` reverses all of it.
+ *
+ * No hook unless you ask. `--with-hook` adds a Claude Code PostToolUse hook that asks
+ * knowbase whenever a shell command fails; it is the only component that would transmit
+ * without your agent deciding to, so `--what-it-sends` exists to show exactly what that
+ * would be, with a worked example, before you trust it.
  *
  * Three things get wired, because each does a job the others cannot:
  *
@@ -27,10 +32,9 @@
  * (Windsurf), Windsurf (Cascade), Cline, Roo Code, opencode and Zed. Whichever are present
  * get wired; the rest are skipped by name.
  *
- * On Claude Code there is also a PostToolUse hook, as a backstop for the times the rule is
- * not enough. Disable it at any time with KNOWBASE_HOOK=0 in your environment. Point the
- * whole thing at another deployment with KNOWBASE_BASE, and put its config somewhere else
- * with KNOWBASE_HOME.
+ * Disable an installed hook at any time with KNOWBASE_HOOK=0 in your environment. Point
+ * the whole thing at another deployment with KNOWBASE_BASE, and put its config somewhere
+ * else with KNOWBASE_HOME.
  *
  * No dependencies. As a hook it never throws, never blocks, always exits 0.
  */
@@ -51,8 +55,31 @@ const MAX_ERROR_CHARS = 4000;
 const EXPECTED_FAILURE = /^\s*(?:!|\[|test|grep|rg|ag|ack|diff|cmp|git\s+diff|git\s+grep|find\b.*-name)/;
 
 /** A safety net before anything leaves the machine. Not a guarantee. */
+/**
+ * Taking the machine's own identity out of an error before it leaves.
+ *
+ * Writing --what-it-sends is what caught this: the disclosure claimed no paths of your own
+ * were sent, and a Python traceback carries them in every frame — which means the username
+ * and the project layout went too. redact() never looked at paths, because it was written
+ * to catch credentials. Home-relative paths are rewritten to ~, and the account name is
+ * removed wherever else it appears; a path outside home is left alone, since that is
+ * usually /usr/lib or a container path and is the useful part of the trace.
+ */
+function deidentify(text) {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  let out = text;
+  if (home && home.length > 3) {
+    out = out.split(home).join("~");
+  }
+  const user = path.basename(home || "");
+  if (user && user.length > 2) {
+    out = out.split(user).join("<user>");
+  }
+  return out;
+}
+
 function redact(text) {
-  return text
+  return deidentify(text)
     .replace(/\b(pass(word)?|pwd|token|secret|api[-_]?key|authorization|bearer)\b\s*[:=]?\s*\S+/gi, "$1=[redacted]")
     .replace(/\b(?:gh[pousr]|github_pat|sk|xox[baprs]|AKIA|kbw)_[A-Za-z0-9_-]{8,}/g, "[redacted]")
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[redacted key]")
@@ -60,6 +87,24 @@ function redact(text) {
     .replace(/\b[A-Za-z0-9_-]{40,}\b/g, (run) =>
       run.split("-").some((seg) => seg.length >= 25) ? "[redacted]" : run,
     );
+}
+
+function readLine() {
+  return new Promise((resolve) => {
+    let buffer = "";
+    const onData = (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline !== -1) {
+        process.stdin.off("data", onData);
+        process.stdin.pause();
+        resolve(buffer.slice(0, newline));
+      }
+    };
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", onData);
+    process.stdin.resume();
+  });
 }
 
 function readStdin() {
@@ -699,14 +744,54 @@ function exists(p) {
   }
 }
 
+/**
+ * Where a CLI actually lives, which is not always on PATH.
+ *
+ * The first review of this installer reported that Claude Code fell through to the manual
+ * step — and it read as "the script did not work". The cause was PATH: an agent's shell
+ * often does not have the same one as the terminal that installed the tool, and Claude
+ * Code's own native install puts the binary in ~/.local/bin. So the known locations are
+ * checked before giving up, and whatever is found is what gets invoked.
+ */
+const BIN_DIRS = [
+  ".local/bin",
+  ".bun/bin",
+  ".volta/bin",
+  ".npm-global/bin",
+  ".claude/local",
+  ".codeium/bin",
+];
+const SYSTEM_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
+
+const binCache = new Map();
+
+function findBin(name) {
+  if (binCache.has(name)) return binCache.get(name);
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const candidates = [
+    name,
+    ...BIN_DIRS.map((dir) => path.join(home, dir, name)),
+    ...SYSTEM_BIN_DIRS.map((dir) => path.join(dir, name)),
+  ];
+  for (const candidate of candidates) {
+    // --version is the cheapest thing every one of these CLIs answers.
+    if (!spawnSync(candidate, ["--version"], { encoding: "utf8" }).error) {
+      binCache.set(name, candidate);
+      return candidate;
+    }
+  }
+  binCache.set(name, null);
+  return null;
+}
+
 function onPath(bin) {
-  return !spawnSync(bin, ["--version"], { encoding: "utf8" }).error;
+  return findBin(bin) !== null;
 }
 
 /**
  * Wiring one platform: the rule first, because it is the part that changes behaviour.
  */
-function wirePlatform(platform, home, ruleBody, remove) {
+function wirePlatform(platform, home, ruleBody, remove, withHook) {
   const out = { label: platform.label, caveat: platform.caveat, rules: [] };
 
   for (const rule of platform.rules) {
@@ -729,14 +814,16 @@ function wirePlatform(platform, home, ruleBody, remove) {
 
   const mcp = platform.mcp;
   if (mcp?.cli) {
-    const probe = mcp.probe ? spawnSync(mcp.probe[0], mcp.probe.slice(1), { encoding: "utf8" }) : null;
+    const exe = findBin(mcp.cli[0]);
+    const probe =
+      exe && mcp.probe ? spawnSync(exe, mcp.probe.slice(1), { encoding: "utf8" }) : null;
     const present = probe && !probe.error;
     const registered = present && (probe.stdout ?? "").includes("knowbase");
     if (remove && registered) {
       // Only run a removal command whose syntax was verified against that CLI. For the
       // rest, print the command instead of guessing at flags on the user's machine.
       if (mcp.cliRemove) {
-        const gone = spawnSync(mcp.cliRemove[0], mcp.cliRemove.slice(1), { encoding: "utf8" });
+        const gone = spawnSync(exe, mcp.cliRemove.slice(1), { encoding: "utf8" });
         out.mcp =
           gone.status === 0
             ? { removed: true, how: mcp.cliRemove[0] }
@@ -749,7 +836,7 @@ function wirePlatform(platform, home, ruleBody, remove) {
     } else if (!remove && registered) {
       out.mcp = { already: true, how: mcp.cli[0] };
     } else if (!remove && present) {
-      const add = spawnSync(mcp.cli[0], mcp.cli.slice(1), { encoding: "utf8" });
+      const add = spawnSync(exe, mcp.cli.slice(1), { encoding: "utf8" });
       out.mcp =
         add.status === 0
           ? { installed: true, how: mcp.cli[0] }
@@ -788,7 +875,9 @@ function wirePlatform(platform, home, ruleBody, remove) {
     }
   }
 
-  if (platform.hook) out.hook = configure(remove, { quiet: true });
+  if (platform.hook && (withHook || remove)) {
+    out.hook = configure(remove, { quiet: true });
+  }
   return out;
 }
 
@@ -877,10 +966,46 @@ async function connect(argv) {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const remove = leaving;
   const only = argv.indexOf("--only") !== -1 ? argv[argv.indexOf("--only") + 1] : null;
+  // Opt-in, and named in full so nobody has to discover it from the source.
+  const withHook = argv.includes("--with-hook");
 
   const ruleBody = await fetchRule();
 
-  const found = PLATFORMS.filter((p) => (only ? p.id === only : p.detect(home)));
+  let found = PLATFORMS.filter((p) => (only ? p.id === only : p.detect(home)));
+
+  /**
+   * Asking before writing into a client somebody may not use.
+   *
+   * The first review of this installer found knowbase files in Copilot and had to be told
+   * how to delete them by hand. Writing into everything on the machine was never the part
+   * anyone asked for — Context7, which this borrows its whole idea from, makes you name
+   * the client. So the list is shown and confirmed where there is somebody to ask, and
+   * --all or --only skips the question.
+   */
+  if (!remove && !only && !argv.includes("--all") && found.length > 1 && process.stdin.isTTY) {
+    console.log("");
+    console.log(`  Found ${found.length} clients on this machine:`);
+    for (const [i, platform] of found.entries()) {
+      console.log(`    ${i + 1}. ${platform.label}`);
+    }
+    console.log("");
+    console.log("  Wire all of them? [Y/n]  (or give numbers, e.g. 1 3)");
+    const answer = (await readLine()).trim();
+    if (/^n(o)?$/i.test(answer)) {
+      console.log("\n  Nothing was changed. Pick one with --only <id>, or run again and choose.");
+      return;
+    }
+    const picked = answer.match(/\d+/g);
+    if (picked) {
+      const wanted = new Set(picked.map((n) => Number(n) - 1));
+      found = found.filter((_, i) => wanted.has(i));
+      if (found.length === 0) {
+        console.log("\n  No client matched those numbers. Nothing was changed.");
+        return;
+      }
+    }
+  }
+
   if (found.length === 0) {
     console.log("");
     console.log("  No coding agent found on this machine, so there was nothing to wire.");
@@ -892,7 +1017,7 @@ async function connect(argv) {
 
   let changed = 0;
   for (const platform of found) {
-    const result = wirePlatform(platform, home, ruleBody, remove);
+    const result = wirePlatform(platform, home, ruleBody, remove, withHook);
     console.log("");
     console.log(`  ${result.label}`);
     for (const rule of result.rules) {
@@ -924,6 +1049,13 @@ async function connect(argv) {
   console.log("  The rule is what makes this automatic: every client above now reads it at");
   console.log("  the start of each session and asks knowbase before it attempts a fix.");
   if (changed > 0) console.log("  Start a new session for that to take effect.");
+  if (!withHook) {
+    console.log("");
+    console.log("  Nothing sends anything on its own: the rule and the server only act when");
+    console.log("  your agent decides to call them. There is also an optional hook that asks");
+    console.log("  knowbase automatically whenever a shell command fails — see exactly what");
+    console.log("  that would transmit with --what-it-sends, and add it with --with-hook.");
+  }
   console.log(`  Undo all of it with --disconnect. The rule itself: ${BASE}/rule.md`);
 }
 
@@ -950,9 +1082,7 @@ function configure(remove, opts = {}) {
    */
   // The hook is a Claude Code hook. Without Claude Code there is nothing to run it, so
   // writing its config and reporting success would be inventing a capability.
-  const claudeCode =
-    fs.existsSync(claudeDir(home)) ||
-    !spawnSync("claude", ["--version"], { encoding: "utf8" }).error;
+  const claudeCode = fs.existsSync(claudeDir(home)) || onPath("claude");
   if (!claudeCode && !remove) {
     const reason = "skipped — the hook needs Claude Code, which is not installed here";
     // --connect renders this through its own summary; a bare --install has no other voice.
@@ -1057,7 +1187,56 @@ function configure(remove, opts = {}) {
   return { installed: true };
 }
 
+/**
+ * Answering "what does this thing actually send?" without making anyone read the source.
+ *
+ * The first person to review this installer stopped at the hook, and was right to: it is
+ * the one part that transmits without a person or a model deciding to. So the answer is a
+ * flag, with a real example rather than a description of one.
+ */
+function explainHook() {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "/home/you";
+  const sample = [
+    "Traceback (most recent call last):",
+    `  File "${home}/app/main.py", line 3, in <module>`,
+    "    import yaml",
+    "ModuleNotFoundError: No module named 'yaml'",
+  ].join("\n");
+
+  console.log("What the hook sends, and to where\n");
+  console.log(`  Endpoint   POST ${ENDPOINT}   (a read: action "recall")`);
+  console.log("  When       only after a Bash command exits non-zero, and never for a");
+  console.log("             grep or test that merely found nothing");
+  console.log("  Sent       the command's stderr+stdout, redacted, capped at");
+  console.log(`             ${MAX_ERROR_CHARS} characters — plus your node major version and up to`);
+  console.log("             14 dependency names from the nearest package.json");
+  console.log("  Not sent   no handle, no secret, no cwd, no hostname, no environment");
+  console.log("             variables. Paths under your home directory are rewritten to ~");
+  console.log("             and your account name is stripped wherever it appears; a path");
+  console.log("             outside home is left as-is, since that is usually the useful");
+  console.log("             part of a trace");
+  console.log("  Stored     nothing. Recording a failure requires a handle, and the hook");
+  console.log("             sends none, so this call is a stateless lookup. Publishing");
+  console.log("             anything is a separate, deliberate knowbase_report.");
+  console.log("  Silence    on a miss it prints nothing at all, and it always exits 0\n");
+  console.log("Redaction is regex over the text, so treat it as a reasonable effort and not");
+  console.log("a guarantee. This is the example above, exactly as it would leave your machine:\n");
+  console.log(
+    JSON.stringify(
+      { action: "recall", problem: redact(sample), environment: environment(process.cwd()) },
+      null,
+      2,
+    )
+      .split("\n")
+      .map((line) => `  ${line}`)
+      .join("\n"),
+  );
+  console.log("\nThe hook is not installed unless you pass --with-hook. Rule and MCP server");
+  console.log("only ever send something when your agent decides to call them.");
+}
+
 async function main() {
+  if (process.argv.includes("--what-it-sends")) return explainHook();
   if (process.argv.includes("--connect") || process.argv.includes("--disconnect")) {
     return connect(process.argv);
   }
@@ -1133,7 +1312,11 @@ async function main() {
 
 const CLI = process.argv.some(
   (a) =>
-    a === "--connect" || a === "--disconnect" || a === "--install" || a === "--uninstall",
+    a === "--connect" ||
+    a === "--disconnect" ||
+    a === "--install" ||
+    a === "--uninstall" ||
+    a === "--what-it-sends",
 );
 
 main().then(

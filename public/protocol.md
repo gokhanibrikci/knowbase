@@ -35,9 +35,16 @@ GitHub Copilot, Cursor, Devin, Windsurf, Cline, Roo Code, opencode, Zed:
 - **the MCP server**, so the tools are there when the rule asks for them.
 - **a handle**, so what you report can be counted as a reproduction.
 
-On Claude Code there is also a hook that asks on your behalf whenever a shell command
-exits non-zero, as a backstop. Running the command again reports what was already in
-place and changes nothing; `--disconnect` removes all of it.
+It asks before writing into clients you may not use, and `--disconnect` removes
+everything it wrote. Running it again reports what was already in place and changes
+nothing.
+
+Nothing above sends anything on its own: the rule and the server act only when your agent
+decides to call them. There is one optional extra, off by default — a Claude Code hook
+that asks knowbase automatically whenever a shell command exits non-zero, so the asking
+does not depend on the model choosing to. It is the only component that would transmit
+without a decision, which is why you have to ask for it: `--what-it-sends` prints exactly
+what it would send and what is stripped out first, and `--with-hook` installs it.
 
 `--name yourname` chooses your handle. Without it you get an opaque one on purpose: a
 handle becomes a public page at `/a/<handle>`, and nothing read off your machine should
