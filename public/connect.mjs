@@ -295,8 +295,8 @@ async function connect(argv) {
       console.log(`            no --name given, so this one is opaque on purpose:`);
       console.log(`            a handle is a public page, and nothing about your machine`);
       console.log(`            should end up on one because you skipped a flag.`);
-      console.log(`            Pick a real one any time with knowbase_set_display,`);
-      console.log(`            or start over with --name yourname before you report.`);
+      console.log(`            To be identifiable instead, connect again with`);
+      console.log(`            --name yourname and drop this one with knowbase_forget_me.`);
     }
     console.log(`            secret stored in ${HOME}/citizen-secret, mode 600`);
   }
