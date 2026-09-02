@@ -504,12 +504,17 @@ const PLATFORMS = [
     label: "Claude Code",
     // A file in the user rules directory with no frontmatter loads unconditionally —
     // the same mechanism Context7 uses to become automatic.
-    detect: (home) => onPath("claude") || exists(path.join(home, ".claude")),
-    rules: [{ rel: [".claude", "rules", "knowbase.md"], own: true }],
+    detect: (home) => onPath("claude") || exists(claudeDir(home)),
+    // CLAUDE_CONFIG_DIR relocates the whole directory, so the rule follows it. A real
+    // file, never a symlink: a symlinked rules directory is skipped by some clients.
+    rules: [{ abs: (home) => path.join(claudeDir(home), "rules", "knowbase.md"), own: true }],
     mcp: {
       cli: ["claude", "mcp", "add", "--transport", "http", "--scope", "user", "knowbase", MCP_URL],
       probe: ["claude", "mcp", "list"],
-      json: { rel: [".claude.json"], keys: ["mcpServers", "knowbase"], entry: { type: "http", url: MCP_URL } },
+      // Deliberately no file fallback: ~/.claude.json holds the OAuth session and every
+      // per-project trust decision, and `claude` owns it. Rewriting it to add one key
+      // risks signing the user out for no gain over printing the command.
+      manual: `claude mcp add --transport http --scope user knowbase ${MCP_URL}`,
     },
     hook: true,
   },
@@ -659,6 +664,10 @@ const PLATFORMS = [
  *  rather than silently omitted — see the closing summary. */
 const UNSUPPORTED = ["Aider (no auto-loaded instruction file, no MCP support)"];
 
+function claudeDir(home) {
+  return process.env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude");
+}
+
 function globExists(dir, prefix) {
   try {
     return fs.readdirSync(dir).some((name) => name.startsWith(prefix));
@@ -697,7 +706,7 @@ function wirePlatform(platform, home, ruleBody, remove) {
   const out = { label: platform.label, caveat: platform.caveat, rules: [] };
 
   for (const rule of platform.rules) {
-    const target = path.join(home, ...rule.rel);
+    const target = rule.abs ? rule.abs(home) : path.join(home, ...rule.rel);
     const body = `${rule.prefix ?? ""}${ruleBody}`;
     try {
       out.rules.push({ ...installRule(target, body, rule.own, remove), path: target });
@@ -727,6 +736,9 @@ function wirePlatform(platform, home, ruleBody, remove) {
     } catch (err) {
       out.mcp = { failed: err?.message ?? String(err), path: target };
     }
+  }
+  if (!out.mcp && mcp?.manual) {
+    out.mcp = { manual: mcp.manual };
   }
   if (!out.mcp && mcp?.toml) {
     const target = path.join(home, ...mcp.toml.rel);
@@ -784,6 +796,7 @@ function installArrayEntry(absPath, keyChain, value, remove) {
 
 function describe(step) {
   if (!step) return null;
+  if (step.manual) return "run this yourself:";
   if (step.failed) return `failed — ${step.failed}`;
   if (step.installed) return "installed";
   if (step.updated) return "updated";
@@ -856,7 +869,11 @@ async function connect(argv) {
       console.log(`    rule    ${describe(rule)}  ${short(rule.path, home)}`);
     }
     if (result.mcp) {
-      const where = result.mcp.how ? `via \`${result.mcp.how}\`` : short(result.mcp.path, home);
+      const where = result.mcp.manual
+        ? result.mcp.manual
+        : result.mcp.how
+          ? `via \`${result.mcp.how}\``
+          : short(result.mcp.path, home);
       console.log(`    mcp     ${describe(result.mcp)}  ${where}`);
     }
     if (result.hook) console.log(`    hook    ${describe(result.hook)}`);
@@ -892,7 +909,7 @@ function short(p, home) {
  */
 function configure(remove, opts = {}) {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-  const settingsPath = path.join(home, ".claude", "settings.json");
+  const settingsPath = path.join(claudeDir(home), "settings.json");
 
   /**
    * The hook has to be registered by absolute path, and it must be a path that still
@@ -904,7 +921,7 @@ function configure(remove, opts = {}) {
   // The hook is a Claude Code hook. Without Claude Code there is nothing to run it, so
   // writing its config and reporting success would be inventing a capability.
   const claudeCode =
-    fs.existsSync(path.join(home, ".claude")) ||
+    fs.existsSync(claudeDir(home)) ||
     !spawnSync("claude", ["--version"], { encoding: "utf8" }).error;
   if (!claudeCode && !remove) {
     return { skipped: "skipped — the hook needs Claude Code, which is not installed here" };
