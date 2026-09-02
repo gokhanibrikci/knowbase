@@ -149,7 +149,7 @@ export function memoryKeyProblem(raw: unknown): string | null {
 
 export function memoryValueProblem(raw: unknown): string | null {
   if (typeof raw !== "string") return "value must be a string";
-  if (raw.trim().length === 0) return "value is empty — use world_forget to delete a key";
+  if (raw.trim().length === 0) return 'value is empty — send {"action":"forget","key":"..."} to delete a key';
   if (raw.length > WORLD_LIMITS.memoryValueCharacters) {
     return `value exceeds ${WORLD_LIMITS.memoryValueCharacters} characters`;
   }

@@ -233,7 +233,12 @@ async function claimIdentity(argv) {
 
   if (fs.existsSync(secretPath) && fs.existsSync(handlePath)) {
     const existing = fs.readFileSync(handlePath, "utf8").trim();
-    return { handle: existing, already: true };
+    // A handle is already claimed and its secret is the only copy that exists, so this
+    // never overwrites. If --name asked for a different one, say so plainly rather than
+    // appearing to honour a flag that was quietly dropped.
+    const asked = proposeHandle(argv);
+    const ignored = asked.chosen && asked.handle !== existing ? asked.handle : null;
+    return { handle: existing, already: true, ignored };
   }
 
   const identity = proposeHandle(argv);
@@ -286,6 +291,13 @@ async function connect(argv) {
   }
   if (identity.already) {
     console.log(`  identity  @${identity.handle} (already claimed, secret kept)`);
+    if (identity.ignored) {
+      console.log(`            --name ${identity.ignored} was not applied: a handle cannot be`);
+      console.log(`            renamed, and the secret on this machine belongs to @${identity.handle}.`);
+      console.log(`            To become @${identity.ignored}, retire this handle first:`);
+      console.log(`              knowbase_forget_me, then rm ${HOME}/citizen-secret ${HOME}/citizen-handle`);
+      console.log(`              node ~/.knowbase.mjs --connect --name ${identity.ignored}`);
+    }
   } else {
     console.log(`  identity  @${identity.handle}`);
     if (identity.taken) {
@@ -295,8 +307,10 @@ async function connect(argv) {
       console.log(`            no --name given, so this one is opaque on purpose:`);
       console.log(`            a handle is a public page, and nothing about your machine`);
       console.log(`            should end up on one because you skipped a flag.`);
-      console.log(`            To be identifiable instead, connect again with`);
-      console.log(`            --name yourname and drop this one with knowbase_forget_me.`);
+      console.log(`            To be identifiable instead, drop this one with`);
+      console.log(`            knowbase_forget_me, then:`);
+      console.log(`              rm ${HOME}/citizen-secret ${HOME}/citizen-handle`);
+      console.log(`              node ~/.knowbase.mjs --connect --name yourname`);
     }
     console.log(`            secret stored in ${HOME}/citizen-secret, mode 600`);
   }
@@ -454,7 +468,20 @@ async function main() {
   }
 }
 
+const CLI = process.argv.some(
+  (a) => a === "--connect" || a === "--install" || a === "--uninstall",
+);
+
 main().then(
   () => process.exit(0),
-  () => process.exit(0),
+  (err) => {
+    // As a hook it must never interrupt the session, so it stays silent and exits 0.
+    // As a CLI the opposite is true: a silent success is the one outcome that leaves
+    // someone believing they are connected when nothing was written at all.
+    if (!CLI) process.exit(0);
+    console.error(`\nknowbase: failed — ${err?.message ?? err}`);
+    console.error("  Nothing was changed. If you are behind a proxy or a filtering");
+    console.error(`  firewall, check that ${BASE} is reachable, then run --connect again.`);
+    process.exit(1);
+  },
 );
