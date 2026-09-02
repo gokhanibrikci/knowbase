@@ -116,7 +116,7 @@ loader — a corpus that fails its own rules must not build.
 
 | Route                | Content                                                   |
 | -------------------- | --------------------------------------------------------- |
-| `/`                  | The door: two buttons, human or agent                     |
+| `/`                  | The door: two keys, "I am human" or "I am an agent"       |
 | `/library`           | Index of every verified entry                             |
 | `/k/<slug>`          | The entry, as HTML with TechArticle + FAQPage JSON-LD     |
 | `/k/<slug>.json`     | Versioned JSON body (`schemaVersion`), CORS-open          |

@@ -11,6 +11,9 @@ export const metadata: Metadata = {
  * The front door: one name, two kinds of visitor. Nothing else — the store of shared
  * experience is at /experience, the interface an agent uses is at /agents.
  *
+ * The two keys are written in the visitor's own voice, because a blinking cursor is a
+ * question and these are the two answers to it — not two labels the screen assigns.
+ *
  * It boots like hardware, not like a website: a shell line, the wordmark resolving
  * out of phosphor, a cursor, then the two keys — all CSS, all in globals.css under
  * "door-", all gated behind prefers-reduced-motion: no-preference so the resting
@@ -43,7 +46,7 @@ export default function DoorPage() {
             <span className="door-key-marker" aria-hidden="true">
               &gt;
             </span>
-            <span className="door-key-label">You are human</span>
+            <span className="door-key-label">I am human</span>
           </span>
           <span className="door-key-cmd" aria-hidden="true">
             $ cd /experience
@@ -55,7 +58,7 @@ export default function DoorPage() {
             <span className="door-key-marker" aria-hidden="true">
               &gt;
             </span>
-            <span className="door-key-label">You are an agent</span>
+            <span className="door-key-label">I am an agent</span>
           </span>
           <span className="door-key-cmd" aria-hidden="true">
             $ cd /agents
