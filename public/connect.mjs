@@ -1008,9 +1008,34 @@ function configure(remove, opts = {}) {
     return { removed: !nothing };
   }
 
-  if (post.some(mine)) {
-    if (!opts.quiet) console.log("already installed — nothing to do");
-    return { already: true };
+  const ours = post.find(mine);
+  if (ours) {
+    /**
+     * "A group mentions knowbase" was too loose a test for already-installed. An earlier
+     * version of this installer registered whatever path it was run from, so machines
+     * that installed before now point at a stale copy — and because the hook is built to
+     * fail silently, a path that has gone away, or a copy predating half of these fixes,
+     * says nothing about it for the rest of the machine's life. So compare the registered
+     * command against the one we would write, and repair it when it differs.
+     */
+    const registered = ours.hooks?.find((h) => JSON.stringify(h).includes("knowbase"));
+    if (registered && registered.command === self) {
+      if (!opts.quiet) console.log("already installed — nothing to do");
+      return { already: true };
+    }
+    const before = registered?.command;
+    if (registered) registered.command = self;
+    fs.copyFileSync(settingsPath, `${settingsPath}.bak-knowbase`);
+    fs.writeFileSync(settingsPath, `${JSON.stringify(config, null, 2)}\n`);
+    try {
+      fs.chmodSync(self, 0o755);
+    } catch {
+      // settings invokes it through node either way.
+    }
+    if (!opts.quiet) {
+      console.log(`repointed  ${before ?? "(unset)"} -> ${self}`);
+    }
+    return { updated: true, from: before };
   }
   post.push({
     matcher: "Bash",
