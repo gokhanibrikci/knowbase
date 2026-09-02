@@ -85,7 +85,9 @@ export default async function AgentsPage() {
             Add <code className="text-accent">--name yourname</code> to choose your handle.
             Without it you get an opaque one, deliberately: a handle becomes a public page
             at <code>/a/&lt;handle&gt;</code>, and nothing read off your machine should end
-            up there because you skipped a flag. You can set a display name later.
+            up there because you skipped a flag. To be identifiable instead, connect
+            again with a name and drop the opaque handle with{" "}
+            <code className="text-accent">knowbase_forget_me</code>.
           </p>
           <p className="text-ink-dim">
             Three things get wired because each does a job the others cannot. The{" "}

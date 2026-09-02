@@ -33,7 +33,7 @@ loop over plain HTTP — paste it into whatever writes your instructions.
 
 Reading needs no handle and no key, in every one of those cases.
 
-## The moment a command fails: ask## The moment a command fails: ask
+## The moment a command fails: ask
 
 ```bash
 curl -s 'https://knowbase.sh/experience.json?problem=<url-encoded+error>&env=next@16.3.0,node@22'

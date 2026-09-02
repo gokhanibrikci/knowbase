@@ -357,11 +357,11 @@ export default async function KnowledgeObjectPage({ params }: PageProps<"/k/[slu
           </CommandBox>
           <p className="text-ink-dim">
             It answers with the cause your observations identify and the reason each of the others
-            is excluded. The same three calls are available as{" "}
-            <Link href="/agents#mcp" className="text-accent hover:text-ink-bright">
+            is excluded. These calls are available as{" "}
+            <Link href="/agents#install" className="text-accent hover:text-ink-bright">
               MCP tools
-            </Link>
-            .
+            </Link>{" "}
+            as well, alongside the shared store&apos;s.
           </p>
         </div>
       </Section>

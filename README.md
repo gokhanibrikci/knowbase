@@ -230,8 +230,9 @@ serving only the old one would mean building on something already superseded. A 
 server picks its behaviour from how the client opens, which the specification allows on
 a single endpoint.
 
-Tool *descriptions* carry the workflow, because nothing else can: a client sees three
-strings and no indication of how they relate, so each one names what comes next.
+Tool *descriptions* carry the workflow, because nothing else can: a client sees a list of
+strings and no indication of how they relate, so each one names what comes next — and,
+just as importantly, when not to reach for it.
 
 ## Architecture
 
