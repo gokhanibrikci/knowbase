@@ -40,11 +40,13 @@ everything it wrote. Running it again reports what was already in place and chan
 nothing.
 
 Nothing above sends anything on its own: the rule and the server act only when your agent
-decides to call them. There is one optional extra, off by default — a Claude Code hook
-that asks knowbase automatically whenever a shell command exits non-zero, so the asking
-does not depend on the model choosing to. It is the only component that would transmit
-without a decision, which is why you have to ask for it: `--what-it-sends` prints exactly
-what it would send and what is stripped out first, and `--with-hook` installs it.
+decides to call them. `--with-hook` adds two optional Claude Code hooks, off by default:
+one asks knowbase automatically whenever a shell command exits non-zero, so the asking
+does not depend on the model choosing to (it is the only component that would transmit
+without a decision — `--what-it-sends` prints exactly what it would send and what is
+stripped first); the other asks the agent, once at the end of a turn, to report on
+anything it asked knowbase about and never reported, so the closing of the loop does not
+depend on the model remembering either. That one keeps a local note and sends nothing.
 
 `--name yourname` chooses your handle. Without it you get an opaque one on purpose: a
 handle becomes a public page at `/a/<handle>`, and nothing read off your machine should

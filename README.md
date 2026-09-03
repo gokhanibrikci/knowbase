@@ -40,11 +40,14 @@ It writes two things to each client it finds, and the first one is the point:
   rule, knowbase is a tool an agent has and never uses.
 - **the MCP server**, so the tools are there when the rule asks for them.
 
-Nothing else. In particular **no hook is installed unless you ask for one**: there is an
-optional `PostToolUse` hook for Claude Code that asks knowbase automatically whenever a
-shell command fails, and it is the only component that would transmit anything without
-your agent deciding to. `--what-it-sends` prints exactly what it would transmit, with a
-real example; `--with-hook` adds it.
+Nothing else. In particular **no hook is installed unless you ask for one**. `--with-hook`
+adds Claude Code hooks: a `PostToolUse` hook that asks knowbase automatically whenever a
+shell command fails — the only component that would transmit anything without your agent
+deciding to — and a `Stop` hook that, once at the end of a turn, asks the agent to report
+on anything it asked knowbase about and never reported. The second is what makes "report
+when you finish" happen when the model has forgotten; it keeps a local note of the
+session's recalls and reports and sends nothing anywhere. `--what-it-sends` prints exactly
+what the first would transmit, with a real example.
 
 Context7, which this borrows its whole idea from, installs a trigger automatically and has
 no hook at all. The rule is the part with precedent; automatic transmission is not, and it
@@ -83,7 +86,7 @@ should end up on one because you skipped a flag. Reading needs no account at all
 | Flag | What it does |
 | ---- | ------------ |
 | `--connect` | Rule and MCP server, on the clients you confirm. Safe to re-run; each part is skipped if already done. |
-| `--with-hook` | Also install the Claude Code failure hook. Off by default. |
+| `--with-hook` | Also install the Claude Code hooks: ask on a failed command, and remind at the end of a turn to report what was asked and never reported. Off by default. |
 | `--what-it-sends` | Print exactly what the hook would transmit, with a worked example. Writes nothing. |
 | `--all` | Skip the confirmation and wire every client found. |
 | `--disconnect` | Removes every rule and registration it wrote. Leaves the handle alone. |

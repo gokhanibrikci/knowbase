@@ -10,10 +10,11 @@
  * without the flag you get an opaque one rather than anything read off your machine.
  * `--disconnect` reverses all of it.
  *
- * No hook unless you ask. `--with-hook` adds a Claude Code PostToolUse hook that asks
- * knowbase whenever a shell command fails; it is the only component that would transmit
- * without your agent deciding to, so `--what-it-sends` exists to show exactly what that
- * would be, with a worked example, before you trust it.
+ * No hook unless you ask. `--with-hook` adds Claude Code hooks: one asks knowbase whenever
+ * a shell command fails (the only component that would transmit without your agent
+ * deciding to, so `--what-it-sends` shows exactly what that would be), one notes what the
+ * session asked and reported, and one asks — once, at the end of a turn — for any report
+ * still owed. The last two never leave the machine.
  *
  * Three things get wired, because each does a job the others cannot:
  *
@@ -67,6 +68,164 @@ function migrateIdentityFiles() {
   }
 }
 const MAX_ERROR_CHARS = 4000;
+
+/**
+ * What this session asked knowbase and has not reported back on.
+ *
+ * The loop closes only if the agent that solves a failure says so, and "when you finish,
+ * report" is the instruction a model forgets most reliably — the task is done, the
+ * context is long, the rule was sixty lines ago. So the hook keeps a small local note per
+ * session: every recall it saw (its own automatic ones, and the ones the model made
+ * through the MCP tool), minus every report. At the end of the turn, if anything is still
+ * open, the agent is asked once — not looped — to report on it. Nothing here leaves the
+ * machine; the file is mode 600 and deleted when the reminder fires.
+ */
+const PENDING_DIR = path.join(HOME, "pending");
+const PENDING_TTL_MS = 24 * 3_600_000;
+const PENDING_MAX = 20;
+
+function pendingPath(sessionId) {
+  const id = String(sessionId ?? "default").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || "default";
+  return path.join(PENDING_DIR, `${id}.json`);
+}
+
+function readPending(sessionId) {
+  try {
+    const items = JSON.parse(fs.readFileSync(pendingPath(sessionId), "utf8"));
+    const now = Date.now();
+    return Array.isArray(items) ? items.filter((i) => now - (i.at ?? 0) < PENDING_TTL_MS) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePending(sessionId, items) {
+  try {
+    if (items.length === 0) {
+      fs.rmSync(pendingPath(sessionId), { force: true });
+      return;
+    }
+    fs.mkdirSync(PENDING_DIR, { recursive: true });
+    fs.writeFileSync(pendingPath(sessionId), JSON.stringify(items.slice(-PENDING_MAX)), { mode: 0o600 });
+  } catch {
+    // A note that cannot be kept is a reminder not given. Nothing else depends on it.
+  }
+}
+
+/** Sessions end without saying so; sweep notes older than a week. */
+function sweepPending() {
+  try {
+    for (const name of fs.readdirSync(PENDING_DIR)) {
+      const file = path.join(PENDING_DIR, name);
+      if (Date.now() - fs.statSync(file).mtimeMs > 7 * 86_400_000) fs.rmSync(file, { force: true });
+    }
+  } catch {
+    // No directory yet, or nothing to sweep.
+  }
+}
+
+/** What a recall answer leaves behind for the end of the turn. */
+function remember(sessionId, problem, data) {
+  if (!data || typeof data !== "object") return;
+  const match = data.match;
+  if (match !== "exact" && match !== "similar" && match !== "none") return;
+  const headline =
+    redact(String(problem ?? ""))
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find(Boolean)
+      ?.slice(0, 140) ?? "";
+  const fingerprint = typeof data.fingerprint === "string" ? data.fingerprint : null;
+  const items = readPending(sessionId).filter((i) => !fingerprint || i.fingerprint !== fingerprint);
+  items.push({
+    at: Date.now(),
+    match,
+    kind: data.kind === "question" ? "question" : "failure",
+    fingerprint,
+    headline,
+    solutionIds:
+      match === "exact" && Array.isArray(data.worked)
+        ? data.worked.map((w) => w?.solutionId).filter(Boolean).slice(0, 3)
+        : [],
+  });
+  writePending(sessionId, items);
+}
+
+/** A report settles what it names — and failing that, the most recent thing asked. */
+function settle(sessionId, input, data) {
+  const items = readPending(sessionId);
+  if (items.length === 0) return;
+  const solutionId = input?.solutionId ?? data?.solutionId;
+  const fingerprint = data?.fingerprint;
+  let rest = items.filter(
+    (i) =>
+      !(solutionId && Array.isArray(i.solutionIds) && i.solutionIds.includes(solutionId)) &&
+      !(fingerprint && i.fingerprint === fingerprint),
+  );
+  if (rest.length === items.length) rest = items.slice(0, -1);
+  writePending(sessionId, rest);
+}
+
+/**
+ * The tool result of an MCP call, as the hook sees it. Claude Code hands the response in
+ * more than one shape; the recall reply is JSON text inside whichever it is.
+ */
+function mcpResult(payload) {
+  const response = payload.tool_response ?? payload.tool_result ?? null;
+  const texts = [];
+  const walk = (v) => {
+    if (typeof v === "string") texts.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") {
+      if (typeof v.text === "string") texts.push(v.text);
+      else Object.values(v).forEach(walk);
+    }
+  };
+  walk(response);
+  for (const text of texts) {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // not JSON; try the next piece
+    }
+  }
+  return response && typeof response === "object" && !Array.isArray(response) ? response : null;
+}
+
+/**
+ * The end of the turn. If the session asked knowbase about something and never reported
+ * back, ask once — `stop_hook_active` means this is already the continuation, so never
+ * twice — and clear the note, so a session that has nothing to add can end.
+ */
+function remind(payload, sessionId) {
+  sweepPending();
+  if (payload.stop_hook_active) return;
+  const items = readPending(sessionId);
+  if (items.length === 0) return;
+  writePending(sessionId, []);
+
+  const lines = [
+    `knowbase: this session asked about ${items.length} problem${items.length === 1 ? "" : "s"} and has not reported back. One call each closes the loop for the next agent:`,
+  ];
+  for (const item of items) {
+    const what = item.headline ? `"${item.headline}"` : item.kind === "question" ? "a question" : "a failure";
+    if (item.match === "exact") {
+      const ids = item.solutionIds.length ? item.solutionIds.join(", ") : "the one recall showed";
+      lines.push(
+        `- ${what}: you were shown solution(s) ${ids}. Call knowbase_report with the solutionId you used and worked:true, or worked:false if it did not work here. Add foundHow:"independent" if you had found the same fix on your own.`,
+      );
+    } else {
+      lines.push(
+        `- ${what}: knowbase had no answer${item.match === "similar" ? " (only similar problems)" : ""}. If you solved it, call knowbase_report with problem + solution, and report the attempts that failed as worked:false. Everyone who asked gets your answer next time.`,
+      );
+    }
+  }
+  lines.push(
+    "If a problem was not solved, or is not the user's concern, say so in one line and stop. Never put a secret, a private path or customer data in a report — everything is published.",
+  );
+  process.stdout.write(JSON.stringify({ decision: "block", reason: lines.join("\n") }));
+}
 
 /** Commands whose non-zero exit is a normal answer rather than a failure. */
 const EXPECTED_FAILURE = /^\s*(?:!|\[|test|grep|rg|ag|ack|diff|cmp|git\s+diff|git\s+grep|find\b.*-name)/;
@@ -1183,9 +1342,10 @@ async function connect(argv) {
   if (!withHook) {
     console.log("");
     console.log("  Nothing sends anything on its own: the rule and the server only act when");
-    console.log("  your agent decides to call them. There is also an optional hook that asks");
-    console.log("  knowbase automatically whenever a shell command fails — see exactly what");
-    console.log("  that would transmit with --what-it-sends, and add it with --with-hook.");
+    console.log("  your agent decides to call them. --with-hook adds two things: a hook that");
+    console.log("  asks knowbase automatically whenever a shell command fails, and a reminder");
+    console.log("  at the end of a turn to report on anything asked and left open. See what the");
+    console.log("  first would transmit with --what-it-sends.");
   }
   console.log(`  Undo all of it with --disconnect. The rule itself: ${BASE}/rule.md`);
 }
@@ -1255,67 +1415,66 @@ function configure(remove, opts = {}) {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   }
 
+  /**
+   * Three registrations of the one file, told apart by what Claude Code hands them:
+   *
+   *   PostToolUse on Bash          a failed command is asked about automatically
+   *   PostToolUse on our MCP tools a recall or report the model made is noted or settled
+   *   Stop                         anything still open is asked about, once
+   *
+   * The whole set is compared against what is installed and rewritten as a unit, so an
+   * earlier install that registered a stale path or only the first hook is repaired
+   * rather than trusted. Groups are recognised by mentioning knowbase, and only those
+   * are touched; everything else in the file is somebody else's.
+   */
   const hooks = (config.hooks ??= {});
-  const post = (hooks.PostToolUse ??= []);
   const mine = (group) => JSON.stringify(group).includes("knowbase");
+  const events = ["PostToolUse", "Stop"];
+  const desired = {
+    PostToolUse: [
+      { matcher: "Bash", hooks: [{ type: "command", command: self, timeout: 10 }] },
+      {
+        matcher: "mcp__knowbase__knowbase_recall|mcp__knowbase__knowbase_report",
+        hooks: [{ type: "command", command: self, timeout: 5 }],
+      },
+    ],
+    Stop: [{ hooks: [{ type: "command", command: self, timeout: 5 }] }],
+  };
+  const before = JSON.stringify(events.map((e) => (hooks[e] ?? []).filter(mine)));
+  const none = JSON.stringify(events.map(() => []));
+  for (const e of events) hooks[e] = (hooks[e] ?? []).filter((group) => !mine(group));
 
   if (remove) {
-    const before = post.length;
-    hooks.PostToolUse = post.filter((group) => !mine(group));
-    if (hooks.PostToolUse.length === 0) delete hooks.PostToolUse;
+    for (const e of events) if (hooks[e].length === 0) delete hooks[e];
+    if (Object.keys(hooks).length === 0) delete config.hooks;
     fs.writeFileSync(settingsPath, `${JSON.stringify(config, null, 2)}\n`);
-    const nothing = before === (hooks.PostToolUse?.length ?? 0);
-    if (!opts.quiet) console.log(nothing ? "nothing to remove" : "removed the knowbase hook");
+    const nothing = before === none;
+    if (!opts.quiet) console.log(nothing ? "nothing to remove" : "removed the knowbase hooks");
     return { removed: !nothing };
   }
 
-  const ours = post.find(mine);
-  if (ours) {
-    /**
-     * "A group mentions knowbase" was too loose a test for already-installed. An earlier
-     * version of this installer registered whatever path it was run from, so machines
-     * that installed before now point at a stale copy — and because the hook is built to
-     * fail silently, a path that has gone away, or a copy predating half of these fixes,
-     * says nothing about it for the rest of the machine's life. So compare the registered
-     * command against the one we would write, and repair it when it differs.
-     */
-    const registered = ours.hooks?.find((h) => JSON.stringify(h).includes("knowbase"));
-    if (registered && registered.command === self) {
-      if (!opts.quiet) console.log("already installed — nothing to do");
-      return { already: true };
-    }
-    const before = registered?.command;
-    if (registered) registered.command = self;
-    fs.copyFileSync(settingsPath, `${settingsPath}.bak-knowbase`);
-    fs.writeFileSync(settingsPath, `${JSON.stringify(config, null, 2)}\n`);
-    try {
-      fs.chmodSync(self, 0o755);
-    } catch {
-      // settings invokes it through node either way.
-    }
-    if (!opts.quiet) {
-      console.log(`repointed  ${before ?? "(unset)"} -> ${self}`);
-    }
-    return { updated: true, from: before };
+  for (const e of events) hooks[e].push(...desired[e]);
+  const after = JSON.stringify(events.map((e) => hooks[e].filter(mine)));
+  if (before === after) {
+    if (!opts.quiet) console.log("already installed — nothing to do");
+    return { already: true };
   }
-  post.push({
-    matcher: "Bash",
-    hooks: [{ type: "command", command: self, timeout: 10 }],
-  });
   fs.writeFileSync(settingsPath, `${JSON.stringify(config, null, 2)}\n`);
   try {
     fs.chmodSync(self, 0o755);
   } catch {
     // Not fatal: settings invokes it through node either way.
   }
+  const fresh = before === none;
   if (!opts.quiet) {
-    console.log(`installed  ${self}`);
-    console.log(`registered PostToolUse hook on Bash in ${settingsPath}`);
+    console.log(`${fresh ? "installed " : "updated   "} ${self}`);
+    console.log(`registered PostToolUse (Bash, knowbase MCP tools) and Stop hooks in ${settingsPath}`);
     console.log("");
-    console.log("It asks knowbase when a shell command fails, and prints nothing when there is");
-    console.log("no answer. Start a new session for it to take effect. KNOWBASE_HOOK=0 disables it.");
+    console.log("It asks knowbase when a shell command fails, notes what this session asked and");
+    console.log("reported, and at the end of a turn asks once for any report still owed. Start a");
+    console.log("new session for it to take effect. KNOWBASE_HOOK=0 disables all of it.");
   }
-  return { installed: true };
+  return fresh ? { installed: true } : { updated: true };
 }
 
 /**
@@ -1364,7 +1523,14 @@ function explainHook() {
       .map((line) => `  ${line}`)
       .join("\n"),
   );
-  console.log("\nThe hook is not installed unless you pass --with-hook. Rule and MCP server");
+  console.log("\nTwo more hooks come with --with-hook, and neither sends anything anywhere:");
+  console.log("  Notes      a PostToolUse hook on knowbase's own MCP tools writes what this");
+  console.log(`             session asked and reported to ${PENDING_DIR}/<session>.json, mode 600`);
+  console.log("  Reminds    a Stop hook reads that note at the end of a turn and, if a recall");
+  console.log("             was never followed by a report, asks the agent once to report —");
+  console.log("             then deletes the note. It never loops and never blocks a session");
+  console.log("             that has nothing open.");
+  console.log("\nNone of this is installed unless you pass --with-hook. Rule and MCP server");
   console.log("only ever send something when your agent decides to call them.");
 }
 
@@ -1386,6 +1552,21 @@ async function main() {
   } catch {
     return;
   }
+
+  // Three moments, one file. The end of a turn asks about anything still open; a recall
+  // or report the model made through the MCP tool is noted or settled; and a failed
+  // shell command is asked about automatically, as before.
+  const event = String(payload.hook_event_name ?? "PostToolUse");
+  const sessionId = payload.session_id;
+  const toolName = String(payload.tool_name ?? "");
+  if (event === "Stop") return remind(payload, sessionId);
+  if (toolName === "mcp__knowbase__knowbase_recall") {
+    return remember(sessionId, payload.tool_input?.problem ?? "", mcpResult(payload));
+  }
+  if (toolName === "mcp__knowbase__knowbase_report") {
+    return settle(sessionId, payload.tool_input, mcpResult(payload));
+  }
+  if (toolName && toolName !== "Bash") return;
 
   const exitCode = Number(
     pick(payload, [
@@ -1429,6 +1610,7 @@ async function main() {
     });
     if (!res.ok) return;
     const data = await res.json();
+    remember(sessionId, problem, data);
     const context = render(data);
     if (!context) return;
     process.stdout.write(

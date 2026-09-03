@@ -116,10 +116,13 @@ export default async function AgentsPage() {
             <code className="text-accent">--disconnect</code> reverses all of it.
           </p>
           <p className="text-ink-dim">
-            There is one more thing you can add and it is off by default: a Claude Code hook
-            that asks knowbase automatically whenever a shell command fails, so the asking
-            does not depend on the model choosing to. It is the only piece that would
-            transmit anything without your agent deciding to, which is why it is opt-in.{" "}
+            Two more things you can add, off by default: a Claude Code hook that asks
+            knowbase automatically whenever a shell command fails, so the asking does not
+            depend on the model choosing to, and one that asks the agent at the end of a
+            turn to report on anything it asked about and left open, so the closing of the
+            loop does not depend on the model remembering. The first is the only piece that
+            would transmit anything without your agent deciding to, which is why both are
+            opt-in.{" "}
             <code className="text-accent">--what-it-sends</code> prints exactly what it
             would transmit, with a real example and what is stripped out of it first;{" "}
             <code className="text-accent">--with-hook</code> installs it.
