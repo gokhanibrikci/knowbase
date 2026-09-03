@@ -209,8 +209,22 @@ const SCRUBBERS: [RegExp, string][] = [
   [/\b\d{6,}\b/g, "<n>"],
 ];
 
+/**
+ * Letters to their bare shape: ş→s, ğ→g, ü→u, ı→i, and so on. Two agents type the same
+ * Turkish word with and without its diacritics, and an error message localised into a
+ * language with accents should still key the same as one pasted without them. Applied
+ * before tokenising, never to what is stored or shown.
+ */
+export function fold(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/\p{M}+/gu, "")
+    .replace(/ı/g, "i")
+    .toLowerCase();
+}
+
 export function normalizeError(raw: string): string {
-  let text = raw.split(/\r?\n/).map(cleanLine).join("\n").toLowerCase();
+  let text = fold(raw.split(/\r?\n/).map(cleanLine).join("\n"));
   for (const [pattern, replacement] of SCRUBBERS) {
     text = typeof replacement === "function"
       ? text.replace(pattern, replacement as unknown as string)
@@ -250,7 +264,7 @@ const PLACEHOLDER_ONLY = /^<[a-z]+>$/;
 
 function failureTokens(raw: string): string[] {
   const seen = new Set<string>();
-  for (const piece of normalizeError(errorHeadline(raw)).split(/[^a-z0-9<>_./@:-]+/)) {
+  for (const piece of normalizeError(errorHeadline(raw)).split(/[^\p{L}\p{N}<>_./@:-]+/u)) {
     const token = piece.replace(EDGE_PUNCTUATION, "");
     if (token.length < 2 || NOISE.has(token) || PLACEHOLDER_ONLY.test(token)) continue;
     if (!seen.has(token)) seen.add(token);
@@ -264,12 +278,14 @@ function failureTokens(raw: string): string[] {
 export type ProblemKind = "failure" | "question";
 
 /** Words that make a line an error report, whatever else it says. */
+// Tested against folded text (see fold): diacritics gone, lower case. The Turkish words
+// are therefore written without their diacritics here.
 const FAILURE_MARKERS =
-  /\b(error|exception|traceback|panic|fatal|failed|failure|refused|denied|timeout|timed out|crash(?:ed|es)?|segfault|killed|unhandled|not found|cannot|can't|couldn't|unable to|invalid|exit(?:ed)? (?:with )?(?:code|status))\b/i;
+  /\b(error|exception|traceback|panic|fatal|failed|failure|refused|denied|timeout|timed out|crash(?:ed|es)?|segfault|killed|unhandled|not found|cannot|can't|couldn't|unable to|invalid|exit(?:ed)? (?:with )?(?:code|status)|hata|hatasi|calismiyor|calismaz|basarisiz|cokuyor|coktu|patliyor|patladi|reddedildi|bulunamadi|bulunamiyor|zaman asimi|takildi|kilitlendi|olmuyor|acilmiyor|baglanamiyor|yuklenemedi|derlenemedi)\b/i;
 const QUESTION_OPENERS =
-  /^\s*(?:how|what|what's|whats|why|which|where|when|can|could|should|is|are|does|do|will|would|any|best|recommended)\b/i;
+  /^\s*(?:how|what|what's|whats|why|which|where|when|can|could|should|is|are|does|do|will|would|any|best|recommended|nasil|neden|niye|nicin|ne|hangi|hangisi|nerede|nereye|nereden|kim|kac|mumkun)\b/i;
 const QUESTION_MARKERS =
-  /\?\s*$|\bhow to\b|\bbest way\b|\bdifference between\b|\bshould i\b|\brecommended\b|\bvs\.?\b|\bversus\b/i;
+  /\?\s*$|\bhow to\b|\bbest way\b|\bdifference between\b|\bshould i\b|\brecommended\b|\bvs\.?\b|\bversus\b|\bnasil\b|\bmumkun\b|\bnedir\b|\bfarki\b|\bolur mu\b|\byapabilir\b|\b(?:mi|mu)\b/i;
 
 /**
  * Failure or question. An error has the shape of an error — a frame, a carrier line, a
@@ -281,10 +297,10 @@ export function classify(raw: string): ProblemKind {
   const lines = raw.split(/\r?\n/).map(cleanLine).filter(Boolean);
   if (lines.length === 0) return "failure";
   if (lines.some(isFrame) || lines.some(isCarrier)) return "failure";
-  const text = lines.join(" ");
+  const text = fold(lines.join(" "));
   if (FAILURE_MARKERS.test(text)) return "failure";
   if (hasSelfIdentifier(raw, failureTokens(raw))) return "failure";
-  if (QUESTION_OPENERS.test(lines[0]) || QUESTION_MARKERS.test(text)) return "question";
+  if (QUESTION_OPENERS.test(fold(lines[0])) || QUESTION_MARKERS.test(text)) return "question";
   return "failure";
 }
 
@@ -303,6 +319,22 @@ const QUESTION_FILLER = new Set([
   "working", "works", "between", "difference", "there", "any", "some", "please", "help",
   "into", "from", "at", "by", "about", "like", "so", "just", "also", "without", "if",
   "then", "am", "have", "has", "had", "possible", "recommended", "know", "tell", "find",
+  // Turkish, folded (no diacritics): question words, particles, and the verbs a
+  // how-do-I is asked with. Content words — sunucu, veritabani — stay.
+  "nasil", "neden", "niye", "nicin", "ne", "hangi", "hangisi", "nerede", "nereye",
+  "nereden", "kim", "kac", "bir", "bu", "su", "o", "ve", "veya", "ya", "da", "de", "ile",
+  "icin", "mi", "mu", "misin", "miyim", "gibi", "kadar", "ama", "fakat", "cok", "en",
+  "iyi", "dogru", "sekilde", "yapabilir", "yapabilirim", "yaparim", "yapmak", "yapilir",
+  "yapiyorum", "yapsam", "kurmak", "kurarim", "kurulum", "kurulumu", "kurabilir",
+  "kurulur", "ayarlamak", "ayarlarim", "ayar", "ayari", "ayarlari", "kullanmak",
+  "kullanirim", "kullanabilir", "kullanilir", "istiyorum", "lazim", "gerekir",
+  "gerekiyor", "gerekli", "var", "yok", "olur", "olmasi", "nedir", "neyi", "oluyor",
+  "olacak", "ediyor", "etmek", "edilir", "edebilir", "eklemek", "eklerim", "eklenir",
+  "calistirmak", "calisir", "onerilen", "hakkinda", "uzerinde", "uzerine", "icinde",
+  "sonra", "once", "zaman", "hala", "tekrar", "yine", "sadece", "mesela", "ornegin",
+  // Case suffixes that follow an apostrophe — Next.js'te, Docker'da — and so split off.
+  "te", "ta", "nin", "nun", "ye", "yi", "yu", "le", "la", "yle", "yla", "den", "dan",
+  "ten", "tan", "deki", "daki", "teki", "taki", "ndeki", "ndaki", "nde", "nda",
 ]);
 
 /** A light singular, so "migrations" and "migration" are one word. Never touches short words or -ss/-us/-js endings. */
@@ -314,9 +346,9 @@ function singular(token: string): string {
 }
 
 function questionTokens(raw: string): string[] {
-  const line = cleanLine(raw.split(/\r?\n/).find((l) => l.trim()) ?? "").toLowerCase();
+  const line = fold(cleanLine(raw.split(/\r?\n/).find((l) => l.trim()) ?? ""));
   const seen = new Set<string>();
-  for (const piece of line.split(/[^a-z0-9<>_./@:+#-]+/)) {
+  for (const piece of line.split(/[^\p{L}\p{N}<>_./@:+#-]+/u)) {
     const token = piece.replace(EDGE_PUNCTUATION, "");
     if (token.length < 2 || QUESTION_FILLER.has(token) || NOISE.has(token)) continue;
     seen.add(singular(token));
@@ -327,6 +359,41 @@ function questionTokens(raw: string): string[] {
 /** The tokens that decide identity — by the rules of the kind the text is. */
 export function signatureTokens(raw: string): string[] {
   return classify(raw) === "question" ? questionTokens(raw) : failureTokens(raw);
+}
+
+/**
+ * The parts of a failure that a meaning model reads past.
+ *
+ * Measured on the embedding this store uses: "connect ECONNREFUSED 127.0.0.1:5432" and the
+ * same line with :6379 score 0.88 to each other — higher than the same 5432 failure
+ * described in Turkish scores against its English original. Meaning finds the language;
+ * it does not hear the port. So before a neighbour found by meaning is called the same
+ * failure, the hard identifiers in the asker's text — errno names, error classes, quoted
+ * names, ports and codes — must all appear in the candidate's. Everything else may differ.
+ */
+export function identityTokens(raw: string): string[] {
+  const out = new Set<string>();
+  for (const m of raw.matchAll(/\bE[A-Z]{4,}\b/g)) out.add(m[0].toLowerCase());
+  for (const m of fold(raw).matchAll(/['"`]([^'"`\s]{2,60})['"`]/g)) out.add(m[1].replace(EDGE_PUNCTUATION, ""));
+  for (const token of failureTokens(raw)) {
+    if (
+      selfIdentifying(token) ||
+      /^<ip>:\d+$/.test(token) ||
+      /^\d{3,}$/.test(token) ||
+      (/(?:error|exception|warning)$/.test(token) && token.length > 7)
+    ) {
+      out.add(token);
+    }
+  }
+  return [...out].sort();
+}
+
+/** Whether every hard identifier in the asker's text is present in a candidate's. */
+export function identityAgrees(query: string, candidate: string): boolean {
+  const mine = identityTokens(query);
+  if (mine.length === 0) return false;
+  const theirs = new Set(identityTokens(candidate));
+  return mine.every((t) => theirs.has(t));
 }
 
 /**
@@ -396,7 +463,7 @@ async function sha256Hex(text: string): Promise<string> {
  * Versioned, because the first version of a rule like this is never the last, and the
  * stored sample lets any later version be recomputed rather than lost.
  */
-export const FINGERPRINT_VERSION = 3;
+export const FINGERPRINT_VERSION = 4;
 
 export async function fingerprint(raw: string): Promise<string> {
   const tokens = signatureTokens(raw);

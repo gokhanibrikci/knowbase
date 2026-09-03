@@ -100,6 +100,18 @@ async function main() {
   const thin = await call({ action: "recall", problem: "Build failed with exit code 1" });
   check("a carrier line is refused with a reason", thin.json.match === "insufficient_signal");
 
+  // The same failure described in Turkish keys differently and must be found by meaning.
+  const turkish = await call({
+    action: "recall",
+    problem: "Python'da yaml modülü bulunamadı hatası alıyorum: ModuleNotFoundError: No module named 'yaml'",
+    environment: ["python@3.12"],
+  });
+  check(
+    "a Turkish paraphrase of a known failure is matched by meaning",
+    turkish.json.match === "exact" && turkish.json.matchedBy === "meaning",
+    `match=${turkish.json.match} matchedBy=${turkish.json.matchedBy} nearest=${turkish.json.nearestSimilarity ?? turkish.json.similarity}`,
+  );
+
   const viaGet = await fetch(`${BASE}/experience.json?problem=${encodeURIComponent(KNOWN)}`, {
     headers: PROBE,
   });

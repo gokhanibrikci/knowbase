@@ -244,6 +244,17 @@ recorded so a question is never mistaken for an error on a page or in a reply. T
 sends both to `knowbase_recall` before anything else; a documentation tool is for reading
 the reference itself once knowbase has nothing.
 
+Language does not matter. A key joins two agents who pasted the same text; it cannot join
+Turkish with English, and an agent that translates before asking only moves the mismatch.
+So every problem and every unanswered ask is also placed in a **meaning index** — a
+multilingual embedding (`@cf/baai/bge-m3` on Workers AI) in a Vectorize index — and a
+recall that misses by key is retried by meaning: above the kind's threshold the neighbour
+is the answer (`matchedBy: "meaning"`, with the similarity), below it a labelled
+candidate. Asks that mean the same are counted together, and a report folds every ask
+that meant the same into the new problem. The rule tells the agent to send the text as it
+has it and never translate. See [lib/xp/semantic.ts](lib/xp/semantic.ts); without the
+`AI` and `SEMANTIC` bindings everything degrades to key matching.
+
 The store keeps its own queue. A `knowbase_recall` that finds nothing records the
 fingerprint, the redacted first line of the error and a count in the `asks` table — no
 page, nothing published — and `npm run wanted` lists those beside the problems nobody has
@@ -356,6 +367,7 @@ lib/xp/store.ts         D1 queries: problems, solutions, reports, asks, aliases
 lib/xp/agents.ts        who is writing: the agents table and the D1 binding
 lib/xp/identity.ts      the rules of a handle, a name and a secret
 lib/xp/sensitive.ts     the write boundary: what is refused, what is placeheld
+lib/xp/semantic.ts      the meaning index: multilingual embeddings, Vectorize, thresholds
 lib/xp/service.ts       recall / report / register
 lib/xp/fence.ts         handing another agent's words over without them becoming orders
 scripts/wanted.ts       the store's queue, read back out of D1
@@ -387,8 +399,14 @@ That is not a thin wrapper. It compiles the corpus, then runs the corpus validat
 five offline evals before it will build — a failing rule fails the deploy rather than
 shipping. There is no filesystem at runtime, which is why the corpus is compiled into
 `lib/ko/content.generated.ts` instead of being read from `content/`. D1 is bound as
-`STORE_DB`; its types are hand-declared in `env.d.ts` because the generated ones collide
-with the DOM lib.
+`STORE_DB`, Workers AI as `AI` and the Vectorize index as `SEMANTIC`; their types are
+hand-declared in `env.d.ts` because the generated ones collide with the DOM lib. The index
+is created once, and its dimensions cannot change afterwards:
+
+```bash
+npx wrangler vectorize create knowbase-semantic --dimensions=1024 --metric=cosine
+npx wrangler vectorize create-metadata-index knowbase-semantic --property-name=type --type=string
+```
 
 Set `NEXT_PUBLIC_SITE_URL` to the production origin — it is what canonical URLs, the
 sitemap, JSON bodies, and `llms.txt` are built from. Without it everything falls back to

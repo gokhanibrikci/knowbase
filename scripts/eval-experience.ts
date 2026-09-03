@@ -17,6 +17,8 @@ import {
   environmentMatch,
   errorHeadline,
   fingerprint,
+  identityAgrees,
+  identityTokens,
   insufficientSignal,
   parseEnvironment,
   signatureTokens,
@@ -236,6 +238,61 @@ async function main() {
   );
   const asError = await fingerprint("Error: custom express server next.js");
   check("the same words as an error and as a question never collide", asError !== q1);
+
+  // ---- language: Turkish is classified and keyed, diacritics do not split a key -----
+  check(
+    "a Turkish how-do-I is a question",
+    classify("Next.js'te özel Express sunucusu nasıl kurulur?") === "question" &&
+      classify("Prisma migration'ları CI'da nasıl çalıştırırım") === "question",
+  );
+  const tr = signatureTokens("Next.js'te özel Express sunucusu nasıl kurulur?");
+  check(
+    "Turkish filler and the case suffix after the apostrophe are stripped",
+    !tr.some((t) => ["nasil", "kurulur", "te"].includes(t)) && tr.includes("next.js") && tr.includes("express"),
+    tr.join(" "),
+  );
+  check(
+    "a Turkish failure line is a failure",
+    classify("Bağlantı reddedildi hatası: veritabanına bağlanamıyor") === "failure" &&
+      classify("Docker container çalışmıyor, exit code 137") === "failure",
+  );
+  const withDiacritics = await fingerprint("Hata: yapılandırma dosyası bulunamadı: settings.yaml");
+  const without = await fingerprint("Hata: yapilandirma dosyasi bulunamadi: settings.yaml");
+  check("with and without diacritics is one failure", withDiacritics === without, `${withDiacritics} ${without}`);
+  // ---- identity across meaning: what a model reads past --------------------------
+  const pg = "Error: connect ECONNREFUSED 127.0.0.1:5432";
+  check(
+    "hard identifiers: errno, address and port",
+    identityTokens(pg).join(" ") === "<ip>:5432 econnrefused",
+    identityTokens(pg).join(" "),
+  );
+  check(
+    "the same failure wrapped in Turkish keeps its identifiers",
+    identityAgrees("Postgres'e bağlanamıyorum: Error: connect ECONNREFUSED 127.0.0.1:5432", pg),
+  );
+  check(
+    "a different port is not the same failure, however alike it reads",
+    !identityAgrees("Error: connect ECONNREFUSED 127.0.0.1:6379", pg),
+  );
+  const trace = "Traceback (most recent call last):\n  File \"<path>/main.py\", line 3, in <module>\n    import yaml\nModuleNotFoundError: No module named 'yaml'";
+  check(
+    "a Turkish paraphrase carrying the error line agrees with the traceback",
+    identityAgrees("Python'da yaml modülü bulunamadı hatası alıyorum: ModuleNotFoundError: No module named 'yaml'", trace),
+    identityTokens(trace).join(" "),
+  );
+  check(
+    "a different module does not agree",
+    !identityAgrees("ModuleNotFoundError: No module named 'requests'", trace),
+  );
+  check(
+    "a description with no identifiers cannot be confirmed by identity",
+    !identityAgrees("Python'da yaml modülünü import edemiyorum", trace),
+  );
+
+  check(
+    "English classification is unchanged by the folding",
+    classify("How do I run Prisma migrations in CI?") === "question" && classify("Error: connect ECONNREFUSED 127.0.0.1:5432") === "failure",
+  );
 
   // ---- carrier lines may never become a mega-problem --------------------------
   for (const carrier of [

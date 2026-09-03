@@ -41,6 +41,13 @@
       "database_id": "6099e28b-8a2a-43eb-b3d7-d142eb2ea7d6"
     }
   ],
+  // The meaning index. A fingerprint joins two agents who pasted the same error; it cannot
+  // join Turkish with English, or two phrasings of one question. Every problem and every
+  // unanswered ask is also embedded (multilingual, bge-m3) and a recall that misses by key
+  // is retried by meaning. Both bindings are optional at runtime — without them the store
+  // behaves as it did before.
+  "ai": { "binding": "AI" },
+  "vectorize": [{ "binding": "SEMANTIC", "index_name": "knowbase-semantic" }],
   "analytics_engine_datasets": [
     { "binding": "QUERY_LOG", "dataset": "knowbase_queries" },
     { "binding": "REPORT_LOG", "dataset": "knowbase_reports" }

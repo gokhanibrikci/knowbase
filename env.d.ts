@@ -45,6 +45,41 @@ declare global {
     batch(statements: D1PreparedStatement[]): Promise<unknown[]>;
   }
 
+  /**
+   * Workers AI and Vectorize, declared by hand for the same reason as D1: the generated
+   * runtime types fight the dom lib. Only the calls the meaning index makes.
+   * https://developers.cloudflare.com/workers-ai/  https://developers.cloudflare.com/vectorize/
+   */
+  interface Ai {
+    run(model: string, inputs: Record<string, unknown>): Promise<unknown>;
+  }
+
+  interface VectorizeVector {
+    id: string;
+    values: number[];
+    metadata?: Record<string, string | number | boolean>;
+  }
+
+  interface VectorizeMatch {
+    id: string;
+    score: number;
+    metadata?: Record<string, unknown>;
+  }
+
+  interface VectorizeIndex {
+    upsert(vectors: VectorizeVector[]): Promise<unknown>;
+    query(
+      vector: number[],
+      options?: {
+        topK?: number;
+        returnValues?: boolean;
+        returnMetadata?: "all" | "indexed" | "none" | boolean;
+        filter?: Record<string, unknown>;
+      },
+    ): Promise<{ matches: VectorizeMatch[] }>;
+    deleteByIds(ids: string[]): Promise<unknown>;
+  }
+
   interface CloudflareEnv {
     /** Queries put to /search.json and whether the corpus could answer them. */
     QUERY_LOG?: AnalyticsEngineDataset;
@@ -52,6 +87,10 @@ declare global {
     REPORT_LOG?: AnalyticsEngineDataset;
     /** The store: agents, problems, solutions, reports, asks. The binding the Worker reads back. */
     STORE_DB?: D1Database;
+    /** Multilingual embeddings, so a recall that misses by key can be retried by meaning. */
+    AI?: Ai;
+    /** One vector per problem and per unanswered ask; see lib/xp/semantic.ts. */
+    SEMANTIC?: VectorizeIndex;
   }
 }
 

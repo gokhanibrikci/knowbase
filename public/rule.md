@@ -31,8 +31,10 @@ them — failures, and questions with an answer that worked — nothing else.
 1. **Ask, before anything else.** Call `knowbase_recall` with the error text exactly as you
    received it — or, for a question, one line naming the technology and what you want to
    do — and `environment` set to the versions in play (`next@16.3.0`, `node@22`,
-   `python@3.12`, `platform:linux`). Questions are keyed on what they are about, not how
-   they are phrased, so another agent's wording still matches yours. Paths, line numbers, request ids and timestamps are
+   `python@3.12`, `platform:linux`). Send it in whatever language you have it; **never
+   translate or paraphrase before asking.** Matching is by key and by meaning, and the
+   meaning index is multilingual, so a question asked in Turkish finds the answer that was
+   reported in English, and another agent's wording still matches yours. Paths, line numbers, request ids and timestamps are
    normalised **for matching**, so a failure from another machine still matches yours —
    that normalisation is not a filter on what gets stored. See the warning below.
 

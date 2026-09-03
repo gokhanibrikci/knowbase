@@ -27,6 +27,7 @@ import {
 import {
   type Environment,
   FINGERPRINT_VERSION,
+  type ProblemKind,
   classify,
   fingerprint,
   insufficientSignal,
@@ -37,14 +38,17 @@ import {
 } from "./fingerprint";
 import { commandsIn, fence, fenceNotice, looksLikeInstructions, newNonce } from "./fence";
 import { type PackageFact, checkPackages, packageWarnings } from "./packages";
+import { THRESHOLDS, embed, forget, indexAsk, indexProblem, neighbours, sameProblem } from "./semantic";
 import { type Report, rank, summarize } from "./standing";
 import {
   type ProblemRow,
   insertProblem,
   insertSolution,
+  askByFingerprint,
   foldAskIntoProblem,
   forgetAgent,
   insertAlias,
+  markEmbedded,
   problemByFingerprint,
   problemById,
   recordAsk,
@@ -403,6 +407,9 @@ export async function xpRetract(args: Record<string, unknown>): Promise<XpResult
   if (!removed.report) {
     return fail(404, "you have no report on that solution");
   }
+  if (removed.problem && removed.problemId) {
+    await forget([{ type: "problem", ref: removed.problemId }]);
+  }
   await touchAgent(db, auth.agent.id, Date.now());
 
   return {
@@ -437,6 +444,9 @@ export async function xpForgetMe(args: Record<string, unknown>): Promise<XpResul
   if ("error" in auth) return auth.error;
 
   const result = await forgetAgent(db, auth.agent.id);
+  if (result.ok && result.removedProblems?.length) {
+    await forget(result.removedProblems.map((ref) => ({ type: "problem" as const, ref })));
+  }
   if (!result.ok) {
     return fail(
       409,
@@ -599,6 +609,14 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
   const exact = await problemByFingerprint(db, print);
   if (exact) {
     if (!probe) await touchProblem(db, exact.id, now);
+    // Rows written before the meaning index existed are placed in it the first time a
+    // recall lands on them, so the index fills itself without a migration job.
+    if (!exact.embedded_at) {
+      const vector = await embed(exact.sample);
+      if (vector && (await indexProblem(exact.id, vector, exact.kind as ProblemKind))) {
+        await markEmbedded(db, "problems", exact.id, now);
+      }
+    }
     const described = await describeProblem(db, exact, asking, now, nonce);
     const hasAnswer = (described.worked as unknown[]).length > 0;
     return {
@@ -606,6 +624,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
       httpStatus: 200,
       body: {
         match: "exact",
+        matchedBy: "fingerprint",
         kind: exact.kind,
         howToReadThis: fenceNotice(nonce),
         yourEnvironment: formatEnvironment(asking),
@@ -625,19 +644,79 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
     };
   }
 
-  // No fingerprint match. Look for agents who described the same wall differently, but
-  // say plainly that these are candidates rather than answers.
+  /**
+   * No key matched. By meaning, then: the multilingual embedding finds the same failure
+   * asked in another language and the same question in other words, which is exactly
+   * what a key cannot. Above the kind's threshold the neighbour is the answer; below it,
+   * down to `similar`, it is a candidate. The nearest score travels with every reply so
+   * the thresholds can be read against the field and moved.
+   */
+  const vector = await embed(clean);
+  const byMeaning: { problem: ProblemRow; score: number }[] = [];
+  if (vector) {
+    for (const n of await neighbours(vector, "problem", 5)) {
+      if (n.score < THRESHOLDS.similar) break;
+      const row = await problemById(db, n.ref);
+      if (row) byMeaning.push({ problem: row, score: n.score });
+    }
+  }
+  const nearestSimilarity = byMeaning[0] ? Number(byMeaning[0].score.toFixed(3)) : null;
+  const same =
+    byMeaning.find((m) => sameProblem(kind, m.score, clean, m.problem.sample)) ?? null;
+  if (same) {
+    if (!probe) await touchProblem(db, same.problem.id, now);
+    const described = await describeProblem(db, same.problem, asking, now, nonce);
+    const hasAnswer = (described.worked as unknown[]).length > 0;
+    return {
+      ok: true,
+      httpStatus: 200,
+      body: {
+        match: "exact",
+        matchedBy: "meaning",
+        similarity: nearestSimilarity,
+        kind: same.problem.kind,
+        howToReadThis: fenceNotice(nonce),
+        yourEnvironment: formatEnvironment(asking),
+        ...(library ? { library } : {}),
+        ...described,
+        ...(hasAnswer
+          ? {
+              next: "This was matched by meaning, not by an identical error: check sampleSeen against your own text before applying anything. Then report back with knowbase_report and the solutionId, passing your own problem text so the two are linked.",
+            }
+          : {
+              next: "Other agents have hit this and nothing has worked yet. When you solve it, knowbase_report with a new solution — you will be the first.",
+            }),
+        trust: UNTRUSTED,
+      },
+    };
+  }
+
+  // No key and no near-certain meaning. Look for agents who described the same wall
+  // differently — by shared words, and by meaning above the lower bar — but say plainly
+  // that these are candidates rather than answers.
   const terms = signatureTokens(clean);
   const candidates = await searchProblems(db, terms, 5);
-  const scored = candidates
+  const lexical = candidates
     .map((c) => {
       const theirs = new Set(signatureTokens(`${c.title} ${c.sample}`));
       const overlap = terms.filter((t) => theirs.has(t)).length;
       return { c, overlap };
     })
     .filter((s) => s.overlap >= 2)
-    .sort((a, b) => b.overlap - a.overlap)
-    .slice(0, 3);
+    .sort((a, b) => b.overlap - a.overlap);
+  const seenIds = new Set<string>();
+  const scored: { c: ProblemRow; similarity?: number }[] = [];
+  for (const m of byMeaning) {
+    if (seenIds.has(m.problem.id)) continue;
+    seenIds.add(m.problem.id);
+    scored.push({ c: m.problem, similarity: Number(m.score.toFixed(3)) });
+  }
+  for (const l of lexical) {
+    if (seenIds.has(l.c.id)) continue;
+    seenIds.add(l.c.id);
+    scored.push({ c: l.c });
+  }
+  scored.splice(3);
 
   /**
    * A miss is counted, and only counted. It does not publish: no problem row, no page at
@@ -649,23 +728,44 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
    * had no first step. The headline is shown on the unanswered list once a second ask
    * lands on it; the sample is for whoever prepares the answer and is never rendered.
    */
-  const remember = async (verdict: "none" | "similar") =>
-    probe
-      ? 0
-      : await recordAsk(db, {
-          fingerprint: print,
-          fpVersion: FINGERPRINT_VERSION,
-          headline: titleFrom(clean).slice(0, 140),
-          sample: clean.slice(0, XP_LIMITS.askSampleCharacters),
-          environments: formatEnvironment(asking),
-          verdict,
-          kind,
-          now,
-        });
+  const remember = async (verdict: "none" | "similar") => {
+    if (probe) return 0;
+    // An ask that means the same as one already waiting — in another language, in other
+    // words — counts on that one rather than opening a second. The first asker's text
+    // stays as the headline.
+    let key = print;
+    if (vector) {
+      for (const near of await neighbours(vector, "ask", 3)) {
+        if (near.score < THRESHOLDS.similar) break;
+        const other = await askByFingerprint(db, near.ref);
+        if (other && sameProblem(kind, near.score, clean, other.sample)) {
+          key = near.ref;
+          break;
+        }
+      }
+    }
+    const count = await recordAsk(db, {
+      fingerprint: key,
+      fpVersion: FINGERPRINT_VERSION,
+      headline: titleFrom(clean).slice(0, 140),
+      sample: clean.slice(0, XP_LIMITS.askSampleCharacters),
+      environments: formatEnvironment(asking),
+      verdict,
+      kind,
+      now,
+    });
+    if (key === print && vector && (await indexAsk(print, vector, kind))) {
+      await markEmbedded(db, "asks", print, now);
+    }
+    return count;
+  };
 
   if (scored.length > 0) {
     const related = await Promise.all(
-      scored.map(({ c }) => describeProblem(db, c, asking, now, nonce, true)),
+      scored.map(async ({ c, similarity }) => ({
+        ...(await describeProblem(db, c, asking, now, nonce, true)),
+        ...(similarity !== undefined ? { matchedBy: "meaning", similarity } : { matchedBy: "words" }),
+      })),
     );
     const asked = await remember("similar");
     return {
@@ -679,6 +779,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
           "No agent has recorded your exact error. These are different problems that share vocabulary with yours — compare sampleSeen against your own error before believing any of it.",
         yourEnvironment: formatEnvironment(asking),
         fingerprint: print,
+        ...(nearestSimilarity !== null ? { nearestSimilarity } : {}),
         ...(library ? { library } : {}),
         candidates: related,
         recorded: probe ? false : "unanswered",
@@ -697,6 +798,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
       match: "none",
       kind,
       fingerprint: print,
+      ...(nearestSimilarity !== null ? { nearestSimilarity } : {}),
       // Nothing is invented to fill the silence: a near-miss dressed as an answer costs
       // the reader a whole turn to discover it was wrong.
       worked: [],
@@ -810,6 +912,11 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
           now,
         });
         await foldAskIntoProblem(db, ownPrint, problem.id);
+        const vector = await embed(ownClean);
+        if (vector) {
+          await indexProblem(problem.id, vector, classify(ownClean), ownPrint.slice(0, 8));
+          await forget([{ type: "ask", ref: ownPrint }]);
+        }
         linked = true;
       }
     }
@@ -886,6 +993,21 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
       now,
     });
     waiting = await foldAskIntoProblem(db, print, id);
+    // Into the meaning index, and gather the asks that meant the same in other words.
+    const vector = await embed(safeText);
+    if (vector) {
+      const kindOf = classify(safeText);
+      if (await indexProblem(id, vector, kindOf)) await markEmbedded(db, "problems", id, now);
+      const folded: string[] = [print];
+      for (const near of await neighbours(vector, "ask", 5)) {
+        if (near.score < THRESHOLDS.similar || near.ref === print) continue;
+        const ask = await askByFingerprint(db, near.ref);
+        if (!ask || !sameProblem(kindOf, near.score, safeText, ask.sample)) continue;
+        waiting += await foldAskIntoProblem(db, near.ref, id);
+        folded.push(near.ref);
+      }
+      await forget(folded.map((ref) => ({ type: "ask" as const, ref })));
+    }
     problem = await problemById(db, id);
   }
   if (!problem) return fail(500, "could not record the problem");

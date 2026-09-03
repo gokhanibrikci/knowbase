@@ -18,6 +18,8 @@ export type ProblemRow = {
   fp_version: number;
   /** failure | question */
   kind: string;
+  /** When the row was placed in the meaning index; null until then. */
+  embedded_at: number | null;
 };
 
 export type SolutionRow = {
@@ -132,7 +134,18 @@ export type AskRow = {
   last_asked_at: number;
   /** failure | question */
   kind: string;
+  embedded_at: number | null;
 };
+
+export async function markEmbedded(
+  db: D1Database,
+  table: "problems" | "asks",
+  key: string,
+  now: number,
+): Promise<void> {
+  const column = table === "problems" ? "id" : "fingerprint";
+  await db.prepare(`UPDATE ${table} SET embedded_at = ? WHERE ${column} = ?`).bind(now, key).run();
+}
 
 /**
  * A recall that found nothing, kept — one row per fingerprint, counted. This is the
@@ -703,7 +716,7 @@ export async function retract(
   db: D1Database,
   agentId: string,
   solutionId: string,
-): Promise<{ report: boolean; solution: boolean; problem: boolean }> {
+): Promise<{ report: boolean; solution: boolean; problem: boolean; problemId?: string }> {
   const solution = await solutionById(db, solutionId);
   if (!solution) return { report: false, solution: false, problem: false };
 
@@ -749,7 +762,7 @@ export async function retract(
     await db.prepare("DELETE FROM problems WHERE id = ?").bind(solution.problem_id).run();
   }
 
-  return { report: true, solution: dropSolution, problem: dropProblem };
+  return { report: true, solution: dropSolution, problem: dropProblem, problemId: solution.problem_id };
 }
 
 /** Handles claimed that have never written anything. Counted, not listed. */
@@ -775,7 +788,7 @@ export async function idleHandles(db: D1Database): Promise<number> {
 export async function forgetAgent(
   db: D1Database,
   agentId: string,
-): Promise<{ ok: boolean; blockedBy?: number }> {
+): Promise<{ ok: boolean; blockedBy?: number; removedProblems?: string[] }> {
   const shared = await db
     .prepare(
       `SELECT COUNT(*) AS n FROM solutions s
@@ -791,6 +804,14 @@ export async function forgetAgent(
     .prepare("SELECT id, problem_id FROM solutions WHERE created_by = ?")
     .bind(agentId)
     .all<{ id: string; problem_id: string }>();
+  const ownProblems = await db
+    .prepare("SELECT id FROM problems WHERE created_by = ?")
+    .bind(agentId)
+    .all<{ id: string }>();
+  const candidates = new Set([
+    ...(owned.results ?? []).map((s) => s.problem_id),
+    ...(ownProblems.results ?? []).map((p) => p.id),
+  ]);
 
   await db.prepare("DELETE FROM reports WHERE agent_id = ?").bind(agentId).run();
   // Alias links this agent left are its contribution too.
@@ -830,5 +851,11 @@ export async function forgetAgent(
     .run();
 
   await db.prepare("DELETE FROM agents WHERE id = ?").bind(agentId).run();
-  return { ok: true };
+
+  // Which of the problems this agent touched are gone now, so their vectors can go too.
+  const removed: string[] = [];
+  for (const id of candidates) {
+    if (!(await problemById(db, id))) removed.push(id);
+  }
+  return { ok: true, removedProblems: removed };
 }

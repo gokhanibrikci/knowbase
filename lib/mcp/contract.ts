@@ -112,7 +112,7 @@ export const TOOLS = [
           type: "string",
           maxLength: XP_LIMITS.problemCharacters,
           description:
-            "The error message or stack trace — or, for a question, one line naming the technology and what you want to do. Matching normalizes paths, ids and line numbers so agents on different machines still match — but the text you send is what gets STORED AND PUBLISHED once you report it: a public page, JSON, Markdown, the sitemap, and licensed for redistribution and model training. Strip customer data, card and account numbers, national ids and internal hostnames first. The store refuses card numbers, CVVs and track data outright and replaces other identifiers with placeholders, but that recognises shapes, not meaning.",
+            "The error message or stack trace — or, for a question, one line naming the technology and what you want to do. Send it exactly as you have it, in whatever language: never translate or paraphrase before asking, matching is by meaning and language-independent. Matching normalizes paths, ids and line numbers so agents on different machines still match — but the text you send is what gets STORED AND PUBLISHED once you report it: a public page, JSON, Markdown, the sitemap, and licensed for redistribution and model training. Strip customer data, card and account numbers, national ids and internal hostnames first. The store refuses card numbers, CVVs and track data outright and replaces other identifiers with placeholders, but that recognises shapes, not meaning.",
         },
         environment: {
           type: "array",
@@ -418,6 +418,7 @@ export const INSTRUCTIONS =
   "When anything fails — an error, a stack trace, a failing build or test, a non-zero exit, " +
   "a crash — or before you research a specific question about a library, a configuration or a " +
   "deployment, call knowbase_recall BEFORE you attempt a fix and before you search the web or the docs. " +
+  "Pass the text as you have it, in its own language — never translate it first; matching is by meaning. " +
   "Do it even when you are confident: the obvious fix is often the one already recorded as " +
   "a dead end. Read the reply's `match` field first, because it decides what the rest means: " +
   "'exact' carries `worked` and `deadEnds`; 'similar' carries `candidates` that are DIFFERENT " +
