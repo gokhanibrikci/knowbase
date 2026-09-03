@@ -1,10 +1,23 @@
-import { absoluteUrl, site } from "@/lib/site";
+import { absoluteUrl, isPrivate, orgName, site } from "@/lib/site";
 
 /**
  * The declarative contract shared by the MCP runtime, discovery documents and
  * human-facing agent documentation. Keep operational tool handlers out of this
  * module: scripts/build-content.ts imports it before the generated corpus exists.
  */
+
+/**
+ * The one sentence that differs between a public and a private deployment: where what an
+ * agent reports ends up. Tool definitions are built per request so the sentence is right
+ * for the deployment that serves them.
+ */
+const PUBLICATION_NOTE_SLOT = "__PUBLICATION__";
+
+export function publicationNote(priv: boolean): string {
+  return priv
+    ? `What you send is stored inside ${orgName()}'s private knowbase and is never published or licensed outward; it is still visible to every agent in the organisation, so it must not carry customer data or credentials.`
+    : "The text you send is what gets STORED AND PUBLISHED once you report it: a public page, JSON, Markdown, the sitemap, and licensed for redistribution and model training.";
+}
 
 export const MCP_PROTOCOL = {
   modernVersion: "2026-07-28",
@@ -112,7 +125,7 @@ export const TOOLS = [
           type: "string",
           maxLength: XP_LIMITS.problemCharacters,
           description:
-            "The error message or stack trace — or, for a question, one line naming the technology and what you want to do. Send it exactly as you have it, in whatever language: never translate or paraphrase before asking, matching is by meaning and language-independent. Matching normalizes paths, ids and line numbers so agents on different machines still match — but the text you send is what gets STORED AND PUBLISHED once you report it: a public page, JSON, Markdown, the sitemap, and licensed for redistribution and model training. Strip customer data, card and account numbers, national ids and internal hostnames first. The store refuses card numbers, CVVs and track data outright and replaces other identifiers with placeholders, but that recognises shapes, not meaning.",
+            "The error message or stack trace — or, for a question, one line naming the technology and what you want to do. Send it exactly as you have it, in whatever language: never translate or paraphrase before asking, matching is by meaning and language-independent. Matching normalizes paths, ids and line numbers so agents on different machines still match. " + PUBLICATION_NOTE_SLOT + " Strip customer data, card and account numbers, national ids and internal hostnames first. The store refuses card numbers, CVVs and track data outright and replaces other identifiers with placeholders, but that recognises shapes, not meaning.",
         },
         environment: {
           type: "array",
@@ -604,4 +617,23 @@ export function buildServerCard() {
 
 export function serializeDiscoveryDocument(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+/** The tool definitions as this deployment should serve them. */
+export function toolDefinitions(priv: boolean = isPrivate()): ToolDefinition[] {
+  const note = publicationNote(priv);
+  return TOOLS.map((tool) => ({
+    ...tool,
+    inputSchema: JSON.parse(JSON.stringify(tool.inputSchema).split(PUBLICATION_NOTE_SLOT).join(note.replace(/"/g, '\\"'))),
+  }));
+}
+
+/** The server instructions as this deployment should serve them. */
+export function instructionsFor(priv: boolean = isPrivate()): string {
+  return priv
+    ? INSTRUCTIONS.replace(
+        "Reporting needs a handle; reading needs nothing.",
+        `This knowbase is private to ${orgName()}: nothing reported is ever published, and both reading and reporting need the organisation's secret, which the installer binds into your connection.`,
+      )
+    : INSTRUCTIONS;
 }

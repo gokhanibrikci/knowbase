@@ -1,5 +1,5 @@
 import { SCHEMA_VERSION } from "@/lib/ko/serialize";
-import { absoluteUrl, site } from "@/lib/site";
+import { absoluteUrl, isPrivate, site } from "@/lib/site";
 import {
   xpForgetMe,
   xpRecall,
@@ -47,7 +47,13 @@ function bearerSecret(request: Request): string | null {
 
 function respond(status: number, body: Record<string, unknown>) {
   return Response.json(
-    { schemaVersion: SCHEMA_VERSION, ...body, license: "CC-BY-SA-4.0", source: site.url },
+    {
+      schemaVersion: SCHEMA_VERSION,
+      ...body,
+      // A private deployment grants no licence: what is written stays where it was written.
+      ...(isPrivate() ? { scope: "private" } : { license: "CC-BY-SA-4.0" }),
+      source: site.url,
+    },
     { status, headers: CORS },
   );
 }
@@ -82,7 +88,13 @@ export async function GET(request: Request) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const result = await xpRecall({ problem, environment: env, probe: isProbe(request) });
+  const bearer = bearerSecret(request);
+  const result = await xpRecall({
+    problem,
+    environment: env,
+    probe: isProbe(request),
+    ...(bearer ? { agentSecret: bearer } : {}),
+  });
   return respond(result.httpStatus, result.ok ? result.body : { ...result.body, usage: USAGE });
 }
 

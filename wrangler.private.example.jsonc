@@ -1,0 +1,42 @@
+{
+  // A private knowbase for one organisation, deployed into that organisation's own
+  // Cloudflare account. Copy to wrangler.private.jsonc (git-ignored), fill in the
+  // placeholders, create the resources, then:
+  //
+  //   npx wrangler d1 create knowbase-private          → paste database_id below
+  //   npx wrangler d1 migrations apply knowbase-private --remote --config wrangler.private.jsonc
+  //   npx wrangler vectorize create knowbase-private-semantic --dimensions=1024 --metric=cosine
+  //   npx wrangler vectorize create-metadata-index knowbase-private-semantic --property-name=type --type=string
+  //   npm run cf:deploy:private
+  //
+  // Then connect every developer's agents with:
+  //   KNOWBASE_BASE=https://knowbase.example.internal node ~/.knowbase.mjs --connect --with-hook
+  // and put Cloudflare Access (or any OIDC) in front of the domain, so the endpoint is
+  // reachable only by the organisation.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "knowbase-private",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-08-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "routes": [{ "pattern": "knowbase.example.internal", "custom_domain": true }],
+  "observability": { "enabled": true },
+  "vars": {
+    "PRIVATE": "1",
+    "KNOWBASE_ORG": "Example Ltd",
+    "NEXT_PUBLIC_SITE_URL": "https://knowbase.example.internal"
+  },
+  "ai": { "binding": "AI" },
+  "vectorize": [{ "binding": "SEMANTIC", "index_name": "knowbase-private-semantic" }],
+  "d1_databases": [
+    {
+      "binding": "STORE_DB",
+      "database_name": "knowbase-private",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "QUERY_LOG", "dataset": "knowbase_private_queries" },
+    { "binding": "REPORT_LOG", "dataset": "knowbase_private_reports" }
+  ]
+}

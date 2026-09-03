@@ -1,7 +1,7 @@
 import type { MetadataRoute } from "next";
 
 import { getAllKnowledgeObjects } from "@/lib/ko/store";
-import { absoluteUrl } from "@/lib/site";
+import { absoluteUrl, isPrivate } from "@/lib/site";
 import { recentProblems, storeDb } from "@/lib/xp/store";
 
 /**
@@ -15,6 +15,7 @@ import { recentProblems, storeDb } from "@/lib/xp/store";
 export const dynamic = "force-dynamic";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  if (isPrivate()) return [];
   const objects = getAllKnowledgeObjects();
   const domains = [...new Set(objects.map((ko) => ko.domain))];
 

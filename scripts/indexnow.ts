@@ -37,6 +37,10 @@ async function recordedFailures(): Promise<string[]> {
 }
 
 async function main() {
+  if (process.env.PRIVATE === "1") {
+    console.log("private deployment: nothing is submitted to search engines");
+    return;
+  }
   const slug = process.argv.slice(2).find((a) => !a.startsWith("-"));
   const objects = loadFromDisk();
 

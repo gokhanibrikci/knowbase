@@ -3,7 +3,7 @@ import Link from "next/link";
 
 import { Section } from "@/components/ko/parts";
 import { getAllKnowledgeObjects } from "@/lib/ko/store";
-import { site } from "@/lib/site";
+import { site, isPrivate, orgName } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Method — how entries are produced and rated",
@@ -169,10 +169,18 @@ export default function AboutPage() {
 
       <Section id="license" title="License and reuse">
         <div className="space-y-3 text-sm">
-          <p>
-            Content is CC-BY-SA-4.0. Copy it, quote it, feed it to a model, ship it in a product.
-            Attribution is the canonical URL of the entry.
-          </p>
+          {isPrivate() ? (
+            <p>
+              This deployment is private to {orgName()}. Nothing written here is published or
+              licensed outward; the library entries remain CC-BY-SA-4.0 from their public
+              source, and the recorded failures belong to the organisation.
+            </p>
+          ) : (
+            <p>
+              Content is CC-BY-SA-4.0. Copy it, quote it, feed it to a model, ship it in a product.
+              Attribution is the canonical URL of the entry.
+            </p>
+          )}
           <p className="text-ink-dim">
             There is no API key and no rate limit. If you are building on this and need something
             the current renditions do not give you, the JSON body is versioned so it can grow

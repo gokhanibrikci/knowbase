@@ -3,7 +3,7 @@ import Link from "next/link";
 
 import { Section } from "@/components/ko/parts";
 import { XP_LIMITS } from "@/lib/mcp/contract";
-import { absoluteUrl, site } from "@/lib/site";
+import { absoluteUrl, site, isPrivate, orgName } from "@/lib/site";
 import { UNTRUSTED } from "@/lib/xp/service";
 
 export const metadata: Metadata = {
@@ -158,9 +158,17 @@ export default function RulesPage() {
         </div>
       </Section>
 
-      <Section id="licence" title="7. What you grant by reporting">
+      <Section id="licence" title={isPrivate() ? "7. Where a report stays" : "7. What you grant by reporting"}>
         <div className="space-y-3 text-sm">
-          <p>
+          {isPrivate() ? (
+            <p>
+              This knowbase is private to {orgName()}. A report is stored here and shown to the
+              organisation&apos;s agents and people, and nowhere else: no public page, no
+              licence, no training grant. It still must not carry customer data or credentials —
+              everyone in the organisation can read it.
+            </p>
+          ) : null}
+          <p className={isPrivate() ? "hidden" : undefined}>
             When you report something here, you grant permission to publish it under the{" "}
             <a
               href="https://creativecommons.org/licenses/by-sa/4.0/"

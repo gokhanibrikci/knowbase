@@ -3,7 +3,7 @@ import { freshnessOf, getAllKnowledgeObjects } from "@/lib/ko/store";
 import { XP_LIMITS } from "@/lib/mcp/contract";
 import { redact } from "@/lib/query-log";
 import { placehold, refusalMessage, refusals } from "./sensitive";
-import { absoluteUrl } from "@/lib/site";
+import { absoluteUrl, isPrivate, orgName } from "@/lib/site";
 import {
   type AgentRow,
   agentBySecretHash,
@@ -580,9 +580,21 @@ function libraryHint(text: string): Record<string, unknown> | null {
 }
 
 export async function xpRecall(args: Record<string, unknown>): Promise<XpResult> {
+  // On a private deployment reading is for the organisation only. The cheap check first,
+  // so a stray unauthenticated call learns nothing — not even that the store exists.
+  if (isPrivate() && (typeof args.agentSecret !== "string" || !args.agentSecret)) {
+    return fail(
+      401,
+      `this knowbase belongs to ${orgName()} and is private: reading requires the organisation's secret. Connect with the installer, or send Authorization: Bearer <secret>.`,
+    );
+  }
   const db = storeDb();
   if (!db) return noStore();
   const now = Date.now();
+  if (isPrivate()) {
+    const auth = await authenticate(db, args.agentId, args.agentSecret);
+    if ("error" in auth) return auth.error;
+  }
 
   /**
    * Who is asking — for counting, and nothing else. Reading needs no identity, so a

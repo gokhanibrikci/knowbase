@@ -60,6 +60,9 @@ jobs:
       - name: Nothing credential-shaped survives to publication
         run: npm run eval:redaction
 
+      - name: A private deployment publishes nothing
+        run: npm run eval:private
+
       # The offline evals attack pure functions and never see SQL, a status code or a
       # wire format. A misplaced ESCAPE clause once made every miss return 500 and went
       # unnoticed because the exact-match path returns before reaching that query. This

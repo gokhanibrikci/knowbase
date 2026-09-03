@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono } from "next/font/google";
 
-import { site } from "@/lib/site";
+import { site, isPrivate } from "@/lib/site";
 
 import "./globals.css";
 
@@ -39,14 +39,17 @@ export const metadata: Metadata = {
    * Copilot citation depth and answer quality. The inverse has to be stated on the
    * generic directive, not only for Googlebot — Bing and the rest read this one.
    */
-  robots: {
-    index: true,
-    follow: true,
-    "max-snippet": -1,
-    "max-image-preview": "large",
-    "max-video-preview": -1,
-    googleBot: { index: true, follow: true, "max-snippet": -1 },
-  },
+  // A private deployment is not indexed by anything; robots.ts says the same to crawlers.
+  robots: isPrivate()
+    ? { index: false, follow: false, googleBot: { index: false, follow: false } }
+    : {
+        index: true,
+        follow: true,
+        "max-snippet": -1,
+        "max-image-preview": "large",
+        "max-video-preview": -1,
+        googleBot: { index: true, follow: true, "max-snippet": -1 },
+      },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

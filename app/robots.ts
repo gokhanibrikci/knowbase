@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 
-import { site } from "@/lib/site";
+import { isPrivate, site } from "@/lib/site";
 
 /**
  * Everything is open. The entire premise of the project is that agents find these
@@ -43,6 +43,10 @@ const CONTENT_SIGNAL = "search=yes, ai-input=yes, ai-train=yes";
 const LICENSE_URL = `${site.url}/license.xml`;
 
 export default function robots(): MetadataRoute.Robots {
+  // A private deployment is not a website. Nothing here is for a crawler.
+  if (isPrivate()) {
+    return { rules: [{ userAgent: "*", disallow: "/" }], host: site.url };
+  }
   return {
     rules: [
       {

@@ -1,6 +1,6 @@
 import { getAllKnowledgeObjects, freshnessOf } from "@/lib/ko/store";
 import { MCP_PROTOCOL, TOOLS } from "@/lib/mcp/contract";
-import { absoluteUrl, site } from "@/lib/site";
+import { absoluteUrl, site, isPrivate, orgName } from "@/lib/site";
 
 /**
  * llms.txt — a single entry point that tells a model what is here and how to fetch
@@ -112,7 +112,7 @@ export function GET() {
     `Both protocol eras are supported — per-request metadata (${MCP_PROTOCOL.modernVersion}) and the`,
     `older initialize handshake (${MCP_PROTOCOL.legacyVersions.join(", ")}).`,
     "",
-    "License: CC-BY-SA-4.0. Attribution is the canonical URL of the entry.",
+    isPrivate() ? `Private deployment for ${orgName()}: nothing here is published or licensed outward.` : "License: CC-BY-SA-4.0. Attribution is the canonical URL of the entry.",
     "",
   );
 

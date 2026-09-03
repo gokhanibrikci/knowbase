@@ -1,6 +1,6 @@
 import { toMarkdown } from "@/lib/ko/serialize";
 import { getAllKnowledgeObjects } from "@/lib/ko/store";
-import { site } from "@/lib/site";
+import { site, isPrivate, orgName } from "@/lib/site";
 
 /**
  * The whole corpus in one response, so a model can ingest everything in a single
@@ -16,7 +16,7 @@ export function GET() {
     "",
     site.description,
     "",
-    `${objects.length} knowledge objects. License CC-BY-SA-4.0; attribute the canonical URL of each entry.`,
+    `${objects.length} knowledge objects. ${isPrivate() ? `Private deployment for ${orgName()}.` : "License CC-BY-SA-4.0; attribute the canonical URL of each entry."}`,
     "",
     "---",
     "",

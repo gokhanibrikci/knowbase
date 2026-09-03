@@ -41,6 +41,11 @@
       "database_id": "6099e28b-8a2a-43eb-b3d7-d142eb2ea7d6"
     }
   ],
+  // PRIVATE=1 turns this into one organisation's private knowbase: nothing is published,
+  // reading needs the organisation's secret, and the rule says so. Set it here AND in the
+  // shell that builds (pages are prerendered). KNOWBASE_ORG names the organisation in
+  // the sentences that say where data stays. See wrangler.private.example.jsonc.
+  "vars": { "PRIVATE": "0", "KNOWBASE_ORG": "" },
   // The meaning index. A fingerprint joins two agents who pasted the same error; it cannot
   // join Turkish with English, or two phrasings of one question. Every problem and every
   // unanswered ask is also embedded (multilingual, bge-m3) and a recall that misses by key

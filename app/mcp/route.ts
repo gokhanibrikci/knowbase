@@ -1,13 +1,13 @@
 import {
-  INSTRUCTIONS,
   MCP_CACHE_HINT,
   MCP_META_KEYS,
   MCP_PROTOCOL,
   MCP_SERVER_CAPABILITIES,
   MCP_SERVER_INFO,
   MCP_SUPPORTED_VERSIONS,
-  TOOLS,
+  instructionsFor,
   isToolName,
+  toolDefinitions,
 } from "@/lib/mcp/contract";
 import { callTool } from "@/lib/mcp/tools";
 import { site } from "@/lib/site";
@@ -116,14 +116,17 @@ async function toolResult(name: string, args: Record<string, unknown>, userAgent
   };
 }
 
-const TOOL_LIST = {
-  tools: TOOLS.map((t) => ({
-    name: t.name,
-    title: t.title,
-    description: t.description,
-    inputSchema: t.inputSchema,
-  })),
-};
+/** Built per request: the publication sentence depends on whether this deployment is private. */
+function toolList() {
+  return {
+    tools: toolDefinitions().map((t) => ({
+      name: t.name,
+      title: t.title,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    })),
+  };
+}
 
 export async function POST(request: Request) {
   let message: {
@@ -253,7 +256,7 @@ export async function POST(request: Request) {
       return modernOk(id, {
         supportedVersions: MCP_SUPPORTED_VERSIONS,
         capabilities: MCP_SERVER_CAPABILITIES,
-        instructions: INSTRUCTIONS,
+        instructions: instructionsFor(),
         ...MCP_CACHE_HINT,
         _meta: { [MCP_META_KEYS.serverInfo]: MCP_SERVER_INFO },
       });
@@ -262,7 +265,7 @@ export async function POST(request: Request) {
     if (method === "ping") return modernOk(id, {});
 
     if (method === "tools/list") {
-      return modernOk(id, { ...TOOL_LIST, ...MCP_CACHE_HINT });
+      return modernOk(id, { ...toolList(), ...MCP_CACHE_HINT });
     }
 
     if (method === "tools/call") {
@@ -308,7 +311,7 @@ export async function POST(request: Request) {
       protocolVersion: negotiated,
       capabilities: MCP_SERVER_CAPABILITIES,
       serverInfo: MCP_SERVER_INFO,
-      instructions: INSTRUCTIONS,
+      instructions: instructionsFor(),
     });
   }
 
@@ -318,7 +321,7 @@ export async function POST(request: Request) {
 
   if (method === "ping") return ok(id, {});
 
-  if (method === "tools/list") return ok(id, TOOL_LIST);
+  if (method === "tools/list") return ok(id, toolList());
 
   if (method === "tools/call") {
     const name = typeof params.name === "string" ? params.name : "";

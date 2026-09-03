@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { Section, Tag } from "@/components/ko/parts";
-import { absoluteUrl, site } from "@/lib/site";
+import { absoluteUrl, site, isPrivate } from "@/lib/site";
 import { looksLikeInstructions } from "@/lib/xp/fence";
 import { parseEnvironment } from "@/lib/xp/fingerprint";
 import { type Report, rank, summarize } from "@/lib/xp/standing";
@@ -137,10 +137,12 @@ export default async function ProblemPage({ params }: Props) {
 
   return (
     <div className="pt-6">
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
-      />
+      {isPrivate() ? null : (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+      )}
       <nav aria-label="Breadcrumb" className="text-xs text-ink-dim">
         <Link href="/experience" className="hover:text-accent">
           experience

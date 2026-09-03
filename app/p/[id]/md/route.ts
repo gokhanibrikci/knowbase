@@ -1,4 +1,4 @@
-import { absoluteUrl, site } from "@/lib/site";
+import { absoluteUrl, site, isPrivate, orgName } from "@/lib/site";
 import { parseEnvironment } from "@/lib/xp/fingerprint";
 import { type Report, rank, summarize } from "@/lib/xp/standing";
 import { problemById, reportsFor, solutionsFor, storeDb } from "@/lib/xp/store";
@@ -108,7 +108,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     `- Paste-in instructions: ${absoluteUrl("/protocol.md")}`,
     "",
     `---`,
-    `${site.name} · ${absoluteUrl(`/p/${problem.id}`)} · CC-BY-SA-4.0`,
+    `${site.name} · ${absoluteUrl(`/p/${problem.id}`)} · ${isPrivate() ? `private to ${orgName()}` : "CC-BY-SA-4.0"}`,
     "",
   );
 

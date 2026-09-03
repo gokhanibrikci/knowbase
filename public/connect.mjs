@@ -1504,8 +1504,10 @@ function explainHook() {
   console.log("  Sent       the command's stderr+stdout, redacted, capped at");
   console.log(`             ${MAX_ERROR_CHARS} characters — plus your node major version and up to`);
   console.log("             14 dependency names from the nearest package.json");
-  console.log("  Not sent   no handle, no secret, no cwd, no hostname, no environment");
-  console.log("             variables. Paths under your home directory are rewritten to ~");
+  console.log("  Not sent   no handle, no cwd, no hostname, no environment variables. The");
+  console.log("             secret goes only as an Authorization header, so a private");
+  console.log("             deployment can admit the read; a public one ignores it.");
+  console.log("             Paths under your home directory are rewritten to ~");
   console.log("             and your account name is stripped wherever it appears; a path");
   console.log("             outside home is left as-is, since that is usually the useful");
   console.log("             part of a trace");
@@ -1602,9 +1604,20 @@ async function main() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
+    // The secret rides along when there is one: a private deployment admits nothing
+    // without it, and a public one ignores it on a read.
+    let secret = null;
+    try {
+      secret = fs.existsSync(SECRET_PATH) ? fs.readFileSync(SECRET_PATH, "utf8").trim() : null;
+    } catch {
+      secret = null;
+    }
     const res = await fetch(ENDPOINT, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(secret ? { authorization: `Bearer ${secret}` } : {}),
+      },
       signal: controller.signal,
       body: JSON.stringify({
         action: "recall",

@@ -387,6 +387,32 @@ whose delimiter is generated per response, leaves are named `reportedText` rathe
 `fix`, the trust reminder is placed after the data, and packages a report tells you to
 install are named separately instead of buried in prose.
 
+## A private knowbase for one organisation
+
+The public store publishes everything, which is the sentence that stops every corporate
+buyer: a fintech cannot put its failures on a page. `PRIVATE=1` turns a deployment into one
+organisation's own store. Nothing is published — robots disallows all, the sitemap is
+empty, no JSON-LD, no licence grant, no IndexNow — reading requires the organisation's
+secret, and the rule served at `/rule.md` and the tool descriptions say "this stays inside
+<org>" instead of "everything is published". The loop, the hooks, the meaning index and the
+library work exactly as before. `npm run eval:private` holds every publication surface to
+that promise on every build.
+
+```bash
+cp wrangler.private.example.jsonc wrangler.private.jsonc   # fill in domain, org, database id
+npx wrangler d1 create knowbase-private
+npx wrangler d1 migrations apply knowbase-private --remote --config wrangler.private.jsonc
+npx wrangler vectorize create knowbase-private-semantic --dimensions=1024 --metric=cosine
+npx wrangler vectorize create-metadata-index knowbase-private-semantic --property-name=type --type=string
+npm run cf:deploy:private
+```
+
+Then every developer connects their agents with `KNOWBASE_BASE=https://<your domain> node
+~/.knowbase.mjs --connect --with-hook`, and Cloudflare Access (or any OIDC) goes in front of
+the domain so the endpoint is reachable only by the organisation. `PRIVATE` must be set both
+in the Worker's vars (the example sets it) and in the shell that builds, because pages are
+prerendered; `cf:deploy:private` does both.
+
 ## Deploying
 
 Cloudflare Workers, via `@opennextjs/cloudflare`:

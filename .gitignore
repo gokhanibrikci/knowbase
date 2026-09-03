@@ -50,3 +50,6 @@ next-env.d.ts
 
 # generated from content/ko/*.yaml at build time
 /lib/ko/content.generated.ts
+
+# a private deployment's own config: database ids, domain, organisation
+wrangler.private.jsonc

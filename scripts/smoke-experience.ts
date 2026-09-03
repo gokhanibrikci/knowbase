@@ -15,6 +15,8 @@
  * weekly in CI, and a smoke test that leaves a fabricated failure in the store every
  * Monday would poison the one thing the store is for.
  */
+export {};
+
 const BASE = (process.env.BASE ?? "https://knowbase.sh").replace(/\/$/, "");
 const PROBE = { "x-knowbase-probe": "smoke" } as const;
 
