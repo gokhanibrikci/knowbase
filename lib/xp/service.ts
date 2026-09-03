@@ -3,7 +3,7 @@ import { freshnessOf, getAllKnowledgeObjects } from "@/lib/ko/store";
 import { XP_LIMITS } from "@/lib/mcp/contract";
 import { redact } from "@/lib/query-log";
 import { placehold, refusalMessage, refusals } from "./sensitive";
-import { absoluteUrl, isPrivate, orgName } from "@/lib/site";
+import { absoluteUrl, enrolToken, isPrivate, orgName } from "@/lib/site";
 import {
   type AgentRow,
   agentBySecretHash,
@@ -336,8 +336,35 @@ function safeJson(raw: string): unknown {
  * has to be countable. Without a stable writer, a confirmation count is theatre.
  */
 export async function xpRegister(args: Record<string, unknown>): Promise<XpResult> {
+  /**
+   * The read gate was defeated by the door beside it: reading needed the organisation's
+   * secret, and anyone who could reach the endpoint could register and be handed one.
+   * On a private deployment a handle needs either an existing member's secret or the
+   * organisation's enrolment token; with no token configured, nobody is enrolled at all.
+   *
+   * The half that needs no lookup is checked before the store is touched, so a stranger
+   * costs the deployment a string comparison.
+   */
+  const priv = isPrivate();
+  const bearer = typeof args.agentSecret === "string" ? args.agentSecret : null;
+  const noToken = `this knowbase is private to ${orgName()} and no enrolment token is configured, so it cannot issue handles. Whoever runs the deployment sets KNOWBASE_ENROL.`;
+  const wrongToken = `claiming a handle on ${orgName()}'s knowbase needs the organisation's enrolment token: send it as "enrol" or in the x-knowbase-enrol header, or register with an existing member's secret.`;
+  const enrolled = () => {
+    const token = enrolToken();
+    if (!token) return noToken;
+    return args.enrol === token ? null : wrongToken;
+  };
+  if (priv && !bearer) {
+    const refusal = enrolled();
+    if (refusal) return fail(403, refusal);
+  }
+
   const db = storeDb();
   if (!db) return noStore();
+  if (priv && bearer && !(await agentBySecretHash(db, await sha256Hex(bearer)))) {
+    const refusal = enrolled();
+    if (refusal) return fail(403, refusal);
+  }
   const now = Date.now();
 
   const handleErr = handleProblem(args.name, () => false);

@@ -1,5 +1,5 @@
 import { ruleMarkdown } from "@/lib/rule";
-import { isPrivate, orgName } from "@/lib/site";
+import { isPrivate, orgName, site } from "@/lib/site";
 
 /**
  * The always-loaded rule, as this deployment should state it. A static file cannot know
@@ -9,11 +9,13 @@ import { isPrivate, orgName } from "@/lib/site";
 export const dynamic = "force-dynamic";
 
 export function GET() {
-  return new Response(ruleMarkdown(isPrivate(), orgName()), {
+  const priv = isPrivate();
+  return new Response(ruleMarkdown(priv, orgName(), site.url), {
     headers: {
       "content-type": "text/markdown; charset=utf-8",
-      "cache-control": "public, max-age=0, s-maxage=300",
-      "access-control-allow-origin": "*",
+      // A private deployment's rule names the organisation and is not for a shared cache.
+      "cache-control": priv ? "private, no-store" : "public, max-age=0, s-maxage=300",
+      ...(priv ? {} : { "access-control-allow-origin": "*" }),
     },
   });
 }

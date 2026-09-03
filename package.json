@@ -23,7 +23,7 @@
     "source": "tsx scripts/read-source.ts",
     "cf:preview": "npm run content && npm run validate && npm run eval:retrieval && npm run eval:agent-contract && npm run eval:resolution-contract && npm run eval:identity && npm run eval:experience && npm run eval:redaction && npm run eval:private && npm run eval:stats && opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "cf:deploy": "npm run content && npm run validate && npm run eval:retrieval && npm run eval:agent-contract && npm run eval:resolution-contract && npm run eval:identity && npm run eval:experience && npm run eval:redaction && npm run eval:private && npm run eval:stats && opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "cf:deploy:private": "PRIVATE=1 npm run content && npm run validate && npm run eval:private && npm run eval:stats && PRIVATE=1 opennextjs-cloudflare build && opennextjs-cloudflare deploy --config wrangler.private.jsonc",
+    "cf:deploy:private": "node scripts/private-origin.mjs && PRIVATE=1 npm run content && npm run validate && npm run eval:private && npm run eval:stats && PRIVATE=1 opennextjs-cloudflare build && opennextjs-cloudflare deploy --config wrangler.private.jsonc",
     "content": "tsx scripts/build-content.ts",
     "predev": "npm run content",
     "prebuild": "npm run content",

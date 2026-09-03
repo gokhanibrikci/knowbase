@@ -3,16 +3,23 @@
   // Cloudflare account. Copy to wrangler.private.jsonc (git-ignored), fill in the
   // placeholders, create the resources, then:
   //
-  //   npx wrangler d1 create knowbase-private          → paste database_id below
+  //   npx wrangler d1 create knowbase-private          → paste database_id below FIRST
   //   npx wrangler d1 migrations apply knowbase-private --remote --config wrangler.private.jsonc
   //   npx wrangler vectorize create knowbase-private-semantic --dimensions=1024 --metric=cosine
   //   npx wrangler vectorize create-metadata-index knowbase-private-semantic --property-name=type --type=string
   //   npm run cf:deploy:private
   //
-  // Then connect every developer's agents with:
-  //   KNOWBASE_BASE=https://knowbase.example.internal node ~/.knowbase.mjs --connect --with-hook
-  // and put Cloudflare Access (or any OIDC) in front of the domain, so the endpoint is
-  // reachable only by the organisation.
+  //   npx wrangler secret put KNOWBASE_ENROL --config wrangler.private.jsonc
+  //
+  // KNOWBASE_ENROL is the one token that lets a developer claim a handle here; without it
+  // the deployment issues none. Distribute it the way you distribute any build secret:
+  //   KNOWBASE_ENROL=<token> KNOWBASE_BASE=https://knowbase.example.internal \
+  //     node ~/.knowbase.mjs --connect --with-hook
+  //
+  // PRIVATE_SITE is left unset on purpose: the browsable pages are 404 until you put
+  // Cloudflare Access (or any OIDC) in front of the hostname and then set it to "1". The
+  // machine surfaces — /experience.json, /mcp, /stats.json, /p/<id>.md — stay reachable
+  // and check the organisation's secret themselves, which is what the hooks and CI use.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "knowbase-private",
   "main": ".open-next/worker.js",
@@ -25,6 +32,7 @@
     "PRIVATE": "1",
     "KNOWBASE_ORG": "Example Ltd",
     "NEXT_PUBLIC_SITE_URL": "https://knowbase.example.internal"
+    // "PRIVATE_SITE": "1"   ← only once an identity proxy stands in front of the hostname
   },
   "ai": { "binding": "AI" },
   "vectorize": [{ "binding": "SEMANTIC", "index_name": "knowbase-private-semantic" }],

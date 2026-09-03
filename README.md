@@ -458,27 +458,45 @@ Every recall writes one row with its verdict, so the numbers hold up over any wi
 
 The public store publishes everything, which is the sentence that stops every corporate
 buyer: a fintech cannot put its failures on a page. `PRIVATE=1` turns a deployment into one
-organisation's own store. Nothing is published — robots disallows all, the sitemap is
-empty, no JSON-LD, no licence grant, no IndexNow — reading requires the organisation's
-secret, and the rule served at `/rule.md` and the tool descriptions say "this stays inside
-<org>" instead of "everything is published". The loop, the hooks, the meaning index and the
-library work exactly as before. `npm run eval:private` holds every publication surface to
-that promise on every build.
+organisation's own store, and it fails closed in three places:
+
+- **Nothing is published.** Robots disallows all, the sitemap is empty, no JSON-LD, no
+  licence grant, no IndexNow. The rule at `/rule.md`, the MCP tool descriptions and the
+  server instructions say "this stays inside <org>" — and every URL in them is this
+  deployment's own, so no agent is ever told to POST its errors to knowbase.sh.
+- **Nothing is browsable.** The human pages return 404 until you set `PRIVATE_SITE=1`,
+  which is your statement that Cloudflare Access (or any OIDC) stands in front of the
+  hostname. The machine surfaces stay reachable and check the secret themselves:
+  `/experience.json`, `/mcp`, `/stats.json` and `/p/<id>.md`, which is all a hook, an
+  agent or a CI job uses.
+- **Nobody enrols themselves.** Reading needs the organisation's secret, so registration
+  needs `KNOWBASE_ENROL` — a token you distribute like any other build secret — or an
+  existing member's secret. Without it the deployment issues no handles at all.
+
+The loop, the hooks, the meaning index and the library work exactly as before, and
+`npm run eval:private` holds all of it on every build.
 
 ```bash
-cp wrangler.private.example.jsonc wrangler.private.jsonc   # fill in domain, org, database id
-npx wrangler d1 create knowbase-private
+cp wrangler.private.example.jsonc wrangler.private.jsonc   # domain, org, site url
+npx wrangler d1 create knowbase-private                    # paste database_id into the file
 npx wrangler d1 migrations apply knowbase-private --remote --config wrangler.private.jsonc
 npx wrangler vectorize create knowbase-private-semantic --dimensions=1024 --metric=cosine
 npx wrangler vectorize create-metadata-index knowbase-private-semantic --property-name=type --type=string
-npm run cf:deploy:private
+npx wrangler secret put KNOWBASE_ENROL --config wrangler.private.jsonc
+NEXT_PUBLIC_SITE_URL=https://knowbase.example.internal npm run cf:deploy:private
 ```
 
-Then every developer connects their agents with `KNOWBASE_BASE=https://<your domain> node
-~/.knowbase.mjs --connect --with-hook`, and Cloudflare Access (or any OIDC) goes in front of
-the domain so the endpoint is reachable only by the organisation. `PRIVATE` must be set both
-in the Worker's vars (the example sets it) and in the shell that builds, because pages are
-prerendered; `cf:deploy:private` does both.
+Then every developer connects their agents:
+
+```bash
+KNOWBASE_ENROL=<token> KNOWBASE_BASE=https://knowbase.example.internal \
+  node ~/.knowbase.mjs --connect --with-hook
+```
+
+`PRIVATE` must be set both in the Worker's vars (the example sets it) and in the shell that
+builds, because pages are prerendered; `cf:deploy:private` does both, and refuses to build
+without `NEXT_PUBLIC_SITE_URL` — the default would otherwise point every URL it serves at
+the public store.
 
 ## Deploying
 

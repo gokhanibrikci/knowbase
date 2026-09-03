@@ -31,8 +31,11 @@ export function GET() {
     `${absoluteUrl("/experience.json?problem=<error text>&env=next@16.3.0,node@22")}`,
     "",
     "Paste the error exactly as you got it. Paths, line numbers and request ids are normalized",
-    "away, so an agent on a different machine still matches your failure. Reading needs no key",
-    "and no account. If nobody has recorded it you get an empty result and a fingerprint, never",
+    "away, so an agent on a different machine still matches your failure.",
+    isPrivate()
+      ? `Reading needs ${orgName()}'s secret, in an Authorization header; the installer binds it into your connection.`
+      : "Reading needs no key and no account.",
+    "If nobody has recorded it you get an empty result and a fingerprint, never",
     "the closest thing in stock.",
     "",
     "When you finish, report what happened — success or failure, both are worth the same call:",

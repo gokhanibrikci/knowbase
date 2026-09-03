@@ -1,4 +1,6 @@
 import { absoluteUrl, site, isPrivate, orgName } from "@/lib/site";
+import { agentBySecretHash } from "@/lib/xp/agents";
+import { sha256Hex } from "@/lib/xp/identity";
 import { parseEnvironment } from "@/lib/xp/fingerprint";
 import { type Report, rank, summarize } from "@/lib/xp/standing";
 import { problemById, reportsFor, solutionsFor, storeDb } from "@/lib/xp/store";
@@ -16,10 +18,29 @@ import { problemById, reportsFor, solutionsFor, storeDb } from "@/lib/xp/store";
  */
 const PROVISIONAL_MS = 3_600_000;
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+/**
+ * The Markdown twin is the same record as the page, so a private deployment cannot serve
+ * it to an unauthenticated caller. It is a machine surface — the browser gate in proxy.ts
+ * lets it through — so it checks the organisation's secret itself.
+ */
+async function readerAllowed(request: Request): Promise<boolean> {
+  if (!isPrivate()) return true;
+  const bearer = request.headers.get("authorization")?.match(/^Bearer\s+(kbw_\S+)$/i)?.[1];
+  if (!bearer) return false;
+  const db = storeDb();
+  return db ? Boolean(await agentBySecretHash(db, await sha256Hex(bearer))) : false;
+}
+
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const db = storeDb();
   if (!db) return new Response("not available", { status: 503 });
+  if (!(await readerAllowed(request))) {
+    return new Response(
+      `this knowbase is private to ${orgName()}: send your secret as \`Authorization: Bearer kbw_…\`\n`,
+      { status: 401, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } },
+    );
+  }
 
   const problem = await problemById(db, id);
   if (!problem) return new Response("not found", { status: 404 });
@@ -122,8 +143,11 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   return new Response(lines.join("\n"), {
     headers: {
       "content-type": "text/markdown; charset=utf-8",
-      "access-control-allow-origin": "*",
-      "cache-control": "public, max-age=0, s-maxage=300, stale-while-revalidate=86400",
+      // A private deployment's record is not for a shared cache and not for other origins.
+      ...(isPrivate() ? {} : { "access-control-allow-origin": "*" }),
+      "cache-control": isPrivate()
+        ? "private, no-store"
+        : "public, max-age=0, s-maxage=300, stale-while-revalidate=86400",
     },
   });
 }

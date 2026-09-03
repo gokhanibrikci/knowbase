@@ -117,6 +117,10 @@ export async function POST(request: Request) {
   if (isProbe(request)) args.probe = true;
   const bearer = bearerSecret(request);
   if (bearer && typeof args.agentSecret !== "string") args.agentSecret = bearer;
+  // A private deployment's enrolment token may travel as a header, so it never has to be
+  // written into a script's JSON body next to the rest of the arguments.
+  const enrol = request.headers.get("x-knowbase-enrol");
+  if (enrol && typeof args.enrol !== "string") args.enrol = enrol;
   const network =
     request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for") ?? "";
   if (network) args.callerNetwork = network;

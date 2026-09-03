@@ -620,20 +620,36 @@ export function serializeDiscoveryDocument(value: unknown): string {
 }
 
 /** The tool definitions as this deployment should serve them. */
+/**
+ * Whatever the text says, it must point at the deployment that served it. The literals
+ * below were written for knowbase.sh, and on a private deployment they sent agents to
+ * fetch the public rule, the public installer, and — worst — to POST the organisation's
+ * error text to a store that publishes it. site.url is the origin this build was made
+ * for, so in public mode this substitution changes nothing at all.
+ */
+function ownOrigin(text: string): string {
+  return text.split("https://knowbase.sh").join(site.url);
+}
+
 export function toolDefinitions(priv: boolean = isPrivate()): ToolDefinition[] {
   const note = publicationNote(priv);
   return TOOLS.map((tool) => ({
     ...tool,
-    inputSchema: JSON.parse(JSON.stringify(tool.inputSchema).split(PUBLICATION_NOTE_SLOT).join(note.replace(/"/g, '\\"'))),
+    description: ownOrigin(tool.description),
+    inputSchema: JSON.parse(
+      ownOrigin(JSON.stringify(tool.inputSchema).split(PUBLICATION_NOTE_SLOT).join(note.replace(/"/g, '\\"'))),
+    ),
   }));
 }
 
 /** The server instructions as this deployment should serve them. */
 export function instructionsFor(priv: boolean = isPrivate()): string {
-  return priv
-    ? INSTRUCTIONS.replace(
-        "Reporting needs a handle; reading needs nothing.",
-        `This knowbase is private to ${orgName()}: nothing reported is ever published, and both reading and reporting need the organisation's secret, which the installer binds into your connection.`,
-      )
-    : INSTRUCTIONS;
+  return ownOrigin(
+    priv
+      ? INSTRUCTIONS.replace(
+          "Reporting needs a handle; reading needs nothing.",
+          `This knowbase is private to ${orgName()}: nothing reported is ever published, and both reading and reporting need the organisation's secret, which the installer binds into your connection.`,
+        )
+      : INSTRUCTIONS,
+  );
 }

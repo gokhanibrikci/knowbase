@@ -654,10 +654,25 @@ function proposeHandle(argv) {
   return { handle: `agent-${random}`, chosen: false };
 }
 
+/**
+ * A private deployment will not issue a handle to whoever asks: it wants the
+ * organisation's enrolment token, which the team distributes like any other build secret.
+ * It travels as a header so it never lands in a log line beside the request body.
+ */
+function enrolToken(argv = process.argv) {
+  const flag = argv.indexOf("--enrol");
+  if (flag !== -1 && argv[flag + 1]) return argv[flag + 1];
+  return process.env.KNOWBASE_ENROL ?? null;
+}
+
 async function post(body) {
+  const enrol = enrolToken();
   const res = await fetch(ENDPOINT, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(enrol ? { "x-knowbase-enrol": enrol } : {}),
+    },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -702,6 +717,11 @@ async function claimIdentity(argv) {
       fs.writeFileSync(secretPath, `${json.agentSecret}\n`, { mode: 0o600 });
       fs.writeFileSync(handlePath, `${candidate}\n`, { mode: 0o600 });
       return { handle: candidate, wanted, chosen: identity.chosen, taken: candidate !== wanted };
+    }
+    if (status === 403 && !enrolToken()) {
+      return {
+        error: `${json.error ?? "refused"}\n            This looks like a private knowbase. Ask whoever runs it for the\n            enrolment token, then: KNOWBASE_ENROL=<token> node ~/.knowbase.mjs --connect`,
+      };
     }
     if (status !== 409) {
       return { error: json.error ?? `HTTP ${status}` };
