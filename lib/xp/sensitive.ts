@@ -48,10 +48,22 @@ function luhnValid(digits: string): boolean {
 }
 
 /**
- * Card-number candidates: 13 to 19 digits, allowing the spaces and dashes people paste,
- * anchored so a 20-digit id or a long hex run is not mistaken for one.
+ * Card-number candidates: 13 to 19 digits, allowing the spaces and dashes people paste.
+ *
+ * Not preceded by a letter or underscore, because `SMOKE1788434079939` is a timestamp
+ * glued to a word and not a card — that exact string got a legitimate report refused, and
+ * a run of digits inside an identifier is never a pasted card number.
  */
-const PAN_CANDIDATE = /(?<![0-9])(?:[0-9][ -]?){12,18}[0-9](?![0-9])/g;
+const PAN_CANDIDATE = /(?<![0-9A-Za-z_])(?:[0-9][ -]?){12,18}[0-9](?![0-9])/g;
+
+/**
+ * Issuer prefixes, because Luhn on its own is far too weak to accuse anyone with: one in
+ * ten random digit runs passes it, so a trace id, an order number or a concatenated
+ * timestamp would all be refused as payment cards. A real card carries both — the check
+ * digit AND a prefix an issuer was actually assigned.
+ */
+const CARD_PREFIX =
+  /^(?:4|5[1-5]|2(?:22[1-9]|2[3-9][0-9]|[3-6][0-9]{2}|7(?:[01][0-9]|20))|3[47]|3(?:0[0-5]|095|6|[89])|35(?:2[89]|[3-8][0-9])|6(?:011|5|4[4-9]|2)|9792)/;
 
 function panMatches(text: string): string[] {
   const found: string[] = [];
@@ -60,6 +72,7 @@ function panMatches(text: string): string[] {
     if (digits.length < 13 || digits.length > 19) continue;
     // A run of one repeated digit is a placeholder in somebody's fixture, not a card.
     if (/^(\d)\1+$/.test(digits)) continue;
+    if (!CARD_PREFIX.test(digits)) continue;
     if (luhnValid(digits)) found.push(match[0]);
   }
   return found;

@@ -13,6 +13,8 @@ export type ProblemRow = {
   created_by: string;
   created_at: number;
   seen_count: number;
+  /** Distinct agents that have asked about this. The number worth showing. */
+  asker_count: number;
   last_seen_at: number | null;
   /** Which fingerprint rule produced this key; lets a later rule recompute and merge. */
   fp_version: number;
@@ -108,15 +110,56 @@ export async function insertProblem(
 }
 
 /**
- * An ask that found its problem. Misses are counted separately, in `asks`, and fold in
- * here the moment a report creates the row — so seen_count really is every ask, hit or
- * miss, and not just the reads of failures that already had an answer.
+ * An ask that found its problem.
+ *
+ * seen_count used to increment on every call, which made it a request tally wearing the
+ * word "asked": one session testing an endpoint put a failure at 91. It is now the number
+ * of DISTINCT askers, maintained from the askers table, so the site can say "asked by
+ * three agents" and have that be true. Misses are counted the same way in `asks` and fold
+ * in when a report creates the row.
  */
-export async function touchProblem(db: D1Database, id: string, now: number): Promise<void> {
+export async function touchProblem(
+  db: D1Database,
+  id: string,
+  now: number,
+  asker: string,
+): Promise<void> {
+  const fresh = await noteAsker(db, "problem", id, asker, now);
   await db
-    .prepare("UPDATE problems SET seen_count = seen_count + 1, last_seen_at = ? WHERE id = ?")
+    .prepare(
+      fresh
+        ? "UPDATE problems SET asker_count = asker_count + 1, seen_count = asker_count, last_seen_at = ? WHERE id = ?"
+        : "UPDATE problems SET last_seen_at = ? WHERE id = ?",
+    )
     .bind(now, id)
     .run();
+}
+
+/**
+ * Remembering that this asker asked about this thing. Returns true only the first time,
+ * which is what makes every count downstream a count of people rather than of calls.
+ *
+ * The same asker coming back updates last_at and nothing else — no time window needed,
+ * because a second ask from the same agent is not a second agent no matter how long it
+ * waited.
+ */
+export async function noteAsker(
+  db: D1Database,
+  scope: "ask" | "problem",
+  ref: string,
+  asker: string,
+  now: number,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `INSERT INTO askers (scope, ref, asker, first_at, last_at)
+       VALUES (?1, ?2, ?3, ?4, ?4)
+       ON CONFLICT(scope, ref, asker) DO UPDATE SET last_at = ?4
+       RETURNING first_at`,
+    )
+    .bind(scope, ref, asker, now)
+    .first<{ first_at: number }>();
+  return row?.first_at === now;
 }
 
 /* -- asks: what was asked and got nothing ----------------------------------- */
@@ -130,6 +173,8 @@ export type AskRow = {
   environments: string;
   verdict: string;
   ask_count: number;
+  /** Distinct askers, which is the only number worth showing. */
+  asker_count: number;
   first_asked_at: number;
   last_asked_at: number;
   /** failure | question */
@@ -162,19 +207,26 @@ export async function recordAsk(
     environments: string[];
     verdict: "none" | "similar";
     kind: "failure" | "question";
+    /** The handle, or `net:<hash>` when the caller did not identify itself. */
+    asker: string;
     now: number;
   },
 ): Promise<number> {
+  // Who asked decides the number that gets shown; the call count is kept beside it
+  // because the queue wants to know how much traffic a missing answer is attracting, and
+  // neither figure should have to pretend to be the other.
+  const fresh = await noteAsker(db, "ask", a.fingerprint, a.asker, a.now);
   const row = await db
     .prepare(
-      `INSERT INTO asks (fingerprint, fp_version, headline, sample, environments, verdict, ask_count, first_asked_at, last_asked_at, kind)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      `INSERT INTO asks (fingerprint, fp_version, headline, sample, environments, verdict, ask_count, asker_count, first_asked_at, last_asked_at, kind)
+       VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
        ON CONFLICT(fingerprint) DO UPDATE SET
          ask_count = asks.ask_count + 1,
+         asker_count = asks.asker_count + ${fresh ? 1 : 0},
          last_asked_at = excluded.last_asked_at,
          verdict = excluded.verdict,
          environments = CASE WHEN excluded.environments = '[]' THEN asks.environments ELSE excluded.environments END
-       RETURNING ask_count`,
+       RETURNING asker_count`,
     )
     .bind(
       a.fingerprint,
@@ -187,8 +239,8 @@ export async function recordAsk(
       a.now,
       a.kind,
     )
-    .first<{ ask_count: number }>();
-  return row?.ask_count ?? 1;
+    .first<{ asker_count: number }>();
+  return row?.asker_count ?? 1;
 }
 
 export async function askByFingerprint(db: D1Database, fingerprint: string): Promise<AskRow | null> {
@@ -202,18 +254,43 @@ export async function askByFingerprint(db: D1Database, fingerprint: string): Pro
  */
 export async function foldAskIntoProblem(
   db: D1Database,
-  fingerprint: string,
+  fingerprints: string[],
   problemId: string,
 ): Promise<number> {
-  const ask = await askByFingerprint(db, fingerprint);
-  if (!ask) return 0;
-  await db.batch([
-    db
-      .prepare("UPDATE problems SET seen_count = seen_count + ? WHERE id = ?")
-      .bind(ask.ask_count, problemId),
-    db.prepare("DELETE FROM asks WHERE fingerprint = ?").bind(fingerprint),
-  ]);
-  return ask.ask_count;
+  let folded = 0;
+  for (const fingerprint of fingerprints) {
+    const ask = await askByFingerprint(db, fingerprint);
+    if (!ask) continue;
+    /**
+     * The askers move with the ask rather than being added as a number: two askers who
+     * both asked before the answer and one who asks after are three people, and adding
+     * counts would make them four. Re-pointing the rows lets the primary key do the
+     * arithmetic.
+     */
+    await db.batch([
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO askers (scope, ref, asker, first_at, last_at)
+             SELECT 'problem', ?2, asker, first_at, last_at FROM askers
+              WHERE scope = 'ask' AND ref = ?1`,
+        )
+        .bind(fingerprint, problemId),
+      db.prepare("DELETE FROM askers WHERE scope = 'ask' AND ref = ?").bind(fingerprint),
+      db.prepare("DELETE FROM asks WHERE fingerprint = ?").bind(fingerprint),
+    ]);
+    folded += ask.asker_count;
+  }
+
+  const total = await db
+    .prepare("SELECT COUNT(*) AS n FROM askers WHERE scope = 'problem' AND ref = ?")
+    .bind(problemId)
+    .first<{ n: number }>();
+  const askers = Math.max(1, total?.n ?? 1);
+  await db
+    .prepare("UPDATE problems SET asker_count = ?, seen_count = ? WHERE id = ?")
+    .bind(askers, askers, problemId)
+    .run();
+  return folded;
 }
 
 /**

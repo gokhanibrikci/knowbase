@@ -339,7 +339,10 @@ function render(data) {
     // not depend on the model remembering the rule — neither told the agent the failure
     // was new nor asked it to report. One line each; the store has already counted it.
     if (data.match === "none") {
-      const asked = Number(data.asked) > 1 ? `, asked ${data.asked} times so far` : "";
+      // Only worth mentioning when somebody OTHER than this agent has asked: "asked once"
+      // is this very call, and reporting it back as prior demand is how a store starts
+      // describing its own traffic as interest.
+      const asked = Number(data.asked) > 1 ? `, and ${data.asked} agents have asked it` : "";
       return [
         `knowbase: nobody has recorded this failure yet${asked}. It is on the unanswered list.`,
         "When you fix it, call knowbase_report with problem + solution, and report the attempts that failed as worked:false — the next agent skips them.",

@@ -304,7 +304,7 @@ async function describeProblem(
     fingerprint: problem.fingerprint,
     title: fence(nonce, problem.title),
     sampleSeen: fence(nonce, brief ? clipText(problem.sample, BRIEF_CHARACTERS) : problem.sample),
-    askedBefore: problem.seen_count,
+    askedBy: problem.asker_count ?? problem.seen_count,
     lastSeen: problem.last_seen_at ? new Date(problem.last_seen_at).toISOString() : null,
     ageDays: Math.floor((now - problem.created_at) / 86_400_000),
     worked: worked.map(shape),
@@ -514,6 +514,27 @@ export async function xpRotateSecret(args: Record<string, unknown>): Promise<XpR
  * entirely, which put whatever was on the error's first line into the page <title>, the
  * meta description and the JSON-LD.
  */
+/**
+ * Who to count this ask against.
+ *
+ * The handle when the caller identified itself; otherwise a salted hash of the network,
+ * with the salt rotating monthly — the same construction registration already uses, so an
+ * anonymous ask still deduplicates without an address being stored, and the value is
+ * never rendered anywhere. Falling back to a constant would collapse every anonymous ask
+ * into one asker, which understates demand as badly as counting calls overstates it.
+ */
+async function askerKey(
+  args: Record<string, unknown>,
+  handle: string | null,
+  now: number,
+): Promise<string> {
+  if (handle) return handle;
+  const ip = typeof args.callerNetwork === "string" ? args.callerNetwork : "";
+  if (!ip) return "anonymous";
+  const month = new Date(now).toISOString().slice(0, 7);
+  return `net:${(await sha256Hex(`${month}|${ip}`)).slice(0, 24)}`;
+}
+
 function forPublication(text: string): string {
   return placehold(redact(text));
 }
@@ -563,6 +584,14 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
   if (!db) return noStore();
   const now = Date.now();
 
+  /**
+   * Who is asking — for counting, and nothing else. Reading needs no identity, so a
+   * caller with no handle is counted by network and one with a bad secret counts as
+   * anonymous rather than having its read refused.
+   */
+  const claimed = typeof args.agentId === "string" ? normalizeHandle(args.agentId) : null;
+  const asker = await askerKey(args, claimed, now);
+
   const text = problemText(args);
   if (!text) {
     return fail(
@@ -608,7 +637,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
   const nonce = newNonce();
   const exact = await problemByFingerprint(db, print);
   if (exact) {
-    if (!probe) await touchProblem(db, exact.id, now);
+    if (!probe) await touchProblem(db, exact.id, now, asker);
     // Rows written before the meaning index existed are placed in it the first time a
     // recall lands on them, so the index fills itself without a migration job.
     if (!exact.embedded_at) {
@@ -664,7 +693,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
   const same =
     byMeaning.find((m) => sameProblem(kind, m.score, clean, m.problem.sample)) ?? null;
   if (same) {
-    if (!probe) await touchProblem(db, same.problem.id, now);
+    if (!probe) await touchProblem(db, same.problem.id, now, asker);
     const described = await describeProblem(db, same.problem, asking, now, nonce);
     const hasAnswer = (described.worked as unknown[]).length > 0;
     return {
@@ -752,6 +781,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
       environments: formatEnvironment(asking),
       verdict,
       kind,
+      asker,
       now,
     });
     if (key === print && vector && (await indexAsk(print, vector, kind))) {
@@ -809,7 +839,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
       asked,
       next:
         asked > 1
-          ? `Nobody has recorded this failure, and it has now been asked about ${asked} times. Solve it however you would have anyway, then knowbase_report what you tried — including the attempts that failed. Everyone who asked before you gets your answer next time.`
+          ? `Nobody has recorded this failure, and ${asked} agents have now asked about it — you are one of them. Solve it however you would have anyway, then knowbase_report what you tried, including the attempts that failed. Everyone who asked gets your answer next time.`
           : "Nobody has recorded this failure. Solve it however you would have anyway, then knowbase_report what you tried — including the attempts that failed. The next agent to hit this will skip everything you just burned tokens on.",
     },
   };
@@ -911,7 +941,7 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
           createdBy: agent.id,
           now,
         });
-        await foldAskIntoProblem(db, ownPrint, problem.id);
+        await foldAskIntoProblem(db, [ownPrint], problem.id);
         const vector = await embed(ownClean);
         if (vector) {
           await indexProblem(problem.id, vector, classify(ownClean), ownPrint.slice(0, 8));
@@ -992,22 +1022,22 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
       kind: classify(safeText),
       now,
     });
-    waiting = await foldAskIntoProblem(db, print, id);
-    // Into the meaning index, and gather the asks that meant the same in other words.
+    // Every ask this answers, gathered before anything is folded: the exact fingerprint,
+    // and the ones that meant the same thing in other words or another language.
+    const folded: string[] = [print];
     const vector = await embed(safeText);
     if (vector) {
       const kindOf = classify(safeText);
       if (await indexProblem(id, vector, kindOf)) await markEmbedded(db, "problems", id, now);
-      const folded: string[] = [print];
-      for (const near of await neighbours(vector, "ask", 5)) {
+      for (const near of await neighbours(vector, "ask", 8)) {
         if (near.score < THRESHOLDS.similar || near.ref === print) continue;
         const ask = await askByFingerprint(db, near.ref);
         if (!ask || !sameProblem(kindOf, near.score, safeText, ask.sample)) continue;
-        waiting += await foldAskIntoProblem(db, near.ref, id);
         folded.push(near.ref);
       }
-      await forget(folded.map((ref) => ({ type: "ask" as const, ref })));
     }
+    waiting = await foldAskIntoProblem(db, folded, id);
+    await forget(folded.map((ref) => ({ type: "ask" as const, ref })));
     problem = await problemById(db, id);
   }
   if (!problem) return fail(500, "could not record the problem");
