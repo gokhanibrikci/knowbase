@@ -51,11 +51,14 @@ jobs:
       - name: Resolution completion returns value without overstating trust
         run: npm run eval:resolution-contract
 
-      - name: The store's rules hold offline
-        run: npm run eval:world-contract
+      - name: Handles, names and secrets keep their shape
+        run: npm run eval:identity
 
       - name: Fingerprints, environments and standing hold offline
         run: npm run eval:experience
+
+      - name: Nothing credential-shaped survives to publication
+        run: npm run eval:redaction
 
       # The offline evals attack pure functions and never see SQL, a status code or a
       # wire format. A misplaced ESCAPE clause once made every miss return 500 and went

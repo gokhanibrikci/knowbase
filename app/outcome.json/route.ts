@@ -3,22 +3,13 @@ import { SCHEMA_VERSION } from "@/lib/ko/serialize";
 import { absoluteUrl, site } from "@/lib/site";
 
 /**
- * Close a resolution, or accept the legacy worked:boolean claim.
+ * Close a resolution.
  *
- * Kept as small as it is on purpose. The signal is weak and we know why: there is no
- * attribution (the agent may have solved it from its own weights and called anyway),
- * only successes tend to come back, and nothing here is verifiable. So it is recorded
- * as a lead for re-verification and nothing else.
- *
- * In particular it does not touch `confidence`. Usage is popularity, not evidence,
- * and a second path to the same label would empty the label of meaning. What this
- * does earn is a place in the re-check queue: an entry collecting "did not work"
- * against a specific version is worth a human reading its sources again.
- *
- * Structured completion is the value exchange: the caller gets either a deterministic
- * agent-observed receipt and ready-to-use final report, or the failed/missing check
- * and the next action. Legacy worked:boolean remains accepted, but never becomes a
- * resolved receipt.
+ * Structured completion is the value exchange: the caller submits the checks it already
+ * had to run and gets either a deterministic, agent-observed receipt with a paste-ready
+ * summary, or the failed or missing check and the next action. Nothing here touches an
+ * entry's `confidence` — usage is popularity, not evidence — but a run of unresolved
+ * completions against one revision is what puts an entry in the re-verification queue.
  */
 
 const CORS = {
@@ -45,12 +36,6 @@ function usage(status: number, error?: string) {
           appliedStepIds: "required. Every step id in that recipe.",
           criteria:
             "required array of {id,status:met|not_met|unknown|not_run,observation?,exitCode?}; met/not_met needs observation or exitCode.",
-        },
-        legacyCompatibility: {
-          slug: "required. The entry you applied.",
-          worked: "required boolean. Records a claim; never returns a resolved receipt.",
-          lookupId: "optional.",
-          note: "optional.",
         },
         trustBoundary:
           "A receipt is agent_observed. Knowbase validates the current recipe and required statuses but does not inspect the environment or authenticate the lookup id.",

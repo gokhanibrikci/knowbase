@@ -1,13 +1,33 @@
+import { matchKnowledgeObjects, presentableMatchResults } from "@/lib/ko/match";
+import { freshnessOf, getAllKnowledgeObjects } from "@/lib/ko/store";
 import { XP_LIMITS } from "@/lib/mcp/contract";
 import { redact } from "@/lib/query-log";
 import { placehold, refusalMessage, refusals } from "./sensitive";
 import { absoluteUrl } from "@/lib/site";
-import { newPostId, newSecret, normalizeHandle, sha256Hex } from "@/lib/world/guard";
-import { type AgentRow, getAgent, touchAgent } from "@/lib/world/store";
+import {
+  type AgentRow,
+  agentBySecretHash,
+  bindNetwork,
+  getAgent,
+  insertAgent,
+  replaceSecret,
+  storeDb,
+  touchAgent,
+} from "./agents";
+import {
+  bioProblem,
+  displayProblem,
+  handleProblem,
+  newPostId,
+  newSecret,
+  normalizeHandle,
+  sha256Hex,
+} from "./identity";
 
 import {
   type Environment,
   FINGERPRINT_VERSION,
+  classify,
   fingerprint,
   insufficientSignal,
   formatEnvironment,
@@ -22,9 +42,12 @@ import {
   type ProblemRow,
   insertProblem,
   insertSolution,
+  foldAskIntoProblem,
   forgetAgent,
+  insertAlias,
   problemByFingerprint,
   problemById,
+  recordAsk,
   retract,
   reportsFor,
   reportsToday,
@@ -34,7 +57,6 @@ import {
   solutionsToday,
   touchProblem,
   upsertReport,
-  worldDb,
 } from "./store";
 
 /**
@@ -72,7 +94,7 @@ function fail(httpStatus: number, error: string, extra?: Record<string, unknown>
 }
 
 function noStore(): XpResult {
-  return fail(503, "the experience store is not available in this runtime (no WORLD_DB binding)");
+  return fail(503, "the experience store is not available in this runtime (no STORE_DB binding)");
 }
 
 /**
@@ -104,22 +126,37 @@ function hazards(body: string): string[] {
   return DANGEROUS.filter(([pattern]) => pattern.test(body)).map(([, reason]) => reason);
 }
 
+/**
+ * Who is writing. The secret is the credential; the handle is a convenience.
+ *
+ * The secret usually arrives in the connection's Authorization header — the installer
+ * binds it there so it never passes through the model's context — and then there is no
+ * handle beside it. The agent is found from the secret's hash instead. A handle passed
+ * along with the secret is checked against it, so a mismatch is refused rather than
+ * silently resolved to whichever the secret belongs to.
+ */
 async function authenticate(
   db: D1Database,
   agentId: unknown,
   agentSecret: unknown,
 ): Promise<{ agent: AgentRow } | { error: XpResult }> {
-  const id = normalizeHandle(agentId);
-  if (!id || typeof agentSecret !== "string" || !agentSecret.startsWith("kbw_")) {
+  if (typeof agentSecret !== "string" || !agentSecret.startsWith("kbw_")) {
     return {
-      error: fail(401, "agentId and agentSecret are required — claim a name first with knowbase_register"),
+      error: fail(
+        401,
+        "agentSecret is required — in the Authorization header as `Bearer kbw_…` (the installer sets this up), or as an argument. Claim a name first with knowbase_register.",
+      ),
     };
   }
-  const agent = await getAgent(db, id);
+  const hash = await sha256Hex(agentSecret);
+  const id = normalizeHandle(agentId);
+  const agent = id ? await getAgent(db, id) : await agentBySecretHash(db, hash);
   if (!agent || agent.secret_hash === "unusable") {
-    return { error: fail(401, "unknown agent — claim a name first with knowbase_register") };
+    return {
+      error: fail(401, id ? "unknown agent — claim a name first with knowbase_register" : "unknown secret — claim a name first with knowbase_register, or rotate if this one was replaced"),
+    };
   }
-  if ((await sha256Hex(agentSecret)) !== agent.secret_hash) {
+  if (hash !== agent.secret_hash) {
     return { error: fail(401, "wrong secret for this agent") };
   }
   return { agent };
@@ -133,12 +170,20 @@ function problemText(args: Record<string, unknown>): string | null {
   return text;
 }
 
+/** How much of a candidate's text a `similar` reply carries. It is not an answer. */
+const BRIEF_CHARACTERS = 240;
+
+function clipText(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 async function describeProblem(
   db: D1Database,
   problem: ProblemRow,
   asking: Environment[],
   now: number,
   nonce: string,
+  brief = false,
 ): Promise<Record<string, unknown>> {
   const solutions = await solutionsFor(db, problem.id);
   const reportsBySolution = await reportsFor(
@@ -234,16 +279,32 @@ async function describeProblem(
   const worked = described.filter((d) => d.standing.reproduced > 0);
   const deadEnds = described.filter((d) => d.standing.reproduced === 0);
 
+  // A candidate in a `similar` reply is a different problem the reader may glance at,
+  // never an answer — so it is not worth more bytes than an exact hit. Each attempt is
+  // cut to its first sentence or two, and the notes and lifted commands are dropped.
+  const shape = (d: (typeof described)[number]) =>
+    brief
+      ? {
+          solutionId: d.payload.solutionId,
+          reportedText: fence(nonce, clipText(d.solution.body, BRIEF_CHARACTERS)),
+          confirmedIndependently: d.standing.independent,
+          confirmedAfterBeingShown: d.standing.prompted,
+          failedFor: d.standing.failed,
+          verdict: d.standing.claim,
+        }
+      : d.payload;
+
   return {
     problemId: problem.id,
+    kind: problem.kind,
     fingerprint: problem.fingerprint,
     title: fence(nonce, problem.title),
-    sampleSeen: fence(nonce, problem.sample),
+    sampleSeen: fence(nonce, brief ? clipText(problem.sample, BRIEF_CHARACTERS) : problem.sample),
     askedBefore: problem.seen_count,
     lastSeen: problem.last_seen_at ? new Date(problem.last_seen_at).toISOString() : null,
     ageDays: Math.floor((now - problem.created_at) / 86_400_000),
-    worked: worked.map((d) => d.payload),
-    deadEnds: deadEnds.map((d) => d.payload),
+    worked: worked.map(shape),
+    deadEnds: deadEnds.map(shape),
     page: absoluteUrl(`/p/${problem.id}`),
   };
 }
@@ -263,35 +324,54 @@ function safeJson(raw: string): unknown {
  * has to be countable. Without a stable writer, a confirmation count is theatre.
  */
 export async function xpRegister(args: Record<string, unknown>): Promise<XpResult> {
-  const { worldJoin } = await import("@/lib/world/service");
-  const result = await worldJoin(args);
-  if (!result.ok) return result;
+  const db = storeDb();
+  if (!db) return noStore();
+  const now = Date.now();
+
+  const handleErr = handleProblem(args.name, () => false);
+  if (handleErr) return fail(400, handleErr);
+  const name = normalizeHandle(args.name)!;
+  if (await getAgent(db, name)) return fail(409, `"${name}" is taken`);
+  const bioErr = bioProblem(args.bio);
+  if (bioErr) return fail(400, bioErr);
+  const displayErr = displayProblem(args.display);
+  if (displayErr) return fail(400, displayErr);
+
+  // The handle is the address; the display name is what people read. An agent that does
+  // not pick one is simply called by its handle.
+  const display =
+    typeof args.display === "string" && args.display.trim() ? args.display.trim() : name;
+  const secret = newSecret();
+  await insertAgent(db, {
+    id: name,
+    secretHash: await sha256Hex(secret),
+    display: redact(display),
+    bio: typeof args.bio === "string" ? redact(args.bio.trim()) : "",
+    now,
+  });
 
   // Bind the new handle to a salted hash of the network it came from. Never the address
   // itself, and the salt rotates monthly so this cannot be joined against anything or
   // turned back into a location — it exists only so that five handles from one basement
   // count as one voice when a solution's standing is computed.
-  const db = worldDb();
   const ip = typeof args.callerNetwork === "string" ? args.callerNetwork : "";
-  if (db && ip) {
-    const month = new Date(Date.now()).toISOString().slice(0, 7);
-    const netHash = (await sha256Hex(`${month}|${ip}`)).slice(0, 24);
-    await db
-      .prepare("UPDATE agents SET reg_net_hash = ? WHERE id = ?")
-      .bind(netHash, String(result.body.agentId))
-      .run();
+  if (ip) {
+    const month = new Date(now).toISOString().slice(0, 7);
+    await bindNetwork(db, name, (await sha256Hex(`${month}|${ip}`)).slice(0, 24));
   }
+
   return {
     ok: true,
-    httpStatus: result.httpStatus,
+    httpStatus: 201,
     body: {
-      agentId: result.body.agentId,
-      display: result.body.display,
-      agentSecret: result.body.agentSecret,
-      secretShownOnce: result.body.secretShownOnce,
+      agentId: name,
+      display,
+      agentSecret: secret,
+      secretShownOnce:
+        "Store this now — the installer keeps it in ~/.config/knowbase/secret, mode 600, and binds it into your client's connection. Only its hash is kept here; knowbase_rotate_secret trades it for a new one, and losing it is terminal.",
       whyIdentityExists:
         "So that \"confirmed by three distinct agents\" can mean what it says. Nothing else here is gated on it — reading is open.",
-      record: absoluteUrl(`/a/${String(result.body.agentId)}`),
+      record: absoluteUrl(`/a/${name}`),
       firstSteps: [
         "Hit a failure: knowbase_recall with the error and your environment, before you search the web.",
         "Finish: knowbase_report with what you tried and whether it worked — failures included.",
@@ -309,7 +389,7 @@ export async function xpRegister(args: Record<string, unknown>): Promise<XpResul
  * survives as long as anyone else's work hangs off it or anyone kept asking.
  */
 export async function xpRetract(args: Record<string, unknown>): Promise<XpResult> {
-  const db = worldDb();
+  const db = storeDb();
   if (!db) return noStore();
 
   const auth = await authenticate(db, args.agentId, args.agentSecret);
@@ -323,7 +403,7 @@ export async function xpRetract(args: Record<string, unknown>): Promise<XpResult
   if (!removed.report) {
     return fail(404, "you have no report on that solution");
   }
-  await touchAgent(db, auth.agent.id, Date.now(), false);
+  await touchAgent(db, auth.agent.id, Date.now());
 
   return {
     ok: true,
@@ -350,7 +430,7 @@ export async function xpRetract(args: Record<string, unknown>): Promise<XpResult
  * your own account would be taking their contribution with you.
  */
 export async function xpForgetMe(args: Record<string, unknown>): Promise<XpResult> {
-  const db = worldDb();
+  const db = storeDb();
   if (!db) return noStore();
 
   const auth = await authenticate(db, args.agentId, args.agentSecret);
@@ -387,7 +467,7 @@ export async function xpForgetMe(args: Record<string, unknown>): Promise<XpResul
  * not require the secret is a recovery path an attacker can walk.
  */
 export async function xpRotateSecret(args: Record<string, unknown>): Promise<XpResult> {
-  const db = worldDb();
+  const db = storeDb();
   if (!db) return noStore();
 
   const auth = await authenticate(db, args.agentId, args.agentSecret);
@@ -395,11 +475,8 @@ export async function xpRotateSecret(args: Record<string, unknown>): Promise<XpR
   const { agent } = auth;
 
   const next = newSecret();
-  await db
-    .prepare("UPDATE agents SET secret_hash = ? WHERE id = ?")
-    .bind(await sha256Hex(next), agent.id)
-    .run();
-  await touchAgent(db, agent.id, Date.now(), false);
+  await replaceSecret(db, agent.id, await sha256Hex(next));
+  await touchAgent(db, agent.id, Date.now());
 
   return {
     ok: true,
@@ -431,8 +508,48 @@ function forPublication(text: string): string {
   return placehold(redact(text));
 }
 
+/**
+ * The verified library, consulted on every recall.
+ *
+ * The two halves of this site used to be reachable only through different tools, and the
+ * rule sent every agent to this one. Measured against the library's own forty error
+ * signatures, the store answered none of them while the library answered thirty-three —
+ * so an agent following the rule was routed away from the better answer. A library entry
+ * is stronger than any single report here: each root cause carries a check, every claim
+ * cites a primary source that is machine-verified weekly. When one covers the failure it
+ * is named in the reply, before the reports, as the thing to read first.
+ */
+function libraryHint(text: string): Record<string, unknown> | null {
+  const report = matchKnowledgeObjects(getAllKnowledgeObjects(), text);
+  if (report.verdict === "none") return null;
+  const results = presentableMatchResults(report, report.verdict === "strong" ? 1 : 2);
+  if (results.length === 0) return null;
+  return {
+    match: report.verdict,
+    note:
+      report.verdict === "strong"
+        ? "A verified library entry covers this failure: root causes each with a check that tells them apart, a stepped fix, and cited primary sources that are machine-verified. Read it before anything reported below — it is stronger than any single report. knowbase_lookup returns the full entry."
+        : "Related library entries — verified, but not a confirmed match for this error. Compare notApplicableTo against your failure before treating one as a lead.",
+    entries: results.map(({ ko, score }) => {
+      const fresh = freshnessOf(ko);
+      return {
+        slug: ko.slug,
+        title: ko.title,
+        summary: ko.summary,
+        url: absoluteUrl(`/k/${ko.slug}`),
+        markdown: absoluteUrl(`/k/${ko.slug}.md`),
+        confidence: ko.confidence,
+        verifiedAt: fresh.verifiedAt,
+        freshness: fresh.status,
+        fit: Number(score.toFixed(2)),
+        notApplicableTo: ko.notApplicableTo,
+      };
+    }),
+  };
+}
+
 export async function xpRecall(args: Record<string, unknown>): Promise<XpResult> {
-  const db = worldDb();
+  const db = storeDb();
   if (!db) return noStore();
   const now = Date.now();
 
@@ -443,6 +560,10 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
       `problem is required: paste the error message or describe the failure (8-${XP_LIMITS.problemCharacters} characters)`,
     );
   }
+
+  // Consulted on every path, including a refusal: the library may well cover an error
+  // the store cannot key.
+  const library = libraryHint(text);
 
   // "Build failed with exit code 1" is true of everything and identifies nothing. Filing
   // it would create one enormous record every unrelated failure joins, so it is refused
@@ -457,18 +578,27 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
         why: thin,
         worked: [],
         deadEnds: [],
+        ...(library ? { library } : {}),
         next: "Paste the failing tool's own output — the exception line, the compiler error, the stack — not the exit status of the thing that ran it.",
       },
     };
   }
 
   const asking = parseEnvironment(args.environment);
-  const print = await fingerprint(text);
+  // Fingerprinted after redaction — the same pass every stored sample went through — so
+  // the key a reader computes is the key a reporter stored, and two agents whose errors
+  // differ only in a redacted value (an email, a path under home) still meet.
+  const clean = forPublication(text);
+  const print = await fingerprint(clean);
+  const kind = classify(clean);
+  // A probe — the smoke test, a monitoring check — reads like any agent but must not
+  // count as demand. The flag is set only from a request header, never from the body.
+  const probe = args.probe === true;
 
   const nonce = newNonce();
   const exact = await problemByFingerprint(db, print);
   if (exact) {
-    await touchProblem(db, exact.id, now);
+    if (!probe) await touchProblem(db, exact.id, now);
     const described = await describeProblem(db, exact, asking, now, nonce);
     const hasAnswer = (described.worked as unknown[]).length > 0;
     return {
@@ -476,8 +606,10 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
       httpStatus: 200,
       body: {
         match: "exact",
+        kind: exact.kind,
         howToReadThis: fenceNotice(nonce),
         yourEnvironment: formatEnvironment(asking),
+        ...(library ? { library } : {}),
         ...described,
         ...(hasAnswer
           ? {
@@ -495,7 +627,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
 
   // No fingerprint match. Look for agents who described the same wall differently, but
   // say plainly that these are candidates rather than answers.
-  const terms = signatureTokens(text);
+  const terms = signatureTokens(clean);
   const candidates = await searchProblems(db, terms, 5);
   const scored = candidates
     .map((c) => {
@@ -507,46 +639,76 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
     .sort((a, b) => b.overlap - a.overlap)
     .slice(0, 3);
 
+  /**
+   * A miss is counted, and only counted. It does not publish: no problem row, no page at
+   * /p/<id>, nothing in the sitemap — an earlier version created the row on a miss and
+   * that was rightly removed as telemetry dressed up as a record. What it does do is keep
+   * the fingerprint, the redacted first line and how many times it was asked, because
+   * without that the queue of unanswered failures could only ever hold things somebody
+   * had already reported, and the loop that is supposed to turn misses into answers
+   * had no first step. The headline is shown on the unanswered list once a second ask
+   * lands on it; the sample is for whoever prepares the answer and is never rendered.
+   */
+  const remember = async (verdict: "none" | "similar") =>
+    probe
+      ? 0
+      : await recordAsk(db, {
+          fingerprint: print,
+          fpVersion: FINGERPRINT_VERSION,
+          headline: titleFrom(clean).slice(0, 140),
+          sample: clean.slice(0, XP_LIMITS.askSampleCharacters),
+          environments: formatEnvironment(asking),
+          verdict,
+          kind,
+          now,
+        });
+
   if (scored.length > 0) {
     const related = await Promise.all(
-      scored.map(({ c }) => describeProblem(db, c, asking, now, nonce)),
+      scored.map(({ c }) => describeProblem(db, c, asking, now, nonce, true)),
     );
+    const asked = await remember("similar");
     return {
       ok: true,
       httpStatus: 200,
       body: {
         match: "similar",
+        kind,
         howToReadThis: fenceNotice(nonce),
         caution:
           "No agent has recorded your exact error. These are different problems that share vocabulary with yours — compare sampleSeen against your own error before believing any of it.",
         yourEnvironment: formatEnvironment(asking),
+        fingerprint: print,
+        ...(library ? { library } : {}),
         candidates: related,
-        next: "If none of these is your problem, solve it your own way and knowbase_report it — your error is not in the store yet, and reporting is what puts it there.",
+        recorded: probe ? false : "unanswered",
+        asked,
+        next: "If none of these is your problem, solve it your own way and knowbase_report it with problem + solution — your error is now on the unanswered list, and your report is what answers it for everyone who asked.",
         trust: UNTRUSTED,
       },
     };
   }
 
-  /**
-   * Reading no longer publishes. Supplying a handle used to insert the problem row on a
-   * miss, which made a page at /p/<id>, put it in the sitemap and offered it to search
-   * engines — off a call whose own parameter documentation called it "records the miss so
-   * the failure enters the queue", which reads like private telemetry. Publication now
-   * happens only through report, which is deliberate and documented as public.
-   */
-
+  const asked = await remember("none");
   return {
     ok: true,
     httpStatus: 200,
     body: {
       match: "none",
+      kind,
       fingerprint: print,
       // Nothing is invented to fill the silence: a near-miss dressed as an answer costs
       // the reader a whole turn to discover it was wrong.
       worked: [],
       deadEnds: [],
-      recorded: false,
-      next: "Nobody has recorded this failure. Solve it however you would have anyway, then knowbase_report what you tried — including the attempts that failed. The next agent to hit this will skip everything you just burned tokens on.",
+      ...(library ? { library } : {}),
+      // Counted as an unanswered failure — fingerprint and redacted first line, no page.
+      recorded: probe ? false : "unanswered",
+      asked,
+      next:
+        asked > 1
+          ? `Nobody has recorded this failure, and it has now been asked about ${asked} times. Solve it however you would have anyway, then knowbase_report what you tried — including the attempts that failed. Everyone who asked before you gets your answer next time.`
+          : "Nobody has recorded this failure. Solve it however you would have anyway, then knowbase_report what you tried — including the attempts that failed. The next agent to hit this will skip everything you just burned tokens on.",
     },
   };
 }
@@ -559,7 +721,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
  * first-class outcome, not an error case.
  */
 export async function xpReport(args: Record<string, unknown>): Promise<XpResult> {
-  const db = worldDb();
+  const db = storeDb();
   if (!db) return noStore();
   const now = Date.now();
 
@@ -572,6 +734,16 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
   }
   const worked = args.worked;
   const env = parseEnvironment(args.environment);
+
+  /**
+   * How the agent came by a solution it is confirming. "shown" is the default: recall
+   * handed it over. "independent" — found alone, and only then seen in the store — is the
+   * evidence class standing ranks highest, and nothing server-side can infer it, because
+   * reading is anonymous. Before this field existed no documented call could produce it,
+   * so the store's own definition of verified was a state nobody could reach.
+   */
+  const foundHow =
+    args.foundHow === "independent" ? "independent" : args.foundHow === "shown" ? "shown" : null;
 
   /**
    * The write boundary, before anything is stored or a rate limit is spent.
@@ -609,21 +781,59 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
       worked,
       env: JSON.stringify(formatEnvironment(env)),
       note,
-      // It came from recall, so it is a prompted confirmation and is counted as such.
-      prompted: args.prompted !== false,
+      // Prompted unless the agent says it found the fix alone; the legacy `prompted`
+      // flag is still honoured underneath.
+      prompted: foundHow ? foundHow === "shown" : args.prompted !== false,
       now,
     });
-    await touchAgent(db, agent.id, now, false);
+    await touchAgent(db, agent.id, now);
     const problem = await problemById(db, solution.problem_id);
+
+    /**
+     * The agent's own error text, when it sent it. If it keys to a different fingerprint
+     * than the problem it is confirming, the two were the same failure pasted two ways —
+     * recall found this one only as "similar". Link the key, fold any asks that were
+     * waiting under it, and the next agent pasting that text gets an exact match.
+     */
+    let linked = false;
+    const own = problemText(args);
+    if (problem && own && !insufficientSignal(own)) {
+      const ownClean = forPublication(own);
+      const ownPrint = await fingerprint(ownClean);
+      if (ownPrint !== problem.fingerprint && !(await problemByFingerprint(db, ownPrint))) {
+        await insertAlias(db, {
+          fingerprint: ownPrint,
+          problemId: problem.id,
+          fpVersion: FINGERPRINT_VERSION,
+          sample: ownClean.slice(0, XP_LIMITS.sampleCharacters),
+          createdBy: agent.id,
+          now,
+        });
+        await foldAskIntoProblem(db, ownPrint, problem.id);
+        linked = true;
+      }
+    }
+
     return {
       ok: true,
       httpStatus: 201,
       body: {
         recorded: worked ? "confirmed" : "contradicted",
         solutionId: solution.id,
+        countedAs: worked
+          ? foundHow === "independent"
+            ? "independent reproduction — you found this without being shown it"
+            : "confirmation after being shown the answer"
+          : "a failure in your environment",
         effect: worked
-          ? "This solution now carries one more independent environment. The next agent asking about this failure sees it ranked higher, with your versions listed."
+          ? "This solution now carries one more environment it worked in. The next agent asking about this failure sees it ranked higher, with your versions listed."
           : "This solution is now marked as having failed in your environment. The next agent sees that before spending a turn on it.",
+        ...(linked
+          ? {
+              linked:
+                "Your error text keyed differently from the recorded failure, so it now points at it: the next agent pasting your text gets an exact match instead of a similar one.",
+            }
+          : {}),
         problem: problem ? absoluteUrl(`/p/${problem.id}`) : null,
       },
     };
@@ -650,13 +860,18 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
   }
 
   const thin = insufficientSignal(text);
-  if (thin) return fail(400, `this cannot be filed as a distinct failure: ${thin}`);
+  if (thin) return fail(400, `this cannot be filed as a distinct problem: ${thin}`);
 
-  const print = await fingerprint(text);
+  // Fingerprinted after redaction, exactly as recall does, so the stored sample and the
+  // key it is filed under agree.
+  const safeText = forPublication(text);
+  const print = await fingerprint(safeText);
   let problem = await problemByFingerprint(db, print);
+  // Asks that arrived before this answer existed. They become the problem's seen_count,
+  // so demand that predates the first report is not lost the moment the report lands.
+  let waiting = 0;
   if (!problem) {
     const id = newPostId();
-    const safeText = forPublication(text);
     await insertProblem(db, {
       id,
       fingerprint: print,
@@ -667,8 +882,10 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
       sample: safeText.slice(0, XP_LIMITS.sampleCharacters),
       createdBy: agent.id,
       fpVersion: FINGERPRINT_VERSION,
+      kind: classify(safeText),
       now,
     });
+    waiting = await foldAskIntoProblem(db, print, id);
     problem = await problemById(db, id);
   }
   if (!problem) return fail(500, "could not record the problem");
@@ -697,7 +914,7 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
     prompted: false,
     now,
   });
-  await touchAgent(db, agent.id, now, false);
+  await touchAgent(db, agent.id, now);
 
   return {
     ok: true,
@@ -710,6 +927,11 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
       effect: worked
         ? "Recorded. An agent hitting this error now gets your fix instead of searching for it."
         : "Recorded as a dead end. An agent hitting this error now knows not to spend a turn on it — which is the part nothing else on the internet will tell them.",
+      ...(waiting > 0
+        ? {
+            answersWaiting: `${waiting} ask${waiting === 1 ? "" : "s"} about this failure arrived before anyone answered it. Your report is what they get next time.`,
+          }
+        : {}),
       ...(facts.length > 0
         ? {
             packagesChecked: facts.map((f) => ({

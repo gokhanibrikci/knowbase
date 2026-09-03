@@ -59,35 +59,6 @@ export function looksLikeInstructions(text: string): boolean {
   return INSTRUCTION_LIKE.some((p) => p.test(text));
 }
 
-/**
- * Package specifiers named in a solution.
- *
- * The most profitable thing to write into a store like this is not a destructive
- * command — it is a package name. A plausible fix that installs a package published
- * yesterday lands in a lockfile, survives the context window, and ships; nothing
- * visibly breaks, so nobody ever reports it as failed and it never self-corrects.
- *
- * Pulling the names out and showing them separately does not judge anything. It just
- * means the reader is looking at "this asks you to install X" as a fact about the
- * report, rather than finding it in the middle of a paragraph it skimmed.
- */
-const INSTALLERS =
-  /\b(?:npm\s+(?:i|install|add)|pnpm\s+(?:i|install|add)|yarn\s+add|bun\s+(?:add|install)|pip3?\s+install|poetry\s+add|cargo\s+add|go\s+get|gem\s+install|composer\s+require|apt(?:-get)?\s+install|brew\s+install)\s+((?:[-@\w./:^~=<>]+\s*){1,6})/gi;
-
-export function packagesMentioned(text: string): string[] {
-  const found = new Set<string>();
-  for (const match of text.matchAll(INSTALLERS)) {
-    for (const raw of match[1].split(/\s+/)) {
-      const name = raw.trim().replace(/[,;)\].]+$/, "");
-      // Flags are not packages.
-      if (!name || name.startsWith("-")) continue;
-      found.add(name);
-      if (found.size >= 12) return [...found];
-    }
-  }
-  return [...found];
-}
-
 /* -- commands, pulled out of the prose ------------------------------------- */
 
 /**

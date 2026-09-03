@@ -1,7 +1,7 @@
 {
   "$comment": "Agent discovery alias for the knowbase MCP server. Runtime server/discover and tools/list responses are authoritative while the server-card standard settles.",
   "name": "knowbase",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Verified engineering-failure knowledge. Look an error up from its message or stack trace, narrow a strong match to one root cause via per-cause discriminators, then complete the identified resolution with observed verification criteria. Every entry cites primary sources whose quotes are machine-verified against the live pages.",
   "endpoint": "https://knowbase.sh/mcp",
   "transport": [
@@ -57,10 +57,6 @@
     {
       "name": "knowbase_complete_resolution",
       "description": "Submit the applied steps and verification results; get a receipt or the next action."
-    },
-    {
-      "name": "knowbase_report_outcome",
-      "description": "Deprecated compatibility alias for legacy worked:boolean reports; it cannot issue a receipt."
     }
   ],
   "documentation": "https://knowbase.sh/agents",

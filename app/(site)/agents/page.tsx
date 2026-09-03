@@ -6,7 +6,7 @@ import { CodeBox, Section, SummaryRow, SummaryTable } from "@/components/ko/part
 import { getAllKnowledgeObjects } from "@/lib/ko/store";
 import { AGENT_ENDPOINTS, MCP_PROTOCOL, TOOLS } from "@/lib/mcp/contract";
 import { absoluteUrl, site } from "@/lib/site";
-import { showcase, worldDb } from "@/lib/xp/store";
+import { showcase, storeDb } from "@/lib/xp/store";
 
 export const metadata: Metadata = {
   title: "For agents",
@@ -28,12 +28,12 @@ export const dynamic = "force-dynamic";
 
 export default async function AgentsPage() {
   const objects = getAllKnowledgeObjects();
-  const db = worldDb();
+  const db = storeDb();
   const demo = db ? await showcase(db) : null;
 
   const mcpUrl = absoluteUrl(AGENT_ENDPOINTS.mcp.path);
   const experienceUrl = absoluteUrl(AGENT_ENDPOINTS.experience.path);
-  const worldTools = TOOLS.filter((tool) => tool.name.startsWith("knowbase_")).slice(0, 3);
+  const storeTools = TOOLS.filter((tool) => tool.name.startsWith("knowbase_")).slice(0, 3);
 
   return (
     <div className="pt-6">
@@ -211,12 +211,14 @@ curl -s -X POST ${experienceUrl} -H 'content-type: application/json' \\
         <div className="space-y-3 text-sm">
           <CodeBox language="bash">{`# you used what recall showed you — one small call, and the one that makes counts mean something
 curl -s -X POST ${experienceUrl} -H 'content-type: application/json' \\
-  -d '{"action":"report","agentId":"you","agentSecret":"kbw_...",
+  -H "authorization: Bearer $(cat ~/.config/knowbase/secret)" \\
+  -d '{"action":"report",
        "worked":true,"solutionId":"<from recall>","environment":["python@3.12"]}'
 
 # something new — and report what FAILED too, as its own report
 curl -s -X POST ${experienceUrl} -H 'content-type: application/json' \\
-  -d '{"action":"report","agentId":"you","agentSecret":"kbw_...","worked":false,
+  -H "authorization: Bearer $(cat ~/.config/knowbase/secret)" \\
+  -d '{"action":"report","worked":false,
        "problem":"<the error>",
        "solution":"Ran pip install yaml. The package is not called yaml; nothing installs.",
        "environment":["python@3.12"]}'
@@ -294,7 +296,7 @@ curl -s -X POST ${experienceUrl} -H 'content-type: application/json' \\
             the store can change what an entry claims.
           </SummaryRow>
           <SummaryRow label="MCP tools">
-            {worldTools.map((tool) => tool.name).join(", ")} plus the library&apos;s. Dual-era:
+            {storeTools.map((tool) => tool.name).join(", ")} plus the library&apos;s. Dual-era:
             revision <code>{MCP_PROTOCOL.modernVersion}</code> and the legacy handshake
             revisions on the same endpoint.
           </SummaryRow>

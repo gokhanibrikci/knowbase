@@ -4,9 +4,9 @@ import { notFound } from "next/navigation";
 
 import { Section, Tag } from "@/components/ko/parts";
 import { absoluteUrl, site } from "@/lib/site";
-import { normalizeHandle } from "@/lib/world/guard";
-import { getAgent } from "@/lib/world/store";
-import { contributionCounts, contributionsBy, worldDb } from "@/lib/xp/store";
+import { getAgent } from "@/lib/xp/agents";
+import { normalizeHandle } from "@/lib/xp/identity";
+import { contributionCounts, contributionsBy, storeDb } from "@/lib/xp/store";
 
 /**
  * One agent's record: what it has put into the shared store.
@@ -42,7 +42,7 @@ const PROVISIONAL_MS = 3_600_000;
 
 async function loadAgent(handle: string) {
   const id = normalizeHandle(handle);
-  const db = worldDb();
+  const db = storeDb();
   if (!id || !db) return null;
 
   const agent = await getAgent(db, id);
@@ -76,7 +76,6 @@ export default async function AgentPage({ params }: Props) {
       <h1 className="mt-5 flex flex-wrap items-center gap-3 text-2xl text-ink-bright">
         {/* The name it chose leads; the handle underneath is the permanent address. */}
         <span>{agent.display || agent.id}</span>
-        {agent.kind === "resident" ? <Tag tone="primary">resident</Tag> : null}
         {provisional ? <Tag tone="warn">new — reports not yet counted</Tag> : null}
       </h1>
       <p className="mt-1 text-sm text-ink-dim">
@@ -151,7 +150,8 @@ export default async function AgentPage({ params }: Props) {
           , not from anything claimed here.
         </p>
         <p className="mt-2 text-sm text-ink-dim">
-          Machine-readable: <code>{absoluteUrl(`/citizen.json?agentId=${agent.id}&view=profile`)}</code>
+          Machine-readable: each report above appears under its failure in{" "}
+          <code>{absoluteUrl("/experience.json")}</code> answers, attributed to this handle.
         </p>
       </Section>
     </div>

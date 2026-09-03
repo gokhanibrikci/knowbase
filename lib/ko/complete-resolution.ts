@@ -25,8 +25,6 @@ export type CompleteResolutionResult = {
   ok: boolean;
   httpStatus: number;
   body: Record<string, unknown>;
-  /** Existing MCP copy for the deprecated outcome tool. */
-  toolText?: string;
 };
 
 type SubmittedCriterion = {
@@ -54,69 +52,6 @@ function failure(
   extra: Record<string, unknown> = {},
 ): CompleteResolutionResult {
   return { ok: false, httpStatus, body: { status, error, ...extra } };
-}
-
-function legacyOutcome(
-  input: Record<string, unknown>,
-  userAgent: string,
-): CompleteResolutionResult {
-  const slug = typeof input.slug === "string" ? input.slug : "";
-  if (!slug) {
-    return {
-      ...failure(400, "invalid_request", "missing required field: slug"),
-      toolText: "The 'slug' argument is required.",
-    };
-  }
-  if (typeof input.worked !== "boolean") {
-    return {
-      ...failure(400, "invalid_request", "field 'worked' must be a boolean"),
-      toolText: "The 'worked' argument must be a boolean.",
-    };
-  }
-
-  const ko = getKnowledgeObject(slug);
-  if (!ko) {
-    return {
-      ...failure(404, "not_found", `no entry with id: ${slug}`),
-      toolText: `No entry with id '${slug}'.`,
-    };
-  }
-
-  const lookupId =
-    typeof input.lookupId === "string"
-      ? input.lookupId.slice(0, AGENT_INPUT_LIMITS.lookupIdCharacters)
-      : "";
-  const note =
-    typeof input.note === "string"
-      ? input.note.slice(0, AGENT_INPUT_LIMITS.noteCharacters)
-      : "";
-
-  const telemetryAccepted = logReport(
-    { kind: "outcome", lookupId, slug: ko.slug, worked: input.worked, note },
-    userAgent,
-  );
-
-  const toolText = input.worked
-    ? `Recorded for ${ko.slug}. This does not raise the entry's confidence — that is gated on evidence, not on use.`
-    : `Recorded for ${ko.slug}, and queued for re-verification against its sources.`;
-
-  return {
-    ok: true,
-    httpStatus: 200,
-    toolText,
-    body: {
-      status: "recorded",
-      verificationLevel: "claimed",
-      recorded: true,
-      telemetryAccepted,
-      id: ko.slug,
-      effect: input.worked
-        ? "Recorded. This does not raise the entry's confidence — that is gated on evidence, not on use."
-        : "Recorded, and queued for re-verification against its sources.",
-      resolutionReceipt: null,
-      nextAction: null,
-    },
-  };
 }
 
 function parseSubmittedCriteria(
@@ -246,11 +181,9 @@ function structuredCompletion(
       "this cause has not yet been migrated to a structured resolution recipe",
       {
         nextAction: {
-          type: "legacy_outcome",
-          endpoint: absoluteUrl("/outcome.json"),
-          method: "POST",
-          body: { lookupId, slug: ko.slug, worked: "<true|false>" },
-          note: "Legacy outcome recording cannot return a resolved receipt.",
+          type: "report_experience",
+          tool: "knowbase_report",
+          note: "No receipt can be issued for this cause. Record what you did and whether it worked with knowbase_report, so the next agent to hit this failure sees it.",
         },
       },
     );
@@ -489,17 +422,15 @@ export function completeResolution(
 ): CompleteResolutionResult {
   if (!isRecord(rawInput)) return failure(400, "invalid_request", "body must be an object");
 
-  const hasWorked = Object.prototype.hasOwnProperty.call(rawInput, "worked");
-  const hasCriteria = Object.prototype.hasOwnProperty.call(rawInput, "criteria");
-  if (hasWorked && hasCriteria) {
+  // The worked:boolean body was retired: it recorded a claim nothing could verify, and
+  // nothing read it back. Say so rather than failing on a missing field.
+  if (Object.prototype.hasOwnProperty.call(rawInput, "worked")) {
     return failure(
-      400,
-      "invalid_request",
-      "send structured criteria or legacy worked, not both",
+      410,
+      "retired",
+      "worked:boolean reports are no longer accepted. Submit the structured completion body — lookupId, slug, koRevision, causeId, resolutionId, appliedStepIds, criteria — or record what happened with knowbase_report.",
     );
   }
 
-  return hasWorked
-    ? legacyOutcome(rawInput, userAgent)
-    : structuredCompletion(rawInput, userAgent, now);
+  return structuredCompletion(rawInput, userAgent, now);
 }

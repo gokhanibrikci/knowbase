@@ -22,9 +22,28 @@ import {
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type",
+  "access-control-allow-headers": "content-type, authorization, x-knowbase-probe",
   "cache-control": "no-store",
 } as const;
+
+/**
+ * A probe reads like any agent but is not demand. The smoke test and any monitor set this
+ * header so their recalls neither bump seen_count nor land on the unanswered list; it is
+ * taken only from the header, so nothing in a body can claim it.
+ */
+function isProbe(request: Request): boolean {
+  return request.headers.get("x-knowbase-probe") !== null;
+}
+
+/**
+ * The secret, when the client sends it once in the connection rather than in each body.
+ * The installer binds it there so it never passes through the model's context. A body
+ * that carries its own agentSecret wins, so a client can still be explicit.
+ */
+function bearerSecret(request: Request): string | null {
+  const header = request.headers.get("authorization") ?? "";
+  return header.match(/^Bearer\s+(kbw_[0-9a-f]{32})\s*$/i)?.[1] ?? null;
+}
 
 function respond(status: number, body: Record<string, unknown>) {
   return Response.json(
@@ -39,7 +58,7 @@ const USAGE = {
   recall:
     "GET ?problem=<error text>&env=next@16.3.0,node@22 — or POST {\"action\":\"recall\",\"problem\":\"...\",\"environment\":[\"next@16.3.0\"]}. No key needed.",
   report:
-    'POST {"action":"report","agentId":"...","agentSecret":"...","worked":true,"solutionId":"..."} to confirm what recall showed you, or {"...","problem":"...","solution":"..."} for something new. Report failures too.',
+    'POST {"action":"report","worked":true,"solutionId":"..."} with the secret in an `Authorization: Bearer kbw_…` header to confirm what recall showed you, or {"...","problem":"...","solution":"..."} for something new. Report failures too. agentId/agentSecret in the body still work.',
   register:
     'POST {"action":"register","name":"your-handle","display":"Your Name"} — you choose the name; the secret is shown once.',
   rotate:
@@ -63,7 +82,7 @@ export async function GET(request: Request) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const result = await xpRecall({ problem, environment: env });
+  const result = await xpRecall({ problem, environment: env, probe: isProbe(request) });
   return respond(result.httpStatus, result.ok ? result.body : { ...result.body, usage: USAGE });
 }
 
@@ -82,6 +101,10 @@ export async function POST(request: Request) {
   // discarded and replaced with what Cloudflare saw.
   const args = { ...(body as Record<string, unknown>) };
   delete args.callerNetwork;
+  delete args.probe;
+  if (isProbe(request)) args.probe = true;
+  const bearer = bearerSecret(request);
+  if (bearer && typeof args.agentSecret !== "string") args.agentSecret = bearer;
   const network =
     request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for") ?? "";
   if (network) args.callerNetwork = network;

@@ -28,7 +28,7 @@ declare global {
   }
 
   /**
-   * The slice of D1 the world actually uses. Same policy as above: `wrangler types`
+   * The slice of D1 the store actually uses. Same policy as above: `wrangler types`
    * would hand us the full runtime and a fight with the dom lib; these five methods
    * are the whole dependency.
    * https://developers.cloudflare.com/d1/worker-api/
@@ -50,8 +50,8 @@ declare global {
     QUERY_LOG?: AnalyticsEngineDataset;
     /** What an agent reported back: which cause matched, whether the fix worked. */
     REPORT_LOG?: AnalyticsEngineDataset;
-    /** The agent world: agents, posts, rooms. The first binding the Worker reads back. */
-    WORLD_DB?: D1Database;
+    /** The store: agents, problems, solutions, reports, asks. The binding the Worker reads back. */
+    STORE_DB?: D1Database;
   }
 }
 

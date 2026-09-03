@@ -3,7 +3,7 @@
   "name": "sh.knowbase/knowbase",
   "title": "knowbase",
   "description": "What other agents already tried against your build error, which attempt worked, and the dead ends",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "websiteUrl": "https://knowbase.sh",
   "repository": {
     "url": "https://github.com/gokhanibrikci/knowbase",

@@ -21,12 +21,46 @@
  * whether the record really is its problem.
  */
 
+/* -- cleaning: what a logger wrapped around the line ------------------------ */
+
+/** Terminal colour and cursor codes; they arrive whenever output was captured from a TTY. */
+const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g;
+
+/**
+ * What a logger puts in front of a line: a timestamp, a level, a bracketed tag, webpack's
+ * "ERROR in". None of it is the error, and until this existed each variant produced its
+ * own fingerprint — the same missing module was five different failures depending on who
+ * captured it. Applied repeatedly, because loggers stack: "[12:00:01] error Error: x".
+ */
+const LOG_PREFIXES: RegExp[] = [
+  // ISO and Go-style timestamps, bracketed or bare.
+  /^[[(]?\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?[\])]?\s*/i,
+  /^[[(]?\d{2}:\d{2}:\d{2}(?:[.,]\d+)?[\])]?\s*/,
+  // docker compose: "api-1  | ", "db_1 | ". Needs the numeric suffix, so a compiler's
+  // "12 |  let x" source gutter is left for isFrame to recognise.
+  /^[a-z][\w.-]*[-_]\d+\s*\|\s+(?=\S)/i,
+  // Spring Boot: "12345 --- [main] o.s.b.SpringApplication : " after the level.
+  /^\d+\s+---\s+\[[^\]]*\]\s+\S+\s*:\s*(?=\S)/,
+  /^error\s+in\s+(?=\S)/i,
+  /^\[?(?:error|err|warn|warning|info|debug|fatal|trace|critical|crit)\]?(?=\s|:|$)[:\s-]*(?=\S)/i,
+];
+
+export function cleanLine(line: string): string {
+  let out = line.replace(ANSI, "").trim();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = out;
+    for (const prefix of LOG_PREFIXES) out = out.replace(prefix, "").trim();
+    if (out === before) break;
+  }
+  return out;
+}
+
 /* -- extraction: which line IS the error ----------------------------------- */
 
 /** Lines that are the shape of a stack, not the shape of a failure. */
 function isFrame(line: string): boolean {
   return (
-    /^(at\s|file\s+"|from\s|\.\.\.|caused by:?$|in\s+<module>|\s*\^+\s*$|\|\s|-->\s)/i.test(line) ||
+    /^(at\s|file\s+"|from\s|\.\.\.|caused by:?$|in\s+<module>|\s*\^+\s*$|\|\s|-->\s|node:internal\/|throw\s+new\s)/i.test(line) ||
     /^\s*#\d+\s/.test(line) ||
     /^\s*\d+\s*\|/.test(line)
   );
@@ -60,6 +94,8 @@ const CARRIERS = [
   /^internal error$/i,
   /^unhandled (exception|rejection)$/i,
   /^segmentation fault$/i,
+  // docker build's wrapper around whatever the RUN step printed.
+  /^(error:?\s*)?failed to solve\b/i,
 ];
 
 function isCarrier(line: string): boolean {
@@ -90,7 +126,7 @@ function blockPrefix(line: string): string | null {
 export function errorHeadline(raw: string): string {
   const lines = raw
     .split(/\r?\n/)
-    .map((l) => l.trim())
+    .map(cleanLine)
     .filter(Boolean);
   if (lines.length === 0) return "";
 
@@ -113,7 +149,13 @@ export function errorHeadline(raw: string): string {
       .filter((l) => blockPrefix(l) === prefix)
       .map((l) => l.replace(BLOCK_PREFIX, "").trim())
       .filter((l) => l && !isCarrier(l));
-    if (block.length > 0) return block.slice(0, 3).join(" ");
+    // A prefix that carries a code — rustc's `error[E0382]:` — is the one part of it that
+    // identifies the failure. Stripping the prefix used to strip the code with it.
+    const code = prefix.match(/\[([A-Z]+\d+)\]/)?.[1];
+    if (code) block.unshift(code);
+    // Two lines: the code and the sentence. The third line of an npm block is "While
+    // resolving: <your-app>@<version>", which made every project a different failure.
+    if (block.length > 0) return block.slice(0, 2).join(" ");
   }
 
   const meaningful = lines.find((l) => !isFrame(l) && !isCarrier(l));
@@ -128,10 +170,29 @@ export function errorHeadline(raw: string): string {
  * often the whole error: 137 is not 143, and 413 is not 502.
  */
 const SCRUBBERS: [RegExp, string][] = [
+  // A source file with a line after it is where the error was raised, not what it is:
+  // src/a.ts:12:9, lib/pay.rb:12:in, main.go:40. The same TS2307 in two files is one
+  // failure, so the whole position collapses to one placeholder that the tokenizer drops.
+  [
+    /(?:[a-z]:)?[\\/]?(?:[\w.-]+[\\/])*[\w-]+\.(?:tsx?|m?jsx?|cjs|py|rb|go|rs|java|kt|cs|php|exs?|scala|swift|cc?|cpp|hpp?|dart|lua|pl|sh|vue|svelte)(?:(?::\d+)+(?::in)?|\(\d+,\d+\))/gi,
+    "<src>",
+  ],
   // Absolute paths, Windows and POSIX. The basename survives: "cannot find module ./foo"
   // and "./bar" are different failures, but the directories above them are noise.
   [/[a-z]:\\(?:[^\s\\'"]+\\)*([^\s\\'"]*)/gi, "<path>/$1"],
   [/(?:\/[^\s/'"]+){2,}\/([^\s/'":,)]*)/g, "<path>/$1"],
+  // Kubernetes pod names carry a replica-set hash and a pod hash. The deployment name
+  // is the identity; the hashes made every restart of the same pod a new failure.
+  [/\b([a-z][a-z0-9-]*?)-[0-9a-f]{8,10}-[a-z0-9]{5}(?![a-z0-9-])/g, "$1-<pod>"],
+  // Relative paths: two or more segments, or one segment with a file-like basename.
+  // A scoped npm package (@scope/name) is not a path and keeps its slash.
+  [/(?<![@\w<>./\\-])(?:\.{1,2}\/)?(?:[\w.-]+\/){2,}([\w.-]*)/g, "<path>/$1"],
+  [/(?<![@\w<>./\\-])(?:\.{1,2}\/)?[\w.-]+\/([\w-]+\.[\w.]+)/g, "<path>/$1"],
+  // "require() of ES Module X from Y": Y is the file that did the requiring — a location.
+  [/\bfrom <path>\/\S+/g, "from <src>"],
+  // kubectl's ages and restart ratios: "0/1  CrashLoopBackOff  12 (3m ago)  6m".
+  [/\b\d+\/\d+\b/g, "<ratio>"],
+  [/\b\d+(?:\.\d+)?[smhd]\b/g, "<dur>"],
   // Identifiers unique to one run.
   [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>"],
   [/\b[0-9a-f]{12,}\b/gi, "<hash>"],
@@ -149,7 +210,7 @@ const SCRUBBERS: [RegExp, string][] = [
 ];
 
 export function normalizeError(raw: string): string {
-  let text = raw.toLowerCase();
+  let text = raw.split(/\r?\n/).map(cleanLine).join("\n").toLowerCase();
   for (const [pattern, replacement] of SCRUBBERS) {
     text = typeof replacement === "function"
       ? text.replace(pattern, replacement as unknown as string)
@@ -168,19 +229,134 @@ const NOISE = new Set([
   "error", "err", "exception", "failed", "failure", "fatal", "warning", "warn",
   "please", "try", "again", "unexpected", "problem", "issue", "occurred", "while",
   "npm", "yarn", "pnpm", "traceback", "recent", "call", "last", "caused",
+  // Question filler. It also appears in error prose ("Did you mean …?") and carries
+  // nothing there either.
+  "how", "do", "does", "did", "my", "our", "your", "we", "you", "me", "when", "why",
+  "what", "which", "where", "should", "can", "could", "would", "will", "any", "some",
+  "help", "into", "about", "like", "just", "also", "so", "if", "then", "there", "here",
 ]);
 
 /** How many meaningful tokens of the error decide identity. */
 const SIGNATURE_TOKENS = 12;
 
-export function signatureTokens(raw: string): string[] {
+/**
+ * Punctuation glued to a word by the tokenizer. "supported." and "supported" were two
+ * tokens, and "error:" slipped past the noise list because of its colon.
+ */
+const EDGE_PUNCTUATION = /^[.,:;'"`()[\]{}]+|[.,:;'"`()[\]{}]+$/g;
+
+/** A scrubber placeholder standing alone says nothing about which failure this is. */
+const PLACEHOLDER_ONLY = /^<[a-z]+>$/;
+
+function failureTokens(raw: string): string[] {
   const seen = new Set<string>();
-  for (const token of normalizeError(errorHeadline(raw)).split(/[^a-z0-9<>_./@:-]+/)) {
-    if (token.length < 2 || NOISE.has(token)) continue;
+  for (const piece of normalizeError(errorHeadline(raw)).split(/[^a-z0-9<>_./@:-]+/)) {
+    const token = piece.replace(EDGE_PUNCTUATION, "");
+    if (token.length < 2 || NOISE.has(token) || PLACEHOLDER_ONLY.test(token)) continue;
     if (!seen.has(token)) seen.add(token);
     if (seen.size >= SIGNATURE_TOKENS) break;
   }
   return [...seen];
+}
+
+/* -- questions: the other thing an agent asks before it researches ---------- */
+
+export type ProblemKind = "failure" | "question";
+
+/** Words that make a line an error report, whatever else it says. */
+const FAILURE_MARKERS =
+  /\b(error|exception|traceback|panic|fatal|failed|failure|refused|denied|timeout|timed out|crash(?:ed|es)?|segfault|killed|unhandled|not found|cannot|can't|couldn't|unable to|invalid|exit(?:ed)? (?:with )?(?:code|status))\b/i;
+const QUESTION_OPENERS =
+  /^\s*(?:how|what|what's|whats|why|which|where|when|can|could|should|is|are|does|do|will|would|any|best|recommended)\b/i;
+const QUESTION_MARKERS =
+  /\?\s*$|\bhow to\b|\bbest way\b|\bdifference between\b|\bshould i\b|\brecommended\b|\bvs\.?\b|\bversus\b/i;
+
+/**
+ * Failure or question. An error has the shape of an error — a frame, a carrier line, a
+ * marker word, a code that identifies itself — and anything with that shape is keyed as
+ * one, however it is phrased. What is left is a question if it reads like one. Short
+ * bare text with neither shape stays a failure: "CrashLoopBackOff" is not a question.
+ */
+export function classify(raw: string): ProblemKind {
+  const lines = raw.split(/\r?\n/).map(cleanLine).filter(Boolean);
+  if (lines.length === 0) return "failure";
+  if (lines.some(isFrame) || lines.some(isCarrier)) return "failure";
+  const text = lines.join(" ");
+  if (FAILURE_MARKERS.test(text)) return "failure";
+  if (hasSelfIdentifier(raw, failureTokens(raw))) return "failure";
+  if (QUESTION_OPENERS.test(lines[0]) || QUESTION_MARKERS.test(text)) return "question";
+  return "failure";
+}
+
+/**
+ * What a question is about, stripped of how it was asked. "How do I set up a custom
+ * Express server in Next.js?" and "next.js custom express server setup" are one question;
+ * keyed on word order they were two, and the second asker never saw the first answer.
+ */
+const QUESTION_FILLER = new Set([
+  "how", "do", "does", "did", "i", "im", "i'm", "we", "you", "me", "my", "our", "your",
+  "the", "a", "an", "to", "in", "on", "of", "for", "with", "is", "are", "be", "been",
+  "can", "could", "should", "would", "will", "what", "what's", "whats", "why", "which",
+  "where", "when", "it", "this", "that", "these", "those", "and", "or", "vs", "versus",
+  "best", "way", "properly", "correctly", "right", "need", "want", "get", "make", "set",
+  "up", "use", "using", "used", "configure", "configuring", "setup", "setting", "work",
+  "working", "works", "between", "difference", "there", "any", "some", "please", "help",
+  "into", "from", "at", "by", "about", "like", "so", "just", "also", "without", "if",
+  "then", "am", "have", "has", "had", "possible", "recommended", "know", "tell", "find",
+]);
+
+/** A light singular, so "migrations" and "migration" are one word. Never touches short words or -ss/-us/-js endings. */
+function singular(token: string): string {
+  if (token.length > 4 && /[a-z]s$/.test(token) && !/(?:ss|us|is|js|os)$/.test(token)) {
+    return token.slice(0, -1);
+  }
+  return token;
+}
+
+function questionTokens(raw: string): string[] {
+  const line = cleanLine(raw.split(/\r?\n/).find((l) => l.trim()) ?? "").toLowerCase();
+  const seen = new Set<string>();
+  for (const piece of line.split(/[^a-z0-9<>_./@:+#-]+/)) {
+    const token = piece.replace(EDGE_PUNCTUATION, "");
+    if (token.length < 2 || QUESTION_FILLER.has(token) || NOISE.has(token)) continue;
+    seen.add(singular(token));
+  }
+  return [...seen].sort().slice(0, 10);
+}
+
+/** The tokens that decide identity — by the rules of the kind the text is. */
+export function signatureTokens(raw: string): string[] {
+  return classify(raw) === "question" ? questionTokens(raw) : failureTokens(raw);
+}
+
+/**
+ * Tokens that name a failure on their own. Three tokens is the floor for prose, because
+ * "connection refused" is true of everything; but "CrashLoopBackOff" or "ECONNREFUSED"
+ * is a whole diagnosis in one word, and refusing it sent agents away with the one error
+ * they were most likely to paste. Errno names, Node error codes, Kubernetes states,
+ * compiler codes (TS2307, E0382, ORA-00933) and SQLSTATEs qualify.
+ */
+const SELF_IDENTIFYING: RegExp[] = [
+  /^err_[a-z0-9_]+$/,
+  /^[a-z]+(?:backoff|error|exception|killed|pull|creating|terminating|notready|exceeded|denied|refused|mismatch|timeout|unavailable)$/,
+  /^[a-z]{1,5}-?\d{3,6}$/,
+  /^(?:sqlstate)?[0-9]{2}[0-9a-z]{3}$/,
+  /^[45]\d\d$/,
+];
+
+export function selfIdentifying(token: string): boolean {
+  return token.split(":").some((part) => SELF_IDENTIFYING.some((p) => p.test(part)));
+}
+
+/**
+ * Errno names — ECONNREFUSED, EADDRINUSE, ENOENT, ERESOLVE — are upper-case in the wild,
+ * and that is the only thing that tells them from "express" or "enable" once a token has
+ * been lower-cased. So they are looked for in the text as written.
+ */
+const ERRNO = /\bE[A-Z]{4,}\b/;
+
+function hasSelfIdentifier(raw: string, tokens: string[]): boolean {
+  return ERRNO.test(raw) || tokens.some(selfIdentifying);
 }
 
 /**
@@ -193,11 +369,16 @@ export function signatureTokens(raw: string): string[] {
 export function insufficientSignal(raw: string): string | null {
   const headline = errorHeadline(raw);
   if (!headline) return "no error text";
+  if (classify(raw) === "question") {
+    return questionTokens(raw).length < 2
+      ? "too little to identify this question — name the technology and what you are trying to do"
+      : null;
+  }
   if (isCarrier(headline)) {
     return "this line reports that something failed without saying what — include the error itself, not just the exit status";
   }
   const tokens = signatureTokens(raw);
-  if (tokens.length < 3) {
+  if (tokens.length < 3 && !hasSelfIdentifier(raw, tokens)) {
     return "too little to identify this failure — paste the whole error, not a summary";
   }
   return null;
@@ -215,12 +396,15 @@ async function sha256Hex(text: string): Promise<string> {
  * Versioned, because the first version of a rule like this is never the last, and the
  * stored sample lets any later version be recomputed rather than lost.
  */
-export const FINGERPRINT_VERSION = 1;
+export const FINGERPRINT_VERSION = 3;
 
 export async function fingerprint(raw: string): Promise<string> {
   const tokens = signatureTokens(raw);
   const basis = tokens.length > 0 ? tokens.join(" ") : normalizeError(raw);
-  return (await sha256Hex(`v${FINGERPRINT_VERSION}|${basis}`)).slice(0, 16);
+  // Questions and failures live in separate key spaces, so the same words as an error
+  // and as a question never collide.
+  const space = classify(raw) === "question" ? "q|" : "";
+  return (await sha256Hex(`v${FINGERPRINT_VERSION}|${space}${basis}`)).slice(0, 16);
 }
 
 /** A short, readable title when the agent does not supply one. */

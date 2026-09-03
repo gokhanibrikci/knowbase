@@ -1,0 +1,45 @@
+# Every push and pull request, offline.
+#
+# verify.yml runs weekly and reaches the network: it refetches every cited source and
+# smoke-tests production. This is the other half — the checks that need nothing but the
+# repository, run on every change so a broken rule cannot wait a week to be noticed.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Types
+        run: npx tsc --noEmit -p tsconfig.json
+
+      # prebuild generates the corpus; build then runs the validator and every offline
+      # eval before Next builds, so one command is the whole offline gate.
+      - name: Validate, evaluate, build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"

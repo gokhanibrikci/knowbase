@@ -1,4 +1,4 @@
-import { worldDb } from "@/lib/world/store";
+import { storeDb } from "./agents";
 
 /**
  * D1 access for shared experience. Plain queries only; the rules live in fingerprint.ts
@@ -16,6 +16,8 @@ export type ProblemRow = {
   last_seen_at: number | null;
   /** Which fingerprint rule produced this key; lets a later rule recompute and merge. */
   fp_version: number;
+  /** failure | question */
+  kind: string;
 };
 
 export type SolutionRow = {
@@ -39,20 +41,43 @@ export type ReportRow = {
   created_at: number;
   /** joined from agents: who is actually a distinct voice */
   reg_net_hash: string | null;
-  agent_status: string;
   agent_created_at: number;
 };
 
-export { worldDb };
+export { storeDb };
 
+/**
+ * The problem a fingerprint names — directly, or through an alias left by an agent whose
+ * differently-keyed text turned out to be the same failure.
+ */
 export async function problemByFingerprint(
   db: D1Database,
   fingerprint: string,
 ): Promise<ProblemRow | null> {
-  return await db
+  const direct = await db
     .prepare("SELECT * FROM problems WHERE fingerprint = ?")
     .bind(fingerprint)
     .first<ProblemRow>();
+  if (direct) return direct;
+  return await db
+    .prepare(
+      "SELECT p.* FROM problem_aliases a JOIN problems p ON p.id = a.problem_id WHERE a.fingerprint = ?",
+    )
+    .bind(fingerprint)
+    .first<ProblemRow>();
+}
+
+/** Point a fingerprint at an existing problem. Silently a no-op if the key is taken. */
+export async function insertAlias(
+  db: D1Database,
+  a: { fingerprint: string; problemId: string; fpVersion: number; sample: string; createdBy: string; now: number },
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT OR IGNORE INTO problem_aliases (fingerprint, problem_id, fp_version, sample, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(a.fingerprint, a.problemId, a.fpVersion, a.sample, a.createdBy, a.now)
+    .run();
 }
 
 export async function problemById(db: D1Database, id: string): Promise<ProblemRow | null> {
@@ -68,23 +93,146 @@ export async function insertProblem(
     sample: string;
     createdBy: string;
     fpVersion: number;
+    kind: "failure" | "question";
     now: number;
   },
 ): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO problems (id, fingerprint, title, sample, created_by, created_at, seen_count, last_seen_at, fp_version) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+      "INSERT INTO problems (id, fingerprint, title, sample, created_by, created_at, seen_count, last_seen_at, fp_version, kind) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
     )
-    .bind(p.id, p.fingerprint, p.title, p.sample, p.createdBy, p.now, p.now, p.fpVersion)
+    .bind(p.id, p.fingerprint, p.title, p.sample, p.createdBy, p.now, p.now, p.fpVersion, p.kind)
     .run();
 }
 
-/** Every ask counts, hit or miss: the count is the authoring queue. */
+/**
+ * An ask that found its problem. Misses are counted separately, in `asks`, and fold in
+ * here the moment a report creates the row — so seen_count really is every ask, hit or
+ * miss, and not just the reads of failures that already had an answer.
+ */
 export async function touchProblem(db: D1Database, id: string, now: number): Promise<void> {
   await db
     .prepare("UPDATE problems SET seen_count = seen_count + 1, last_seen_at = ? WHERE id = ?")
     .bind(now, id)
     .run();
+}
+
+/* -- asks: what was asked and got nothing ----------------------------------- */
+
+export type AskRow = {
+  fingerprint: string;
+  fp_version: number;
+  headline: string;
+  sample: string;
+  /** JSON array of "name@version" strings. */
+  environments: string;
+  verdict: string;
+  ask_count: number;
+  first_asked_at: number;
+  last_asked_at: number;
+  /** failure | question */
+  kind: string;
+};
+
+/**
+ * A recall that found nothing, kept — one row per fingerprint, counted. This is the
+ * demand signal the store had no way to see: every ask that arrives before the first
+ * answer exists. Returns the count including this ask.
+ */
+export async function recordAsk(
+  db: D1Database,
+  a: {
+    fingerprint: string;
+    fpVersion: number;
+    headline: string;
+    sample: string;
+    environments: string[];
+    verdict: "none" | "similar";
+    kind: "failure" | "question";
+    now: number;
+  },
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `INSERT INTO asks (fingerprint, fp_version, headline, sample, environments, verdict, ask_count, first_asked_at, last_asked_at, kind)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+       ON CONFLICT(fingerprint) DO UPDATE SET
+         ask_count = asks.ask_count + 1,
+         last_asked_at = excluded.last_asked_at,
+         verdict = excluded.verdict,
+         environments = CASE WHEN excluded.environments = '[]' THEN asks.environments ELSE excluded.environments END
+       RETURNING ask_count`,
+    )
+    .bind(
+      a.fingerprint,
+      a.fpVersion,
+      a.headline,
+      a.sample,
+      JSON.stringify(a.environments),
+      a.verdict,
+      a.now,
+      a.now,
+      a.kind,
+    )
+    .first<{ ask_count: number }>();
+  return row?.ask_count ?? 1;
+}
+
+export async function askByFingerprint(db: D1Database, fingerprint: string): Promise<AskRow | null> {
+  return await db.prepare("SELECT * FROM asks WHERE fingerprint = ?").bind(fingerprint).first<AskRow>();
+}
+
+/**
+ * When a problem row finally appears for a fingerprint agents were already asking about,
+ * the asks it collected become its seen_count and the ask row retires. Returns how many
+ * asks were waiting.
+ */
+export async function foldAskIntoProblem(
+  db: D1Database,
+  fingerprint: string,
+  problemId: string,
+): Promise<number> {
+  const ask = await askByFingerprint(db, fingerprint);
+  if (!ask) return 0;
+  await db.batch([
+    db
+      .prepare("UPDATE problems SET seen_count = seen_count + ? WHERE id = ?")
+      .bind(ask.ask_count, problemId),
+    db.prepare("DELETE FROM asks WHERE fingerprint = ?").bind(fingerprint),
+  ]);
+  return ask.ask_count;
+}
+
+/**
+ * The queue proper: failures asked about that no report has ever answered, most asked
+ * first. `minCount` lets the public page wait for a second ask before showing a headline,
+ * while the maintainer's report sees everything.
+ */
+export async function wantedAsks(db: D1Database, limit: number, minCount: number): Promise<AskRow[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT a.* FROM asks a
+        LEFT JOIN problems p ON p.fingerprint = a.fingerprint
+        LEFT JOIN problem_aliases al ON al.fingerprint = a.fingerprint
+        WHERE p.id IS NULL AND al.problem_id IS NULL AND a.ask_count >= ?
+        ORDER BY a.ask_count DESC, a.last_asked_at DESC LIMIT ?`,
+    )
+    .bind(minCount, limit)
+    .all<AskRow>();
+  return results ?? [];
+}
+
+export async function unansweredAskCount(db: D1Database, minCount: number): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM asks a
+        LEFT JOIN problems p ON p.fingerprint = a.fingerprint
+        LEFT JOIN problem_aliases al ON al.fingerprint = a.fingerprint
+        WHERE p.id IS NULL AND al.problem_id IS NULL AND a.ask_count >= ?`,
+    )
+    .bind(minCount)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 /**
@@ -157,7 +305,7 @@ export async function reportsFor(
   const placeholders = solutionIds.map(() => "?").join(", ");
   const { results } = await db
     .prepare(
-      `SELECT r.*, a.reg_net_hash, a.status AS agent_status, a.created_at AS agent_created_at
+      `SELECT r.*, a.reg_net_hash, a.created_at AS agent_created_at
          FROM reports r JOIN agents a ON a.id = r.agent_id
         WHERE r.solution_id IN (${placeholders}) ORDER BY r.created_at`,
     )
@@ -359,7 +507,6 @@ export async function showcase(db: D1Database): Promise<Showcase | null> {
 export type DirectoryRow = {
   id: string;
   display: string;
-  kind: string;
   created_at: number;
   last_seen_at: number | null;
   reports: number;
@@ -377,14 +524,12 @@ export type DirectoryRow = {
 export async function agentDirectory(db: D1Database, limit: number): Promise<DirectoryRow[]> {
   const { results } = await db
     .prepare(
-      `SELECT a.id, a.display, a.kind, a.created_at, a.last_seen_at,
+      `SELECT a.id, a.display, a.created_at, a.last_seen_at,
               (SELECT COUNT(*) FROM reports r WHERE r.agent_id = a.id) AS reports,
               (SELECT COUNT(*) FROM reports r WHERE r.agent_id = a.id AND r.worked = 1) AS worked,
               (SELECT COUNT(*) FROM solutions s WHERE s.created_by = a.id) AS authored
          FROM agents a
-        WHERE a.id != 'knowbase'
-          AND ((SELECT COUNT(*) FROM reports r WHERE r.agent_id = a.id) > 0
-               OR a.kind = 'resident')
+        WHERE (SELECT COUNT(*) FROM reports r WHERE r.agent_id = a.id) > 0
         ORDER BY reports DESC, a.last_seen_at DESC NULLS LAST
         LIMIT ?`,
     )
@@ -600,6 +745,7 @@ export async function retract(
     problem.created_by === agentId &&
     problem.seen_count <= ASKED_BY_OTHERS;
   if (dropProblem) {
+    await db.prepare("DELETE FROM problem_aliases WHERE problem_id = ?").bind(solution.problem_id).run();
     await db.prepare("DELETE FROM problems WHERE id = ?").bind(solution.problem_id).run();
   }
 
@@ -611,8 +757,7 @@ export async function idleHandles(db: D1Database): Promise<number> {
   const row = await db
     .prepare(
       `SELECT COUNT(*) AS n FROM agents a
-        WHERE a.id != 'knowbase' AND a.kind != 'resident'
-          AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.agent_id = a.id)`,
+        WHERE NOT EXISTS (SELECT 1 FROM reports r WHERE r.agent_id = a.id)`,
     )
     .first<{ n: number }>();
   return row?.n ?? 0;
@@ -648,11 +793,21 @@ export async function forgetAgent(
     .all<{ id: string; problem_id: string }>();
 
   await db.prepare("DELETE FROM reports WHERE agent_id = ?").bind(agentId).run();
+  // Alias links this agent left are its contribution too.
+  await db.prepare("DELETE FROM problem_aliases WHERE created_by = ?").bind(agentId).run();
   for (const s of owned.results ?? []) {
     await db.prepare("DELETE FROM reports WHERE solution_id = ?").bind(s.id).run();
     await db.prepare("DELETE FROM solutions WHERE id = ?").bind(s.id).run();
   }
   for (const problemId of new Set((owned.results ?? []).map((s) => s.problem_id))) {
+    await db
+      .prepare(
+        `DELETE FROM problem_aliases WHERE problem_id = ?1
+           AND EXISTS (SELECT 1 FROM problems WHERE id = ?1 AND created_by = ?2)
+           AND NOT EXISTS (SELECT 1 FROM solutions WHERE problem_id = ?1)`,
+      )
+      .bind(problemId, agentId)
+      .run();
     await db
       .prepare(
         `DELETE FROM problems WHERE id = ?1 AND created_by = ?2
@@ -662,29 +817,18 @@ export async function forgetAgent(
       .run();
   }
   await db
+    .prepare(
+      `DELETE FROM problem_aliases WHERE problem_id IN
+         (SELECT id FROM problems WHERE created_by = ?1
+            AND NOT EXISTS (SELECT 1 FROM solutions WHERE problem_id = problems.id))`,
+    )
+    .bind(agentId)
+    .run();
+  await db
     .prepare("DELETE FROM problems WHERE created_by = ?1 AND NOT EXISTS (SELECT 1 FROM solutions WHERE problem_id = problems.id)")
     .bind(agentId)
     .run();
 
-  // Rows left over from the retired social layer, which still hold foreign keys.
-  // A reply written by somebody else points at a post that is about to go. The reply is
-  // theirs to keep, so the thread link is cut rather than the reply deleted.
-  try {
-    await db
-      .prepare("UPDATE posts SET reply_to = NULL WHERE reply_to IN (SELECT id FROM posts WHERE agent_id = ?)")
-      .bind(agentId)
-      .run();
-  } catch {
-    // The retired layer may already be gone.
-  }
-
-  for (const table of ["posts", "memories", "deeds", "follows"]) {
-    try {
-      await db.prepare(`DELETE FROM ${table} WHERE agent_id = ?`).bind(agentId).run();
-    } catch {
-      // A table from the retired layer that no longer exists is not a reason to fail.
-    }
-  }
   await db.prepare("DELETE FROM agents WHERE id = ?").bind(agentId).run();
   return { ok: true };
 }

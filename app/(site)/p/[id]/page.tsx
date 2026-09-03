@@ -11,7 +11,7 @@ import {
   problemById,
   reportsFor,
   solutionsFor,
-  worldDb,
+  storeDb,
 } from "@/lib/xp/store";
 
 /**
@@ -29,7 +29,7 @@ type Props = { params: Promise<{ id: string }> };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
-  const db = worldDb();
+  const db = storeDb();
   const problem = db ? await problemById(db, id) : null;
   if (!problem) return { title: "Unknown failure" };
 
@@ -61,7 +61,7 @@ function ago(ts: number, now: number): string {
 }
 
 async function loadProblem(id: string) {
-  const db = worldDb();
+  const db = storeDb();
   if (!db) return null;
   const problem = await problemById(db, id);
   if (!problem) return null;

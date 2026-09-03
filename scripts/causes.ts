@@ -10,17 +10,25 @@
  * says an entry's `primary` weighting is wrong, or that a cause we called an edge
  * case is the common one.
  *
- * Outcomes are shown next to it and should be read far more sceptically: nobody has
- * to report, failures under-report worse than successes, and none of it is verified.
- * A run of "did not work" is a reason for a human to reread the sources. It is not,
- * and must never become, an input to an entry's stated confidence.
+ * Completions are shown next to it: which verification criteria an agent reported met
+ * or not met, per entry revision. Read them sceptically — nobody has to report, and none
+ * of it is independently verified. A run of unresolved completions is a reason for a
+ * human to reread the sources. It is not, and must never become, an input to an entry's
+ * stated confidence.
  */
 import { CYAN, DIM, GREEN, RESET, YELLOW, cf, readToken, resolveZone } from "./lib/cloudflare";
 
 const DATASET = "knowbase_reports";
 
 type CauseRow = { slug: string; cause: string; hits: number; avg_lead: number };
-type OutcomeRow = { slug: string; worked: number; hits: number; note: string };
+type CompletionRow = {
+  slug: string;
+  status: string;
+  ko_revision: string;
+  hits: number;
+  met: number;
+  total: number;
+};
 type SqlResponse<T> = { data?: T[]; error?: string; errors?: { message: string }[] };
 
 function arg(name: string): string | undefined {
@@ -60,22 +68,23 @@ async function main() {
       AND blob1 = 'diagnosis' AND blob4 = ''
   `);
 
-  // Grouped by note as well as outcome: Analytics Engine SQL has no any()/argMax,
-  // and distinct notes are distinct information anyway — "fails on k3s 1.29" and
-  // "fails behind a proxy" should not collapse into one row.
-  const outcomes = await run<OutcomeRow>(`
-    SELECT blob3 AS slug, double1 AS worked, blob5 AS note,
-           sum(_sample_interval) AS hits
+  // The structured signal: which criteria were met, per entry revision. This is the one
+  // channel that says "resolved" or "unresolved" against named checks rather than a
+  // boolean, and it was written for a year before anything read it back.
+  const completions = await run<CompletionRow>(`
+    SELECT blob3 AS slug, blob8 AS status, blob9 AS ko_revision,
+           sum(_sample_interval) AS hits,
+           avg(double2) AS met, avg(double3) AS total
     FROM ${DATASET}
-    WHERE timestamp > now() - INTERVAL '${days}' DAY AND blob1 = 'outcome'
-    GROUP BY slug, worked, note
+    WHERE timestamp > now() - INTERVAL '${days}' DAY AND blob1 = 'completion'
+    GROUP BY slug, status, ko_revision
     ORDER BY slug ASC, hits DESC
-    LIMIT 100
+    LIMIT 200
   `);
 
   console.log(`${CYAN}${DATASET}${RESET} — last ${days}d\n`);
 
-  if (causes.length === 0 && outcomes.length === 0) {
+  if (causes.length === 0 && completions.length === 0) {
     console.log(`${YELLOW}No agent has reported back yet.${RESET}`);
     console.log(
       `${DIM}/diagnose.json and /outcome.json are advertised in llms.txt; until one is`,
@@ -112,12 +121,32 @@ async function main() {
     }
   }
 
-  if (outcomes.length > 0) {
-    console.log(`\n${GREEN}Outcomes${RESET} ${DIM}(a lead for re-verification, not evidence)${RESET}`);
-    for (const row of outcomes) {
-      const label = Number(row.worked) === 1 ? `${GREEN}worked ${RESET}` : `${YELLOW}failed ${RESET}`;
-      console.log(`  ${String(row.hits).padStart(4)}× ${label} ${row.slug}`);
-      if (row.note) console.log(`${DIM}          ${row.note}${RESET}`);
+  if (completions.length > 0) {
+    console.log(`\n${GREEN}Completions${RESET} ${DIM}(criteria-level: the strongest signal here)${RESET}`);
+    const bySlug = new Map<string, { resolved: number; total: number }>();
+    for (const row of completions) {
+      const tally = bySlug.get(row.slug) ?? { resolved: 0, total: 0 };
+      tally.total += Number(row.hits);
+      if (row.status === "resolved") tally.resolved += Number(row.hits);
+      bySlug.set(row.slug, tally);
+    }
+    for (const row of completions) {
+      const label =
+        row.status === "resolved"
+          ? `${GREEN}resolved    ${RESET}`
+          : row.status === "unresolved"
+            ? `${YELLOW}unresolved  ${RESET}`
+            : `${DIM}inconclusive${RESET}`;
+      console.log(
+        `  ${String(row.hits).padStart(4)}× ${label} ${row.slug}${DIM} rev ${row.ko_revision} · ${Number(row.met).toFixed(1)}/${Number(row.total).toFixed(1)} criteria${RESET}`,
+      );
+    }
+    for (const [slug, tally] of bySlug) {
+      if (tally.total >= 3 && tally.resolved / tally.total < 0.5) {
+        console.log(
+          `\n${YELLOW}re-verification due:${RESET} ${slug} — fewer than half of ${tally.total} completions resolved`,
+        );
+      }
     }
   }
 

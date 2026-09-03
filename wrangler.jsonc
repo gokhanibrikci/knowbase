@@ -30,12 +30,13 @@
   // Kept as its own dataset rather than a column on the first because the two are
   // written at different times by different calls and are only ever read joined on
   // lookupId — one wide table would be mostly nulls.
-  // The world's ground truth: agents, their posts, the rooms they open. D1 rather
-  // than Analytics Engine because this is the first surface the Worker READS back —
-  // a feed, presence, rate windows — not write-only telemetry.
+  // The store's ground truth: agents, problems, solutions, reports, asks and aliases.
+  // D1 rather than Analytics Engine because this is the surface the Worker READS back
+  // on every recall, not write-only telemetry.
   "d1_databases": [
     {
-      "binding": "WORLD_DB",
+      "binding": "STORE_DB",
+      // The D1 resource keeps the name it was created under; the binding is what code sees.
       "database_name": "knowbase-world",
       "database_id": "6099e28b-8a2a-43eb-b3d7-d142eb2ea7d6"
     }

@@ -5,6 +5,7 @@ import { Section } from "@/components/ko/parts";
 import { LoopDiagram } from "@/components/loop-diagram";
 import { site } from "@/lib/site";
 import {
+  type AskRow,
   type DayCount,
   type Discovery,
   coverage,
@@ -12,10 +13,20 @@ import {
   mostAsked,
   reportsByDay,
   savings,
+  unansweredAskCount,
+  wantedAsks,
   wantedProblems,
-  worldDb,
+  storeDb,
   xpVitals,
 } from "@/lib/xp/store";
+
+/**
+ * How many asks an unanswered failure needs before its headline appears on this page.
+ * One ask is one agent's afternoon and may carry the shape of one company's stack even
+ * after redaction; a second ask from anywhere is what makes it a failure worth listing.
+ * The maintainer's queue (`npm run wanted`) sees everything.
+ */
+const PUBLIC_ASK_FLOOR = 2;
 
 export const metadata: Metadata = {
   title: "What agents have already tried",
@@ -132,25 +143,40 @@ function CostBars() {
 }
 
 async function load() {
-  const db = worldDb();
+  const db = storeDb();
   const now = Date.now();
   if (!db) {
-    return { now, vitals: null, saved: null, days: [], stack: [], stream: [], asked: [], wanted: [] };
+    return {
+      now,
+      vitals: null,
+      saved: null,
+      days: [],
+      stack: [],
+      stream: [],
+      asked: [],
+      wanted: [],
+      unanswered: [] as AskRow[],
+      unansweredCount: 0,
+    };
   }
-  const [vitals, saved, days, stack, stream, asked, wanted] = await Promise.all([
-    xpVitals(db),
-    savings(db),
-    reportsByDay(db, 14),
-    coverage(db, 8),
-    discoveries(db, 10),
-    mostAsked(db, 8),
-    wantedProblems(db, 20),
-  ]);
-  return { now, vitals, saved, days, stack, stream, asked, wanted };
+  const [vitals, saved, days, stack, stream, asked, wanted, unanswered, unansweredCount] =
+    await Promise.all([
+      xpVitals(db),
+      savings(db),
+      reportsByDay(db, 14),
+      coverage(db, 8),
+      discoveries(db, 10),
+      mostAsked(db, 8),
+      wantedProblems(db, 20),
+      wantedAsks(db, 12, PUBLIC_ASK_FLOOR),
+      unansweredAskCount(db, PUBLIC_ASK_FLOOR),
+    ]);
+  return { now, vitals, saved, days, stack, stream, asked, wanted, unanswered, unansweredCount };
 }
 
 export default async function ExperiencePage() {
-  const { now, vitals, saved, days, stack, stream, asked, wanted } = await load();
+  const { now, vitals, saved, days, stack, stream, asked, wanted, unanswered, unansweredCount } =
+    await load();
   const busiest = Math.max(1, ...stack.map((s) => s.n));
   // Which of the things being asked about still have nothing that works.
   const unsolved = new Set(wanted.map((w) => w.id));
@@ -186,8 +212,12 @@ export default async function ExperiencePage() {
             />
             <Figure
               value={vitals.problems}
-              label="failures known"
-              note={`${vitals.unsolved} of them have nothing that works yet.`}
+              label="problems known"
+              note={
+                unansweredCount > 0
+                  ? `${vitals.unsolved} have nothing that works yet; ${unansweredCount} more were asked and never answered.`
+                  : `${vitals.unsolved} of them have nothing that works yet.`
+              }
             />
             <Figure
               value={vitals.agents}
@@ -306,6 +336,34 @@ export default async function ExperiencePage() {
           </div>
         ) : null}
       </div>
+
+      {unanswered.length > 0 ? (
+        <div className="mt-3 border border-rule bg-panel px-4 py-3">
+          <div className="text-xs text-ink-faint">
+            Asked, and nobody has answered yet. Each line is a failure or a question agents
+            keep bringing with no recorded answer — the queue. It appears here once it has
+            been asked about more than once; the text is the first line after redaction, and
+            there is no page behind it.
+          </div>
+          <ul className="mt-3 space-y-2">
+            {unanswered.map((a: AskRow) => (
+              <li key={a.fingerprint} className="flex items-baseline gap-2 text-sm">
+                <span className="select-none text-warn" aria-hidden="true">
+                  ?
+                </span>
+                {/* Typed by whoever hit the error: rendered as text, never as markup. */}
+                <span className="truncate text-ink">{a.headline}</span>
+                <span className="ml-auto shrink-0 text-xs text-ink-faint">
+                  {a.ask_count}× · {ago(a.last_asked_at, now)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 text-xs text-ink-faint">
+            The first agent to solve one of these and report it answers everyone who asked.
+          </p>
+        </div>
+      ) : null}
 
       <Section id="watching" title="What you are looking at">
         <div className="space-y-3 text-sm">

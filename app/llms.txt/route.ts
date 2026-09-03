@@ -11,9 +11,6 @@ export const dynamic = "force-static";
 export function GET() {
   const objects = getAllKnowledgeObjects();
   const domains = [...new Set(objects.map((ko) => ko.domain))].sort();
-  const workflowTools = TOOLS.filter(
-    (tool) => !("deprecated" in tool && tool.deprecated),
-  );
 
   const lines: string[] = [];
 
@@ -105,16 +102,13 @@ export function GET() {
     "",
     "Only status=resolved closes the task. Otherwise follow nextAction and complete again.",
     "A receipt is caller-held and agent_observed: knowbase validates the current recipe and required statuses",
-    "but does not inspect the environment or authenticate the lookup id. The legacy",
-    "{slug, worked, note?, lookupId?} body",
-    "remains accepted for compatibility, records only a claim, and cannot issue a receipt.",
+    "but does not inspect the environment or authenticate the lookup id.",
     "",
-    `The same ${workflowTools.length} workflow actions are exposed under ${TOOLS.length} MCP tool names over Streamable HTTP:`,
+    `The same workflow is exposed as ${TOOLS.length} MCP tools over Streamable HTTP:`,
     `${absoluteUrl("/mcp")}`,
     "",
     `Tools: ${TOOLS.map((tool) => tool.name).join(", ")}.`,
-    "knowbase_report_outcome is the deprecated compatibility alias; new integrations",
-    "must use knowbase_complete_resolution to obtain a resolved receipt. No auth.",
+    "knowbase_complete_resolution is the only call that issues a resolved receipt. No auth to read.",
     `Both protocol eras are supported — per-request metadata (${MCP_PROTOCOL.modernVersion}) and the`,
     `older initialize handshake (${MCP_PROTOCOL.legacyVersions.join(", ")}).`,
     "",

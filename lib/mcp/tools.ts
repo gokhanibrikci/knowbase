@@ -25,7 +25,7 @@ import {
 export { INSTRUCTIONS, TOOLS, type ToolDefinition } from "@/lib/mcp/contract";
 
 /**
- * Three workflow actions exposed under four tool names, and what they return.
+ * The library's workflow actions, and what they return.
  *
  * A thin wrapper over the same functions /search.json, /diagnose.json and
  * /outcome.json call — deliberately, so the two surfaces cannot drift into
@@ -33,8 +33,7 @@ export { INSTRUCTIONS, TOOLS, type ToolDefinition } from "@/lib/mcp/contract";
  *
  * Lookup and diagnosis stay concise prose because a model reads "3 of 5 causes
  * ruled out" better than a nested dump. Structured completion returns JSON because
- * its receipt and nextAction are a machine contract, while the deprecated outcome
- * alias preserves its exact legacy copy.
+ * its receipt and nextAction are a machine contract.
  */
 
 export type ToolOutcome = { text: string; isError?: boolean };
@@ -244,7 +243,7 @@ function runDiagnosis(args: Record<string, unknown>, userAgent: string): ToolOut
   } else if (result.identified) {
     lines.push("", "Structured completion is unavailable for this cause.");
     lines.push(
-      "knowbase_report_outcome remains a deprecated compatibility recorder, but it cannot issue a resolved receipt.",
+      "Record what you did and whether it worked with knowbase_report, so the next agent to hit this failure sees it.",
     );
   }
 
@@ -264,36 +263,25 @@ function completeResolutionTool(
   };
 }
 
-function reportOutcome(args: Record<string, unknown>, userAgent: string): ToolOutcome {
-  // Supplying the key even when its value is absent deliberately selects the legacy
-  // branch, preserving the old required-field errors byte for byte.
-  const result = completeResolution({ ...args, worked: args.worked }, userAgent);
-  return {
-    text: result.toolText ?? JSON.stringify(result.body, null, 2),
-    ...(result.ok ? {} : { isError: true }),
-  };
-}
-
 type ToolHandler = (
   args: Record<string, unknown>,
   userAgent: string,
 ) => ToolOutcome | Promise<ToolOutcome>;
 
 const TOOL_HANDLERS = {
-  knowbase_recall: worldTool(xpRecall),
-  knowbase_report: worldTool(xpReport),
-  knowbase_retract: worldTool(xpRetract),
-  knowbase_forget_me: worldTool(xpForgetMe),
-  knowbase_rotate_secret: worldTool(xpRotateSecret),
-  knowbase_register: worldTool(xpRegister),
+  knowbase_recall: storeTool(xpRecall),
+  knowbase_report: storeTool(xpReport),
+  knowbase_retract: storeTool(xpRetract),
+  knowbase_forget_me: storeTool(xpForgetMe),
+  knowbase_rotate_secret: storeTool(xpRotateSecret),
+  knowbase_register: storeTool(xpRegister),
   knowbase_lookup: lookup,
   knowbase_diagnose: runDiagnosis,
   knowbase_complete_resolution: completeResolutionTool,
-  knowbase_report_outcome: reportOutcome,
 } satisfies Record<ToolName, ToolHandler>;
 
-/** World services return {ok, body}; on the tool wire that is text + isError. */
-function worldTool(
+/** Store services return {ok, body}; on the tool wire that is text + isError. */
+function storeTool(
   fn: (args: Record<string, unknown>) => Promise<{ ok: boolean; body: Record<string, unknown> }>,
 ): ToolHandler {
   return async (args) => {

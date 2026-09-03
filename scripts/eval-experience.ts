@@ -13,6 +13,7 @@
 import { XP_LIMITS } from "../lib/mcp/contract";
 import { FINGERPRINT_VERSION } from "../lib/xp/fingerprint";
 import {
+  classify,
   environmentMatch,
   errorHeadline,
   fingerprint,
@@ -117,6 +118,124 @@ async function main() {
     /eresolve/i.test(errorHeadline(NPM_ERESOLVE)),
     errorHeadline(NPM_ERESOLVE),
   );
+
+  // ---- v2: what a logger wraps around the line is not the error --------------
+  const bare = await fingerprint("Error: Cannot find module 'lodash'");
+  for (const [name, variant] of [
+    ["trailing period", "Error: Cannot find module 'lodash'."],
+    ["ISO timestamp and level", "2026-09-02T10:00:00.123Z ERROR Error: Cannot find module 'lodash'"],
+    ["bracketed clock and yarn's error word", "[12:00:01] error Error: Cannot find module 'lodash'"],
+    ["ANSI colour", "\u001b[31mError: Cannot find module 'lodash'\u001b[0m"],
+    ["webpack's ERROR in", "ERROR in Error: Cannot find module 'lodash'"],
+    ["docker compose service prefix", "web-1  | Error: Cannot find module 'lodash'"],
+  ] as const) {
+    check(
+      `logger dressing does not split a failure: ${name}`,
+      (await fingerprint(variant)) === bare,
+      variant,
+    );
+  }
+
+  // ---- v2: where it happened is not what happened ---------------------------
+  const tsA = await fingerprint(
+    "src/a.ts:12:9 - error TS2307: Cannot find module 'react' or its corresponding type declarations.",
+  );
+  const tsB = await fingerprint(
+    "src/b.ts:3:1 - error TS2307: Cannot find module 'react' or its corresponding type declarations.",
+  );
+  const tsC = await fingerprint(
+    "src/c.ts(7,3): error TS2307: Cannot find module 'react' or its corresponding type declarations.",
+  );
+  check("the same compiler error in three files is one failure", tsA === tsB && tsB === tsC, `${tsA} ${tsB} ${tsC}`);
+  const tsZod = await fingerprint(
+    "src/a.ts:12:9 - error TS2307: Cannot find module 'zod' or its corresponding type declarations.",
+  );
+  check("but a different missing module is a different failure", tsA !== tsZod);
+
+  const rubyA = await fingerprint(
+    "/app/lib/pay.rb:12:in `charge': undefined method `amount' for nil:NilClass (NoMethodError)",
+  );
+  const rubyB = await fingerprint(
+    "/srv/y/lib/pay.rb:99:in `charge': undefined method `amount' for nil:NilClass (NoMethodError)",
+  );
+  check("a Ruby frame's line number does not split a failure", rubyA === rubyB, `${rubyA} ${rubyB}`);
+
+  const esmA = await fingerprint(
+    "Error [ERR_REQUIRE_ESM]: require() of ES Module /app/node_modules/chalk/source/index.js from /app/dist/cli.js not supported.",
+  );
+  const esmB = await fingerprint(
+    "Error [ERR_REQUIRE_ESM]: require() of ES Module /srv/x/node_modules/chalk/source/index.js from /srv/x/lib/server.js not supported.",
+  );
+  check("the file that did the requiring is a location, not the failure", esmA === esmB, `${esmA} ${esmB}`);
+
+  const relA = await fingerprint("Error: ENOENT: no such file or directory, open 'config/settings.json'");
+  const relB = await fingerprint(
+    "Error: ENOENT: no such file or directory, open 'C:\\Users\\dev\\app\\config\\settings.json'",
+  );
+  check("a relative path and a Windows path to the same file are one failure", relA === relB, `${relA} ${relB}`);
+  const scoped = signatureTokens("Error: Cannot find module '@opennextjs/cloudflare'");
+  check("a scoped npm package is not a path", scoped.includes("@opennextjs/cloudflare"), scoped.join(" "));
+
+  const podA = await fingerprint(
+    "Back-off restarting failed container api in pod api-7d9f8c6b5-x2k9q_default(3f1a2b3c-1111-4bbb-8ccc-0123456789ab)",
+  );
+  const podB = await fingerprint(
+    "Back-off restarting failed container api in pod api-5c4b3a2f1-q9w8e_default(9e2b7d40-2222-4aaa-9ddd-fedcba987654)",
+  );
+  check("pod hashes do not split a failure", podA === podB, `${podA} ${podB}`);
+
+  const foo = await fingerprint("Error: Cannot find module './foo'");
+  const bar = await fingerprint("Error: Cannot find module './bar'");
+  check("but two different missing modules stay two failures", foo !== bar);
+
+  // ---- v2: codes survive their prefix, and identify a failure on their own ----
+  const rust = errorHeadline("error[E0382]: borrow of moved value: `s`\n --> src/main.rs:5:20");
+  check("rustc's error code survives its prefix", /E0382/.test(rust), rust);
+  check(
+    "trailing punctuation is not part of a token",
+    signatureTokens("require() of ES Module not supported.").includes("supported"),
+  );
+  check(
+    "'error:' does not slip past the noise list on its colon",
+    !signatureTokens("Error: connect ECONNREFUSED 127.0.0.1:5432").some((t) => t.startsWith("error")),
+  );
+  for (const short of [
+    "CrashLoopBackOff",
+    "ImagePullBackOff",
+    "ECONNREFUSED 127.0.0.1:5432",
+    "EADDRINUSE :::3000",
+    "npm error code ERESOLVE",
+    "TS2307",
+  ]) {
+    check(`a self-identifying code is enough on its own: "${short}"`, insufficientSignal(short) === null, insufficientSignal(short) ?? "");
+  }
+  check("two ordinary words are still too little", insufficientSignal("connection refused") !== null);
+  check(
+    "docker build's wrapper line is a carrier",
+    insufficientSignal('ERROR: failed to solve: process "/bin/sh -c npm ci" did not complete successfully: exit code: 1') !== null,
+  );
+
+  // ---- questions: keyed on what they are about, not how they are asked ------------
+  const q1 = await fingerprint("How do I configure a custom Express server in Next.js?");
+  const q2 = await fingerprint("What's the best way to set up a custom Express server with Next.js?");
+  const q3 = await fingerprint("next.js custom express server setup — how?");
+  check("three phrasings of one question are one key", q1 === q2 && q2 === q3, `${q1} ${q2} ${q3}`);
+  const q4 = await fingerprint("How do I configure a custom Fastify server in Next.js?");
+  check("a different question is a different key", q1 !== q4);
+  check("a question is classified as one", classify("How do I run Prisma migrations in CI?") === "question");
+  check(
+    "an error phrased as a question is still a failure",
+    classify("Why does my pod show CrashLoopBackOff?") === "failure" &&
+      classify("How do I fix Error [ERR_REQUIRE_ESM]: require() of ES Module not supported?") === "failure",
+  );
+  check("bare short text is a failure, not a question", classify("CrashLoopBackOff") === "failure");
+  check(
+    "a one-word question is too little",
+    insufficientSignal("How do I use Prisma?") !== null && insufficientSignal("How do I run Prisma migrations in CI?") === null,
+    insufficientSignal("How do I use Prisma?") ?? "accepted",
+  );
+  const asError = await fingerprint("Error: custom express server next.js");
+  check("the same words as an error and as a question never collide", asError !== q1);
 
   // ---- carrier lines may never become a mega-problem --------------------------
   for (const carrier of [
@@ -266,7 +385,7 @@ async function main() {
     honest.distinctNetworks === 5,
   );
   check(
-    "an hour-old agent's confirmation counts — the gate is age, not square activity",
+    "an hour-old agent's confirmation counts — the gate is age alone",
     summarize(
       [{ agentId: "settled", netHash: "net-s", provisional: false, worked: true, env, prompted: true, at: 3 }],
       author,

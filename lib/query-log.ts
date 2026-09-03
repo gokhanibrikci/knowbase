@@ -29,6 +29,24 @@ const MAX_UA_BYTES = 256;
 export function redact(text: string): string {
   return (
     text
+      // Credentials recognisable by their issuer's prefix, whatever their length: AWS
+      // access keys, Google API keys, Slack, GitHub, OpenAI and Anthropic, Stripe, npm,
+      // and our own. Every one of these was published verbatim by an earlier version,
+      // because it was shorter than the high-entropy rule's forty characters or carried
+      // a hyphen that broke the run.
+      .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[redacted]")
+      .replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, "[redacted]")
+      .replace(/\bxox[abeprs]-[0-9A-Za-z-]{10,}\b/g, "[redacted]")
+      .replace(/\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{20,}\b/g, "[redacted]")
+      .replace(/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b/g, "[redacted]")
+      .replace(/\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}\b/g, "[redacted]")
+      .replace(/\bnpm_[A-Za-z0-9]{30,}\b/g, "[redacted]")
+      .replace(/\bkbw_[0-9a-f]{32}\b/g, "[redacted]")
+      .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[redacted key]")
+      // HTTP Basic credentials are base64 of user:password — a credential, not a word.
+      .replace(/\b(basic)\s+[A-Za-z0-9+/=]{16,}/gi, "$1 [redacted]")
+      // Tokens carried in a query string.
+      .replace(/([?&](?:access_token|api_key|apikey|key|token|secret|sig|signature|password|pwd)=)[^&\s"']+/gi, "$1[redacted]")
       // A labelled credential — but only where something is actually being assigned.
       // Without the separator this ate ordinary prose: "after rotating the secret."
       // became "secret=[redacted]", and a sentence explaining where a token lives lost
@@ -38,7 +56,7 @@ export function redact(text: string): string {
       // which redacted the word and published the token. The lookbehind replaces \b on
       // the left so MY_SECRET=… matches too — \b does not fire after an underscore.
       .replace(
-        /(?<![A-Za-z0-9])(pass(word)?|pwd|token|secret|api[-_]?key|authorization)(?![A-Za-z0-9])\s*[:=]\s*(?:bearer\s+)?(\S+)/gi,
+        /(?<![A-Za-z0-9])(pass(word)?|pwd|token|secret|api[-_]?key|authorization)(?![A-Za-z0-9])\s*[:=]\s*(?:bearer\s+|basic\s+)?(\S+)/gi,
         "$1=[redacted]",
       )
       .replace(/\bbearer\s+[A-Za-z0-9_\-.+/=]{8,}/gi, "bearer [redacted]")
@@ -53,13 +71,14 @@ export function redact(text: string): string {
       // Long high-entropy runs: JWTs, hex digests, base64 blobs. A run that hyphens
       // break into short word-sized segments is prose — an entry slug, not a secret;
       // real blobs keep at least one long unbroken alphanumeric stretch. This started
-      // to matter when the world made redaction part of published text: the librarian
-      // cited /k/kubernetes-init-crashloopbackoff-init-error and shipped /k/[redacted].
+      // to matter once redaction became part of published text: an entry slug like
+      // /k/kubernetes-init-crashloopbackoff-init-error came out as /k/[redacted].
       .replace(/\b[A-Za-z0-9_-]{40,}\b/g, (run) =>
         run.split("-").some((segment) => segment.length >= 25) ? "[redacted]" : run,
       )
-      // Credentials embedded in a URL: postgres://user:pw@host
-      .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1[redacted]@")
+      // Credentials embedded in a URL: postgres://user:pw@host — and redis://:pw@host,
+      // where the user is empty and the old rule let the password through.
+      .replace(/([a-z][a-z0-9+.-]*:\/\/)(?:[^/\s:@]*:)?[^/\s@]+@/gi, "$1[redacted]@")
   );
 }
 
@@ -163,13 +182,6 @@ export type Report =
       observations: string;
     }
   | {
-      kind: "outcome";
-      lookupId: string;
-      slug: string;
-      worked: boolean;
-      note: string;
-    }
-  | {
       kind: "completion";
       lookupId: string;
       slug: string;
@@ -187,10 +199,10 @@ export type Report =
  * What an agent found when it went and checked.
  *
  *   blob1 kind  blob2 lookup id  blob3 slug  blob4 cause
- *   blob5 observations or note  blob6 user agent
+ *   blob5 observations  blob6 user agent
  *   blob7 completion receipt/attempt id  blob8 completion status  blob9 KO revision
  *   blob10 cause resolution id
- *   double1 lead (diagnosis), worked as 0/1 (outcome), or resolved as 0/1
+ *   double1 lead (diagnosis) or resolved as 0/1 (completion)
  *   double2 completion criteria met  double3 completion criteria total
  *
  * Same boundary as the query log, restated because this is the file where it would
@@ -214,11 +226,7 @@ export function logReport(report: Report, userAgent: string): boolean {
           : report.kind === "completion"
             ? report.causeId
             : "",
-        report.kind === "diagnosis"
-          ? clip(redact(report.observations), MAX_QUERY_BYTES)
-          : report.kind === "outcome"
-            ? clip(redact(report.note), MAX_QUERY_BYTES)
-            : "",
+        report.kind === "diagnosis" ? clip(redact(report.observations), MAX_QUERY_BYTES) : "",
         clip(userAgent, MAX_UA_BYTES),
         report.kind === "completion" ? report.outcomeId : "",
         report.kind === "completion" ? report.status : "",
@@ -228,9 +236,7 @@ export function logReport(report: Report, userAgent: string): boolean {
       doubles:
         report.kind === "diagnosis"
           ? [report.lead, 0, 0]
-          : report.kind === "outcome"
-            ? [report.worked ? 1 : 0, 0, 0]
-            : [report.status === "resolved" ? 1 : 0, report.criteriaMet, report.criteriaTotal],
+          : [report.status === "resolved" ? 1 : 0, report.criteriaMet, report.criteriaTotal],
     });
     return true;
   } catch {

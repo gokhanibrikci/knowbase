@@ -192,25 +192,6 @@ async function main() {
   });
   assert.equal(skippedStep.httpStatus, 400);
 
-  // Legacy worked:boolean remains a claim and never upgrades into resolution truth.
-  const legacy = await postOutcome({ slug, worked: true, lookupId });
-  assert.equal(legacy.response.status, 200);
-  assert.equal(legacy.body.status, "recorded");
-  assert.equal(legacy.body.verificationLevel, "claimed");
-  assert.equal(legacy.body.recorded, true);
-  assert.equal(legacy.body.resolutionReceipt, null);
-
-  const legacyMcpResponse = await mcpPost(
-    modernToolRequest("knowbase_report_outcome", { slug, worked: true, lookupId }),
-  );
-  const legacyEnvelope = await json(legacyMcpResponse);
-  const legacyResult = legacyEnvelope.result as JsonObject;
-  const legacyContent = legacyResult.content as JsonObject[];
-  assert.equal(
-    legacyContent[0].text,
-    `Recorded for ${slug}. This does not raise the entry's confidence — that is gated on evidence, not on use.`,
-  );
-
   // HTTP and MCP are adapters over the same domain result.
   const mcpResponse = await mcpPost(modernToolRequest("knowbase_complete_resolution", input));
   assert.equal(mcpResponse.status, 200);
@@ -231,7 +212,7 @@ async function main() {
   // No outcome path is allowed to mutate evidence confidence.
   assert.equal(getKnowledgeObject(slug)?.confidence, confidenceBefore);
 
-  console.log("resolution contract: resolved/unresolved/inconclusive, legacy and HTTP/MCP parity passed");
+  console.log("resolution contract: resolved/unresolved/inconclusive and HTTP/MCP parity passed");
 }
 
 main().catch((error) => {

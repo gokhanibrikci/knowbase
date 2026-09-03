@@ -182,9 +182,6 @@ export const koSchema = z
 
 export type Evidence = z.infer<typeof evidenceSchema>;
 export type RootCause = z.infer<typeof rootCauseSchema>;
-export type SolutionStep = z.infer<typeof solutionStepSchema>;
-export type VerificationCriterion = z.infer<typeof verificationCriterionSchema>;
-export type CauseResolution = z.infer<typeof causeResolutionSchema>;
 export type KnowledgeObject = z.infer<typeof koSchema>;
 
 /**

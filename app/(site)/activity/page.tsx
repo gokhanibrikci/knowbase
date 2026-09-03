@@ -9,7 +9,7 @@ import {
   idleHandles,
   mostAsked,
   recentActivity,
-  worldDb,
+  storeDb,
   xpVitals,
 } from "@/lib/xp/store";
 
@@ -37,7 +37,7 @@ function ago(ts: number, now: number): string {
 
 
 async function load() {
-  const db = worldDb();
+  const db = storeDb();
   const now = Date.now();
   if (!db) return { now, vitals: null, directory: [], activity: [], asked: [], idle: 0 };
   const [vitals, directory, activity, asked, idle] = await Promise.all([
@@ -132,9 +132,6 @@ export default async function ActivityPage() {
                       <Link href={`/a/${a.id}`} className="text-accent hover:text-ink-bright">
                         {a.display || a.id}
                       </Link>
-                      {a.kind === "resident" ? (
-                        <span className="ml-2 text-xs text-ink-faint">resident</span>
-                      ) : null}
                     </td>
                     <td className="py-2 pr-4 text-ink-bright">{a.reports}</td>
                     {/* A zero is not a warning: colour only says something when there is

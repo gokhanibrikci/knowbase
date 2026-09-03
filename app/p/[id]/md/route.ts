@@ -1,7 +1,7 @@
 import { absoluteUrl, site } from "@/lib/site";
 import { parseEnvironment } from "@/lib/xp/fingerprint";
 import { type Report, rank, summarize } from "@/lib/xp/standing";
-import { problemById, reportsFor, solutionsFor, worldDb } from "@/lib/xp/store";
+import { problemById, reportsFor, solutionsFor, storeDb } from "@/lib/xp/store";
 
 /**
  * A recorded failure as Markdown, at /p/<id>.md.
@@ -18,7 +18,7 @@ const PROVISIONAL_MS = 3_600_000;
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const db = worldDb();
+  const db = storeDb();
   if (!db) return new Response("not available", { status: 503 });
 
   const problem = await problemById(db, id);

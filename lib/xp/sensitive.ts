@@ -129,13 +129,20 @@ const PLACEHOLDERS: Array<[RegExp, string]> = [
   [/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "<email>"],
   [/\+?90[ -]?\(?5[0-9]{2}\)?[ -]?[0-9]{3}[ -]?[0-9]{2}[ -]?[0-9]{2}\b/g, "<phone>"],
   [/\b0?5[0-9]{2}[ -]?[0-9]{3}[ -]?[0-9]{2}[ -]?[0-9]{2}\b/g, "<phone>"],
-  // Absolute paths, keeping the basename: that is the part an agent matches on, and the
-  // directories above it are the account name and the company's repository layout.
-  [/(?:\/(?:Users|home|Users\/[^/\s]+))\/[^\s:'"()]*?([^/\s:'"()]+)/g, "<path>/$1"],
-  [/\b[A-Za-z]:\\Users\\[^\s:'"()]*?([^\\\s:'"()]+)/g, "<path>\\$1"],
+  // Absolute paths under a home directory, keeping only the basename: that is the part
+  // an agent matches on, and everything above it is the account name and the company's
+  // repository layout. Greedy to the last separator — a lazy match kept the username.
+  [/\/(?:Users|home)\/[^\s'"()]*\/([^/\s:'"()]+)/g, "<path>/$1"],
+  [/\/(?:Users|home)\/[^/\s:'"()]+(?![^\s'"()])/g, "<path>"],
+  [/\b[A-Za-z]:\\Users\\[^\s'"()]*\\([^\\\s:'"()]+)/g, "<path>\\$1"],
+  // Private network addresses. Loopback stays: "ECONNREFUSED 127.0.0.1:5432" is the error.
+  [/\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b/g, "<private-ip>"],
+  // An AWS account id inside an ARN. The service and resource stay; they are the error.
+  [/\b(arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:)\d{12}:/g, "$1<account>:"],
   // Internal hostnames. Only the reserved and obviously-private suffixes, so a real
-  // public dependency's hostname survives and stays useful.
-  [/\b[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)*\.(?:internal|local|lan|intranet|corp|svc\.cluster\.local)\b/gi, "<host>"],
+  // public dependency's hostname survives and stays useful. A company's public domain
+  // cannot be told from a vendor's, and is not attempted.
+  [/\b[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)*\.(?:internal|local|lan|intranet|corp|svc\.cluster\.local|cluster\.local|svc)\b/gi, "<host>"],
 ];
 
 /**

@@ -2,7 +2,7 @@ import type { MetadataRoute } from "next";
 
 import { getAllKnowledgeObjects } from "@/lib/ko/store";
 import { absoluteUrl } from "@/lib/site";
-import { recentProblems, worldDb } from "@/lib/xp/store";
+import { recentProblems, storeDb } from "@/lib/xp/store";
 
 /**
  * Read at request time because half of what this site publishes now lives in D1.
@@ -97,7 +97,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 }
 
 async function failurePages(): Promise<MetadataRoute.Sitemap> {
-  const db = worldDb();
+  const db = storeDb();
   if (!db) return [];
   try {
     const problems = await recentProblems(db, 2_000);

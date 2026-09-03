@@ -38,7 +38,7 @@ const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "POST, GET, OPTIONS",
   "access-control-allow-headers":
-    "content-type, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id, last-event-id",
+    "content-type, authorization, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id, last-event-id, x-knowbase-probe",
   "cache-control": "no-store",
 } as const;
 
@@ -88,6 +88,24 @@ function decodeHeaderValue(raw: string): string {
   } catch {
     return raw;
   }
+}
+
+/**
+ * What the connection itself says about a call, folded into the tool arguments.
+ *
+ * The probe header marks the smoke test and monitors so their recalls are not counted as
+ * demand; only the header can set that flag. The Authorization header carries the agent's
+ * secret when the client was connected by the installer, so knowbase_report needs no
+ * credentials in its arguments and the secret never passes through the model's context.
+ * Arguments that name their own secret are left alone.
+ */
+function withRequestContext(request: Request, args: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...args };
+  delete out.probe;
+  if (request.headers.get("x-knowbase-probe") !== null) out.probe = true;
+  const bearer = (request.headers.get("authorization") ?? "").match(/^Bearer\s+(kbw_[0-9a-f]{32})\s*$/i)?.[1];
+  if (bearer && typeof out.agentSecret !== "string") out.agentSecret = bearer;
+  return out;
 }
 
 async function toolResult(name: string, args: Record<string, unknown>, userAgent: string) {
@@ -265,7 +283,7 @@ export async function POST(request: Request) {
         return fail(id, INVALID_PARAMS, `Unknown tool: ${name}`);
       }
 
-      const args = (params.arguments ?? {}) as Record<string, unknown>;
+      const args = withRequestContext(request, (params.arguments ?? {}) as Record<string, unknown>);
       return modernOk(id, await toolResult(name, args, userAgent));
     }
 
@@ -307,7 +325,7 @@ export async function POST(request: Request) {
     if (!isToolName(name)) {
       return fail(id, INVALID_PARAMS, `Unknown tool: ${name}`);
     }
-    const args = (params.arguments ?? {}) as Record<string, unknown>;
+    const args = withRequestContext(request, (params.arguments ?? {}) as Record<string, unknown>);
     return ok(id, await toolResult(name, args, userAgent));
   }
 

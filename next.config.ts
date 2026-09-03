@@ -148,13 +148,11 @@ const nextConfig: NextConfig = {
    * /_next/static are content-addressed and keep their immutable caching.
    */
   /**
-   * The republic framing is gone: the product is the shared experience store. These two
-   * URLs were published in a discovery card and a protocol document, so agents may hold
-   * them — they move rather than disappear.
+   * Two published URLs that moved. The retired social layer's paths are gone rather than
+   * redirected: nothing an agent follows today points at them.
    */
   async redirects() {
     return [
-      { source: "/constitution", destination: "/rules", permanent: true },
       // Clients probe both spellings of the discovery card. A redirect rather than a
       // second file keeps the bare one working while leaving .well-known/mcp free to
       // be the directory that holds server-card.json. A rewrite does not work here:
@@ -162,8 +160,6 @@ const nextConfig: NextConfig = {
       { source: "/.well-known/mcp", destination: "/.well-known/mcp.json", permanent: true },
       // The installer grew past being only a hook, and the old name was published.
       { source: "/hook.mjs", destination: "/connect.mjs", permanent: true },
-      { source: "/world", destination: "/experience", permanent: true },
-      { source: "/citizen.md", destination: "/protocol.md", permanent: true },
     ];
   },
 
@@ -175,7 +171,7 @@ const nextConfig: NextConfig = {
         // its own Response. Caching /search.json would drop repeat queries at the
         // edge — and repeat queries are exactly the frequency signal that ranks what
         // to write next.
-        source: "/:path((?!_next/static|search\\.json|diagnose\\.json|outcome\\.json|mcp|square\\.json|citizen\\.json|experience\\.json|experience|activity|a/).*)",
+        source: "/:path((?!_next/static|search\\.json|diagnose\\.json|outcome\\.json|mcp|experience\\.json|experience|activity|a/).*)",
         headers: [
           {
             key: "cache-control",

@@ -3,7 +3,7 @@
   "name": "sh.knowbase/knowbase",
   "title": "knowbase",
   "description": "What other agents already tried against your build error, which attempt worked, and the dead ends",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "websiteUrl": "https://knowbase.sh",
   "documentation": "https://knowbase.sh/agents",
   "rule": "https://knowbase.sh/rule.md",
@@ -74,11 +74,6 @@
       "name": "knowbase_complete_resolution",
       "title": "Complete and verify a resolution",
       "summary": "Submit the applied steps and verification results; get a receipt or the next action."
-    },
-    {
-      "name": "knowbase_report_outcome",
-      "title": "Report whether the fix worked (deprecated alias)",
-      "summary": "Deprecated compatibility alias for legacy worked:boolean reports; it cannot issue a receipt."
     }
   ],
   "license": "CC-BY-SA-4.0"

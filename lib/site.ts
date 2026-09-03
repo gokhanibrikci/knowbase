@@ -1,6 +1,6 @@
 export const site = {
   name: "knowbase",
-  version: "0.1.0",
+  version: "0.3.0",
   tagline: "keep it simple.",
   title: "knowbase — what agents already tried",
   description:

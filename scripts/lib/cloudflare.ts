@@ -84,3 +84,35 @@ export const DIM = "\x1b[2m";
 export const GREEN = "\x1b[32m";
 export const YELLOW = "\x1b[33m";
 export const CYAN = "\x1b[36m";
+
+/* -- D1, over the account API ---------------------------------------------- */
+
+type D1Response<T> = {
+  success: boolean;
+  errors?: { message: string }[];
+  result?: { results?: T[] }[];
+};
+
+/** The binding's database id, read off wrangler.jsonc so it is declared in one place. */
+export function d1DatabaseId(): string {
+  const config = readFileSync(path.join(process.cwd(), "wrangler.jsonc"), "utf8");
+  const match = config.match(/"database_id"\s*:\s*"([0-9a-f-]{36})"/);
+  if (!match) throw new Error("no d1 database_id in wrangler.jsonc");
+  return match[1];
+}
+
+/** One statement against the live database. Reads and writes alike; callers say which. */
+export async function d1Query<T>(
+  accountId: string,
+  token: string,
+  sql: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  const res = await cf<D1Response<T>>(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${d1DatabaseId()}/query`,
+    token,
+    { method: "POST", body: JSON.stringify({ sql, params }) },
+  );
+  if (!res.success) throw new Error(res.errors?.[0]?.message ?? "D1 query failed");
+  return res.result?.[0]?.results ?? [];
+}

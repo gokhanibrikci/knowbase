@@ -16,6 +16,7 @@
  * Monday would poison the one thing the store is for.
  */
 const BASE = (process.env.BASE ?? "https://knowbase.sh").replace(/\/$/, "");
+const PROBE = { "x-knowbase-probe": "smoke" } as const;
 
 const RESET = "\x1b[0m";
 const RED = "\x1b[31m";
@@ -35,7 +36,9 @@ type Json = Record<string, unknown>;
 async function call(body: Json, path = "/experience.json"): Promise<{ status: number; json: Json }> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    // A probe is not demand: this header keeps the run's recalls out of seen_count and
+    // off the unanswered list, so a weekly CI run cannot make the store look busier.
+    headers: { "content-type": "application/json", ...PROBE },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -97,7 +100,9 @@ async function main() {
   const thin = await call({ action: "recall", problem: "Build failed with exit code 1" });
   check("a carrier line is refused with a reason", thin.json.match === "insufficient_signal");
 
-  const viaGet = await fetch(`${BASE}/experience.json?problem=${encodeURIComponent(KNOWN)}`);
+  const viaGet = await fetch(`${BASE}/experience.json?problem=${encodeURIComponent(KNOWN)}`, {
+    headers: PROBE,
+  });
   check("the GET path answers too", viaGet.status === 200, `HTTP ${viaGet.status}`);
 
   // ---- writing ----
