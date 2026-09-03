@@ -686,6 +686,64 @@ async function main() {
     "a dead end has no confirmation to date",
     summarize([one("b", false, at(1))], author, env, NOW).freshness === null,
   );
+  // The boundaries themselves, so "fresh" and "stale" mean the documented thing.
+  check(
+    "ninety days is still fresh, ninety-one is aging, a year is aging, a year and a day is stale",
+    summarize([one("b", true, at(90))], author, env, NOW).freshness === "fresh" &&
+      summarize([one("b", true, at(91))], author, env, NOW).freshness === "aging" &&
+      summarize([one("b", true, at(365))], author, env, NOW).freshness === "aging" &&
+      summarize([one("b", true, at(366))], author, env, NOW).freshness === "stale",
+  );
+  check(
+    "an aging confirmation says when, without the warning a stale one carries",
+    /Last confirmed \d+ months ago\./.test(summarize([one("b", true, at(200))], author, env, NOW).claim) &&
+      !summarize([one("b", true, at(200))], author, env, NOW).claim.includes("moved on"),
+    summarize([one("b", true, at(200))], author, env, NOW).claim,
+  );
+  const sixWeeksAgo = summarize([one("b", true, at(80)), one("c", false, at(45))], author, env, NOW);
+  check(
+    "the age words never round a month and a half up into two months",
+    sixWeeksAgo.claim.includes("45 days ago") && !sixWeeksAgo.claim.includes("2 months ago"),
+    sixWeeksAgo.claim,
+  );
+
+  // Which failures may speak as "the latest word".
+  const newcomer: Report = { ...one("c", false, at(1)), provisional: true };
+  const byNewcomer = summarize([one("b", true, at(40)), newcomer], author, env, NOW);
+  check(
+    "a brand-new handle's failure is recorded but does not become the latest word",
+    !byNewcomer.contradictedSince && byNewcomer.failed === 1,
+    byNewcomer.claim,
+  );
+  const elsewhere = summarize(
+    [one("b", true, at(40)), one("c", false, at(1), parseEnvironment(["next@9.0.0"]))],
+    author,
+    env,
+    NOW,
+  );
+  check(
+    "a failure on a different major is not evidence that something changed underneath",
+    !elsewhere.contradictedSince && elsewhere.failed === 1,
+    elsewhere.claim,
+  );
+
+  // Evidence outranks age; the latest word still outranks both.
+  const wellConfirmedButOld = summarize(
+    [one("b", true, at(400)), one("c", true, at(400)), one("d", true, at(400))],
+    author,
+    env,
+    NOW,
+  );
+  const freshSelfReport = summarize([one(author, true, at(1))], author, env, NOW);
+  check(
+    "three independent confirmations, stale, still outrank one fresh uncorroborated self-report",
+    rank(wellConfirmedButOld, freshSelfReport) < 0,
+    `${wellConfirmedButOld.independent} independent vs ${freshSelfReport.independent}`,
+  );
+  check(
+    "but a fix contradicted since its last confirmation still sinks below one that is not",
+    rank(summarize([one("b", true, at(40))], author, env, NOW), contradicted) < 0,
+  );
 
   console.log(
     failed === 0

@@ -102,6 +102,7 @@ export default async function ProblemPage({ params }: Props) {
   const loaded = await loadProblem(id);
   if (!loaded) notFound();
   const { problem, now, worked, deadEnds } = loaded;
+  const accepted = worked.find((w) => !w.standing.contradictedSince) ?? null;
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -112,18 +113,21 @@ export default async function ProblemPage({ params }: Props) {
       text: problem.sample,
       answerCount: worked.length + deadEnds.length,
       dateCreated: new Date(problem.created_at).toISOString(),
-      ...(worked[0]
+      // Whatever is offered as the accepted answer is the one a search engine may quote
+      // on its own, away from the tags beside it — so a fix this page marks as
+      // contradicted since its last confirmation is never it.
+      ...(accepted
         ? {
             acceptedAnswer: {
               "@type": "Answer",
-              text: worked[0].solution.body,
-              upvoteCount: worked[0].standing.independent + worked[0].standing.prompted,
-              dateCreated: new Date(worked[0].solution.created_at).toISOString(),
+              text: accepted.solution.body,
+              upvoteCount: accepted.standing.independent + accepted.standing.prompted,
+              dateCreated: new Date(accepted.solution.created_at).toISOString(),
               url: absoluteUrl(`/p/${problem.id}#worked`),
             },
           }
         : {}),
-      suggestedAnswer: [...worked.slice(1), ...deadEnds].map(({ solution, standing }) => ({
+      suggestedAnswer: [...worked.filter((w) => w !== accepted), ...deadEnds].map(({ solution, standing }) => ({
         "@type": "Answer",
         text: solution.body,
         upvoteCount: standing.independent + standing.prompted,
@@ -209,7 +213,7 @@ export default async function ProblemPage({ params }: Props) {
                 ) : null}
                 {standing.lastConfirmedAt ? (
                   <p className="mt-1 text-xs text-ink-faint">
-                    last confirmed {ago(standing.lastConfirmedAt, now)} ago
+                    last confirmed {ago(standing.lastConfirmedAt, now)}
                   </p>
                 ) : null}
               </li>

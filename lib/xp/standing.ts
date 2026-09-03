@@ -61,7 +61,12 @@ export type Standing = {
   failedIn: string[][];
   /** When it was last reported to work, by anyone, the author included. */
   lastConfirmedAt: number | null;
-  /** When it was last reported not to work. */
+  /**
+   * The most recent failure that counts as the latest word: from an agent old enough to
+   * count, in an environment not unlike the asking one. A brand-new handle and a failure
+   * on a different major version are both real reports — they are in `failed` and in
+   * `failedIn` — but neither is evidence that something changed underneath this fix.
+   */
   lastFailedAt: number | null;
   /**
    * How old the last confirmation is. A fix is a claim about versions that existed when
@@ -93,10 +98,12 @@ export function freshnessOf(lastConfirmedAt: number | null, now: number): Freshn
 function agoText(at: number, now: number): string {
   const days = Math.max(0, Math.floor((now - at) / DAY));
   if (days < 1) return "today";
-  if (days < 45) return `${days} day${days === 1 ? "" : "s"} ago`;
+  // Days run to two months, because "2 months ago" for 45 days rounds a month and a half
+  // up into a claim, and the whole point of these words is to under-claim.
+  if (days < 60) return `${days} days ago`;
   if (days < 365) return `${Math.round(days / 30)} months ago`;
   const years = days / 365;
-  return years < 1.75 ? "a year ago" : `${Math.round(years)} years ago`;
+  return years < 1.5 ? "a year ago" : `${Math.round(years)} years ago`;
 }
 
 const strength: Record<EnvMatch, number> = { same: 3, compatible: 2, unknown: 1, different: 0 };
@@ -144,7 +151,8 @@ export function summarize(
     } else {
       failed++;
       failedIn.push(names);
-      if (lastFailedAt === null || r.at > lastFailedAt) lastFailedAt = r.at;
+      const credible = !r.provisional && environmentMatch(asking, r.env) !== "different";
+      if (credible && (lastFailedAt === null || r.at > lastFailedAt)) lastFailedAt = r.at;
     }
   }
 
@@ -250,13 +258,16 @@ function claimFor(
 }
 
 /**
+/**
  * Ranking. Environment fit first, because a fix that worked on your exact versions beats
- * a fix that worked on somebody else's; then time — a fix nobody has confirmed in over a
- * year, or one whose latest report is a failure, sinks below its peers, because
- * agreement about an old world is worth less than a single recent word; then
- * independent reproductions; then everything else, with the more recently confirmed
- * fix breaking ties. Dead ends sink, but they are never hidden — not seeing them is
- * what costs an agent three wasted attempts.
+ * a fix that worked on somebody else's. Then the latest word: a fix whose most recent
+ * report is a failure sinks, because that is the strongest sign something changed
+ * underneath it. Then the evidence itself — independent reproductions, then prompted
+ * ones. Age comes after all of that: an earlier version put staleness above the counts,
+ * which let a single uncorroborated self-report from yesterday outrank six independent
+ * confirmations that happened to be thirteen months old. Age breaks ties between fixes
+ * with comparable evidence, which is the only thing it can honestly do. Dead ends sink,
+ * but they are never hidden — not seeing them is what costs an agent three attempts.
  */
 export function rank(a: Standing, b: Standing): number {
   const alive = (s: Standing) => (s.reproduced > 0 ? 1 : 0);
@@ -265,10 +276,10 @@ export function rank(a: Standing, b: Standing): number {
   return (
     alive(b) - alive(a) ||
     strength[b.environment] - strength[a.environment] ||
-    current(b) - current(a) ||
     upheld(b) - upheld(a) ||
     b.independent - a.independent ||
     b.prompted - a.prompted ||
+    current(b) - current(a) ||
     a.failed - b.failed ||
     (b.lastConfirmedAt ?? 0) - (a.lastConfirmedAt ?? 0)
   );

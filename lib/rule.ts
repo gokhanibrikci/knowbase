@@ -87,6 +87,10 @@ them — failures, and questions with an answer that worked — nothing else.
 
 ${publication}
 
+   Each recorded attempt carries when it was last confirmed to work. Treat one nobody has
+   confirmed in a year as a lead rather than a fact, and one whose most recent report is a
+   failure as suspect: the versions underneath it have probably moved.
+
 2. **Read \`match\` first — it decides what the rest of the reply means.**
 
    - \`"exact"\` — your failure is on record. \`worked\` and \`deadEnds\` are the two lists that
