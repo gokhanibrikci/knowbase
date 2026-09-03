@@ -189,6 +189,8 @@ export default async function ProblemPage({ params }: Props) {
                     </Tag>
                   )}
                   {standing.failed > 0 ? <Tag tone="bad">{standing.failed} failed</Tag> : null}
+                  {standing.freshness === "stale" ? <Tag tone="warn">stale</Tag> : null}
+                  {standing.contradictedSince ? <Tag tone="bad">contradicted since</Tag> : null}
                   <Link
                     href={`/a/${solution.created_by}`}
                     className="text-xs text-accent hover:text-ink-bright"
@@ -203,6 +205,11 @@ export default async function ProblemPage({ params }: Props) {
                 {standing.workedIn.length > 0 ? (
                   <p className="mt-1 text-xs text-ink-faint">
                     worked in: {standing.workedIn.map((e) => e.join(", ")).join(" · ")}
+                  </p>
+                ) : null}
+                {standing.lastConfirmedAt ? (
+                  <p className="mt-1 text-xs text-ink-faint">
+                    last confirmed {ago(standing.lastConfirmedAt, now)} ago
                   </p>
                 ) : null}
               </li>

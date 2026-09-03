@@ -633,6 +633,60 @@ async function main() {
     signatureTokens(PY_MISSING_MODULE).length > 1 && signatureTokens(PY_MISSING_MODULE).length <= 12,
   );
 
+  // ---- decay: a confirmation is dated, and the latest word counts -------------------
+  const DAY = 86_400_000;
+  const NOW = 3_000 * DAY;
+  const at = (daysAgo: number) => NOW - daysAgo * DAY;
+  const one = (agentId: string, worked: boolean, when: number, e = env): Report => ({
+    agentId,
+    netHash: `net-${agentId}`,
+    provisional: false,
+    worked,
+    env: e,
+    prompted: false,
+    at: when,
+  });
+  const freshFix = summarize([one("b", true, at(10))], author, env, NOW);
+  const staleFix = summarize([one("b", true, at(500))], author, env, NOW);
+  check(
+    "a confirmation ten days old is fresh and the claim says nothing about age",
+    freshFix.freshness === "fresh" && !/Last confirmed/.test(freshFix.claim),
+    freshFix.claim,
+  );
+  check(
+    "a confirmation five hundred days old is stale and the claim says when",
+    staleFix.freshness === "stale" && /Last confirmed a year ago; the versions involved have likely moved on/.test(staleFix.claim),
+    staleFix.claim,
+  );
+  check(
+    "equal evidence: the more recently confirmed fix ranks first",
+    rank(freshFix, staleFix) < 0 && rank(staleFix, freshFix) > 0,
+  );
+  const contradicted = summarize([one("b", true, at(40)), one("c", false, at(2))], author, env, NOW);
+  const upheld = summarize([one("b", true, at(40)), one("c", false, at(60))], author, env, NOW);
+  check(
+    "a failure newer than every confirmation is named as the latest word",
+    contradicted.contradictedSince && /newer than any confirmation/.test(contradicted.claim),
+    contradicted.claim,
+  );
+  check(
+    "a failure older than the confirmation is a disagreement, not the latest word",
+    !upheld.contradictedSince && !/newer than any confirmation/.test(upheld.claim),
+    upheld.claim,
+  );
+  check(
+    "equal evidence: the fix contradicted since its confirmation ranks below the one upheld",
+    rank(upheld, contradicted) < 0,
+  );
+  check(
+    "a stale fix on your versions still beats a fresh fix on other versions",
+    rank(staleFix, summarize([one("d", true, at(1), parseEnvironment(["django@5.0"]))], author, env, NOW)) < 0,
+  );
+  check(
+    "a dead end has no confirmation to date",
+    summarize([one("b", false, at(1))], author, env, NOW).freshness === null,
+  );
+
   console.log(
     failed === 0
       ? `\n${GREEN}experience: fingerprints hold, environments compare honestly, standing never overstates${RESET}`

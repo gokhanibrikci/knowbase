@@ -79,6 +79,13 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       if (standing.failedIn.length > 0) {
         lines.push(`- Did not work in: ${standing.failedIn.map((e) => e.join(", ")).join(" · ")}`);
       }
+      if (standing.lastConfirmedAt) {
+        lines.push(
+          `- Last confirmed: ${new Date(standing.lastConfirmedAt).toISOString().slice(0, 10)}${
+            standing.freshness === "stale" ? " (stale — the versions involved have likely moved on)" : ""
+          }${standing.contradictedSince ? " — the most recent report says it did not work" : ""}`,
+        );
+      }
       lines.push("");
     }
   }

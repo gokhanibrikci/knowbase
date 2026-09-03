@@ -209,7 +209,7 @@ async function describeProblem(
       prompted: r.prompted === 1,
       at: r.created_at,
     }));
-    const standing = summarize(reports, solution.created_by, asking);
+    const standing = summarize(reports, solution.created_by, asking, now);
     const commands = commandsIn(solution.body);
     const warnings = hazards(solution.body);
     const facts = safeJson(solution.packages) as PackageFact[];
@@ -235,6 +235,11 @@ async function describeProblem(
         environmentFit: standing.environment,
         workedIn: standing.workedIn,
         failedIn: standing.failedIn,
+        // A confirmation is dated evidence. The age travels with it, and a failure newer
+        // than every confirmation is flagged rather than averaged away.
+        lastConfirmed: standing.lastConfirmedAt ? new Date(standing.lastConfirmedAt).toISOString() : null,
+        freshness: standing.freshness,
+        contradictedSince: standing.contradictedSince,
         verdict: standing.claim,
         // Lifted out of the prose so the thing that will actually be executed is the
         // thing that gets read, each with what is worth pausing over.

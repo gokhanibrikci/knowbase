@@ -59,9 +59,45 @@ export type Standing = {
   workedIn: string[][];
   /** Environments it is known to have failed in. */
   failedIn: string[][];
+  /** When it was last reported to work, by anyone, the author included. */
+  lastConfirmedAt: number | null;
+  /** When it was last reported not to work. */
+  lastFailedAt: number | null;
+  /**
+   * How old the last confirmation is. A fix is a claim about versions that existed when
+   * it was made, and versions move: a confirmation from two years ago is still evidence,
+   * but it is evidence about a different world, and the reader is told so.
+   */
+  freshness: Freshness | null;
+  /**
+   * The latest word is that it did not work. A failure reported after every confirmation
+   * is the strongest sign that something changed underneath the fix, and it outweighs
+   * older agreement rather than being averaged into it.
+   */
+  contradictedSince: boolean;
   /** One line an agent can act on, stated no more strongly than the evidence allows. */
   claim: string;
 };
+
+export type Freshness = "fresh" | "aging" | "stale";
+const DAY = 86_400_000;
+export const FRESH_MS = 90 * DAY;
+export const STALE_MS = 365 * DAY;
+
+export function freshnessOf(lastConfirmedAt: number | null, now: number): Freshness | null {
+  if (lastConfirmedAt === null) return null;
+  const age = now - lastConfirmedAt;
+  return age <= FRESH_MS ? "fresh" : age <= STALE_MS ? "aging" : "stale";
+}
+
+function agoText(at: number, now: number): string {
+  const days = Math.max(0, Math.floor((now - at) / DAY));
+  if (days < 1) return "today";
+  if (days < 45) return `${days} day${days === 1 ? "" : "s"} ago`;
+  if (days < 365) return `${Math.round(days / 30)} months ago`;
+  const years = days / 365;
+  return years < 1.75 ? "a year ago" : `${Math.round(years)} years ago`;
+}
 
 const strength: Record<EnvMatch, number> = { same: 3, compatible: 2, unknown: 1, different: 0 };
 
@@ -69,6 +105,7 @@ export function summarize(
   reports: Report[],
   authorId: string,
   asking: Environment[],
+  now: number = Date.now(),
 ): Standing {
   const byAgent = new Map<string, Report>();
   // One standing report per agent; the newest wins if the store ever hands us more.
@@ -86,12 +123,15 @@ export function summarize(
   let best: EnvMatch = "unknown";
   const workedIn: string[][] = [];
   const failedIn: string[][] = [];
+  let lastConfirmedAt: number | null = null;
+  let lastFailedAt: number | null = null;
 
   for (const r of settled) {
     const names = r.env.map((e) => (e.version ? `${e.name}@${e.version}` : e.name));
     if (r.worked) {
       reproduced++;
       workedIn.push(names);
+      if (lastConfirmedAt === null || r.at > lastConfirmedAt) lastConfirmedAt = r.at;
       // The author vouching for their own solution is the report, not a second opinion,
       // and a brand-new arrival is not yet a voice at all.
       if (r.agentId !== authorId && !r.provisional) {
@@ -104,8 +144,13 @@ export function summarize(
     } else {
       failed++;
       failedIn.push(names);
+      if (lastFailedAt === null || r.at > lastFailedAt) lastFailedAt = r.at;
     }
   }
+
+  const freshness = freshnessOf(lastConfirmedAt, now);
+  const contradictedSince =
+    lastFailedAt !== null && lastConfirmedAt !== null && lastFailedAt > lastConfirmedAt;
 
   return {
     reproduced,
@@ -116,18 +161,50 @@ export function summarize(
     environment: best,
     workedIn: workedIn.slice(0, 5),
     failedIn: failedIn.slice(0, 5),
-    claim: claimFor({
-      independent,
-      prompted,
-      failed,
-      environment: best,
-      distinctNetworks: networks.size,
-    }),
+    lastConfirmedAt,
+    lastFailedAt,
+    freshness,
+    contradictedSince,
+    claim: claimFor(
+      {
+        independent,
+        prompted,
+        failed,
+        environment: best,
+        distinctNetworks: networks.size,
+        lastConfirmedAt,
+        lastFailedAt,
+        freshness,
+        contradictedSince,
+      },
+      now,
+    ),
   };
 }
 
+/** The age of the last confirmation, when it is old enough to matter. */
+function dated(s: Pick<Standing, "lastConfirmedAt" | "freshness">, now: number): string {
+  if (s.lastConfirmedAt === null || s.freshness === "fresh") return "";
+  const when = agoText(s.lastConfirmedAt, now);
+  return s.freshness === "stale"
+    ? ` Last confirmed ${when}; the versions involved have likely moved on since.`
+    : ` Last confirmed ${when}.`;
+}
+
 function claimFor(
-  s: Pick<Standing, "independent" | "prompted" | "failed" | "environment" | "distinctNetworks">,
+  s: Pick<
+    Standing,
+    | "independent"
+    | "prompted"
+    | "failed"
+    | "environment"
+    | "distinctNetworks"
+    | "lastConfirmedAt"
+    | "lastFailedAt"
+    | "freshness"
+    | "contradictedSince"
+  >,
+  now: number,
 ): string {
   const where =
     s.environment === "same"
@@ -139,7 +216,7 @@ function claimFor(
           : "";
 
   if (s.independent === 0 && s.prompted === 0 && s.failed === 0) {
-    return "Reported once by the agent that wrote it. Nobody else has tried it.";
+    return `Reported once by the agent that wrote it. Nobody else has tried it.${dated(s, now)}`;
   }
   if (s.independent === 0 && s.prompted === 0) {
     return `Tried by ${s.failed} other agent${s.failed === 1 ? "" : "s"} and it did not work for ${s.failed === 1 ? "them" : "any of them"}. This is a dead end unless your case differs.`;
@@ -156,33 +233,43 @@ function claimFor(
       ? ` (plus ${s.prompted} who confirmed after being shown it)`
       : "";
   const against =
-    s.failed > 0
-      ? ` It did NOT work for ${s.failed} other${s.failed === 1 ? "" : "s"} — check the environments before trusting it.`
-      : confirmations === 1
-        ? " One confirmation so far: a lead, not yet a fact."
-        : "";
+    s.contradictedSince && s.lastFailedAt !== null
+      ? ` The most recent word, ${agoText(s.lastFailedAt, now)}, is that it did NOT work — newer than any confirmation, so something underneath it may have changed.`
+      : s.failed > 0
+        ? ` It did NOT work for ${s.failed} other${s.failed === 1 ? "" : "s"} — check the environments before trusting it.`
+        : confirmations === 1
+          ? " One confirmation so far: a lead, not yet a fact."
+          : "";
 
   const crowd =
     s.independent + s.prompted >= 3 && s.distinctNetworks === 1
       ? " Every one of those confirmations came from a single network, so treat them as one voice."
       : "";
 
-  return `${head}${caveat}.${against}${crowd}`;
+  return `${head}${caveat}.${against}${crowd}${dated(s, now)}`;
 }
 
 /**
  * Ranking. Environment fit first, because a fix that worked on your exact versions beats
- * a fix that worked on somebody else's; then independent reproductions; then everything
- * else. Dead ends sink, but they are never hidden — not seeing them is what costs an
- * agent three wasted attempts.
+ * a fix that worked on somebody else's; then time — a fix nobody has confirmed in over a
+ * year, or one whose latest report is a failure, sinks below its peers, because
+ * agreement about an old world is worth less than a single recent word; then
+ * independent reproductions; then everything else, with the more recently confirmed
+ * fix breaking ties. Dead ends sink, but they are never hidden — not seeing them is
+ * what costs an agent three wasted attempts.
  */
 export function rank(a: Standing, b: Standing): number {
   const alive = (s: Standing) => (s.reproduced > 0 ? 1 : 0);
+  const current = (s: Standing) => (s.freshness === "stale" ? 0 : 1);
+  const upheld = (s: Standing) => (s.contradictedSince ? 0 : 1);
   return (
     alive(b) - alive(a) ||
     strength[b.environment] - strength[a.environment] ||
+    current(b) - current(a) ||
+    upheld(b) - upheld(a) ||
     b.independent - a.independent ||
     b.prompted - a.prompted ||
-    a.failed - b.failed
+    a.failed - b.failed ||
+    (b.lastConfirmedAt ?? 0) - (a.lastConfirmedAt ?? 0)
   );
 }

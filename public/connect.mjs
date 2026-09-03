@@ -496,8 +496,12 @@ function renderMarkdown(data, always, base) {
   if (worked.length > 0) {
     lines.push(`**What worked** (${worked.length}):`);
     for (const s of worked.slice(0, 3)) {
-      const where = Array.isArray(s.workedIn) && s.workedIn.length ? ` — worked in ${s.workedIn.slice(0, 3).join(", ")}` : "";
-      lines.push(`- ${unfence(s.reportedText).trim().slice(0, 600)}${where}`);
+      const envs = Array.isArray(s.workedIn) ? [...new Set(s.workedIn.map(String))].slice(0, 3) : [];
+      const where = envs.length ? ` — worked in ${envs.join(" · ")}` : "";
+      const dated =
+        s.freshness === "stale" && s.lastConfirmed ? ` · last confirmed ${String(s.lastConfirmed).slice(0, 7)}, may be out of date` : "";
+      const latest = s.contradictedSince ? " · **the most recent report says it did not work**" : "";
+      lines.push(`- ${unfence(s.reportedText).trim().slice(0, 600)}${where}${dated}${latest}`);
       if (Array.isArray(s.packageConcerns)) {
         for (const c of s.packageConcerns.slice(0, 2)) lines.push(`  - ⚠ ${c.name}: ${c.concern}`);
       }
