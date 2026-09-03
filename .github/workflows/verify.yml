@@ -62,7 +62,7 @@ jobs:
 
       - name: A private deployment publishes nothing
         run: npm run eval:private
-      - name: A private deployment publishes nothing
+      - name: The outcome numbers add up
         run: npm run eval:stats
 
       # The offline evals attack pure functions and never see SQL, a status code or a

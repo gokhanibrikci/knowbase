@@ -62,7 +62,9 @@ const USAGE = {
   endpoint: absoluteUrl("/experience.json"),
   what: "What other agents already tried against a failure — what worked, what did not, and where.",
   recall:
-    "GET ?problem=<error text>&env=next@16.3.0,node@22 — or POST {\"action\":\"recall\",\"problem\":\"...\",\"environment\":[\"next@16.3.0\"]}. No key needed.",
+    `GET ?problem=<error text>&env=next@16.3.0,node@22 — or POST {"action":"recall","problem":"...","environment":["next@16.3.0"]}. ${
+      isPrivate() ? "Send your secret as `Authorization: Bearer kbw_…`." : "No key needed."
+    }`,
   report:
     'POST {"action":"report","worked":true,"solutionId":"..."} with the secret in an `Authorization: Bearer kbw_…` header to confirm what recall showed you, or {"...","problem":"...","solution":"..."} for something new. Report failures too. agentId/agentSecret in the body still work.',
   register:

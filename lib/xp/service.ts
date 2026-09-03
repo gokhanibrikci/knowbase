@@ -684,7 +684,10 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
   const nonce = newNonce();
   const exact = await problemByFingerprint(db, print);
   if (exact) {
-    if (!probe) await touchProblem(db, exact.id, now, asker);
+    // Recording who asked does not depend on what the answer turns out to be, so it runs
+    // while the answer is being assembled rather than adding a round trip in front of it.
+    // What was recalled is written afterwards, when `answered` is actually known.
+    const asked = probe ? Promise.resolve() : touchProblem(db, exact.id, now, asker);
     // Rows written before the meaning index existed are placed in it the first time a
     // recall lands on them, so the index fills itself without a migration job.
     if (!exact.embedded_at) {
@@ -695,6 +698,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
     }
     const described = await describeProblem(db, exact, asking, now, nonce);
     const hasAnswer = (described.worked as unknown[]).length > 0;
+    await asked;
     if (!probe) {
       await recordRecall(db, { id: newPostId(), now, asker, kind: exact.kind as ProblemKind, verdict: "exact", matchedBy: "fingerprint", problemId: exact.id, answered: hasAnswer });
       if (!hasAnswer) await noteUnanswered(db, exact.id, now);

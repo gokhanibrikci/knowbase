@@ -54,6 +54,22 @@ async function main() {
   check("opening the site is deliberate", allowRequest("/p/abc123", true, true) === true);
   check("a public deployment is never gated", allowRequest("/p/abc123", false, false) === true);
 
+  // The gate is only worth what the file that enforces it does, so the proxy itself is
+  // exercised here: Next 16 calls the export named `proxy`, and a wrong name would fail
+  // open with every page served.
+  process.env.PRIVATE_SITE = "";
+  const { proxy } = await import("../proxy");
+  const { NextRequest } = await import("next/server");
+  const through = (url: string) => proxy(new NextRequest(new Request(url)));
+  const page = through("https://kb.acme.internal/p/abc123");
+  check("proxy: a page is 404 on a private deployment", page.status === 404, `HTTP ${page.status}`);
+  check(
+    "proxy: and says nothing about what this deployment is",
+    !(page.headers.get("content-type") ?? "").includes("html") && page.headers.get("cache-control") === "no-store",
+  );
+  const machine = through("https://kb.acme.internal/experience.json");
+  check("proxy: the machine surfaces are let through", machine.status !== 404, `HTTP ${machine.status}`);
+
   const { ruleMarkdown } = await import("../lib/rule");
   const privateRule = ruleMarkdown(true, "Acme Bank", "https://kb.acme.internal");
   check(
