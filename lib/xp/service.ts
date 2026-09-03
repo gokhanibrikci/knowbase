@@ -49,9 +49,12 @@ import {
   forgetAgent,
   insertAlias,
   markEmbedded,
+  markSolved,
+  noteUnanswered,
   problemByFingerprint,
   problemById,
   recordAsk,
+  recordRecall,
   retract,
   reportsFor,
   reportsToday,
@@ -660,6 +663,10 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
     }
     const described = await describeProblem(db, exact, asking, now, nonce);
     const hasAnswer = (described.worked as unknown[]).length > 0;
+    if (!probe) {
+      await recordRecall(db, { id: newPostId(), now, asker, kind: exact.kind as ProblemKind, verdict: "exact", matchedBy: "fingerprint", problemId: exact.id, answered: hasAnswer });
+      if (!hasAnswer) await noteUnanswered(db, exact.id, now);
+    }
     return {
       ok: true,
       httpStatus: 200,
@@ -708,6 +715,10 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
     if (!probe) await touchProblem(db, same.problem.id, now, asker);
     const described = await describeProblem(db, same.problem, asking, now, nonce);
     const hasAnswer = (described.worked as unknown[]).length > 0;
+    if (!probe) {
+      await recordRecall(db, { id: newPostId(), now, asker, kind: same.problem.kind as ProblemKind, verdict: "exact", matchedBy: "meaning", problemId: same.problem.id, answered: hasAnswer });
+      if (!hasAnswer) await noteUnanswered(db, same.problem.id, now);
+    }
     return {
       ok: true,
       httpStatus: 200,
@@ -771,6 +782,7 @@ export async function xpRecall(args: Record<string, unknown>): Promise<XpResult>
    */
   const remember = async (verdict: "none" | "similar") => {
     if (probe) return 0;
+    await recordRecall(db, { id: newPostId(), now, asker, kind, verdict, matchedBy: null, problemId: null, answered: false });
     // An ask that means the same as one already waiting — in another language, in other
     // words — counts on that one rather than opening a second. The first asker's text
     // stays as the headline.
@@ -932,6 +944,7 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
     });
     await touchAgent(db, agent.id, now);
     const problem = await problemById(db, solution.problem_id);
+    if (worked && problem) await markSolved(db, problem.id, now);
 
     /**
      * The agent's own error text, when it sent it. If it keys to a different fingerprint
@@ -1079,6 +1092,7 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
     now,
   });
   await touchAgent(db, agent.id, now);
+  if (worked) await markSolved(db, problem.id, now);
 
   return {
     ok: true,

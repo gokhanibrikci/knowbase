@@ -402,6 +402,26 @@ whose delimiter is generated per response, leaves are named `reportedText` rathe
 `fix`, the trust reminder is placed after the data, and packages a report tells you to
 install are named separately instead of buried in prose.
 
+## What it measures
+
+The number a team wants is not tokens. It is how many times a failure somebody had already
+solved was met again with the fix handed over, and how much engineer time that stood for.
+`/stats` on the site and `/stats.json?days=30` answer both, and every figure is counted
+rather than estimated:
+
+- a **repeat failure caught** is a recall that landed on a problem which already had a
+  solution some report says worked;
+- its **engineer time** is the clocked time the same problem took to solve the first time —
+  from the first ask that got no working answer to the first report that something worked,
+  clamped between one minute and four hours. A problem never clocked borrows the median of
+  those that were and is reported as borrowed. When nothing has been clocked, no time is
+  claimed;
+- a **fix confirmed from memory** is a report that the handed-over solution worked, the
+  strongest evidence the hit was real.
+
+Every recall writes one row with its verdict, so the numbers hold up over any window.
+`npm run eval:stats` keeps the arithmetic honest.
+
 ## A private knowbase for one organisation
 
 The public store publishes everything, which is the sentence that stops every corporate

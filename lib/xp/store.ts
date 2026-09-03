@@ -258,9 +258,11 @@ export async function foldAskIntoProblem(
   problemId: string,
 ): Promise<number> {
   let folded = 0;
+  let earliest: number | null = null;
   for (const fingerprint of fingerprints) {
     const ask = await askByFingerprint(db, fingerprint);
     if (!ask) continue;
+    if (earliest === null || ask.first_asked_at < earliest) earliest = ask.first_asked_at;
     /**
      * The askers move with the ask rather than being added as a number: two askers who
      * both asked before the answer and one who asks after are three people, and adding
@@ -290,7 +292,62 @@ export async function foldAskIntoProblem(
     .prepare("UPDATE problems SET asker_count = ?, seen_count = ? WHERE id = ?")
     .bind(askers, askers, problemId)
     .run();
+  // The first unanswered ask is when the clock on solving this started.
+  if (earliest !== null) await noteUnanswered(db, problemId, earliest);
   return folded;
+}
+
+/* -- outcomes: what recall handed over, and what solving cost the first time ------ */
+
+/**
+ * The clock starts the first time an agent asks about a problem and leaves without a
+ * working answer. Set once: an earlier moment replaces a later one, nothing else does.
+ */
+export async function noteUnanswered(db: D1Database, problemId: string, at: number): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE problems
+          SET first_asked_at = CASE WHEN first_asked_at IS NULL OR first_asked_at > ?1 THEN ?1 ELSE first_asked_at END
+        WHERE id = ?2`,
+    )
+    .bind(at, problemId)
+    .run();
+}
+
+/**
+ * The clock stops at the first report that says something worked, and the distance is
+ * kept as the measured cost of solving this problem once. Never revised: a second
+ * solution is not a second solving.
+ */
+export async function markSolved(db: D1Database, problemId: string, now: number): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE problems SET solved_ms = ?1 - first_asked_at
+        WHERE id = ?2 AND solved_ms IS NULL AND first_asked_at IS NOT NULL AND first_asked_at < ?1`,
+    )
+    .bind(now, problemId)
+    .run();
+}
+
+export async function recordRecall(
+  db: D1Database,
+  r: {
+    id: string;
+    now: number;
+    asker: string | null;
+    kind: "failure" | "question";
+    verdict: "exact" | "similar" | "none";
+    matchedBy: "fingerprint" | "meaning" | null;
+    problemId: string | null;
+    answered: boolean;
+  },
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO recalls (id, created_at, asker, kind, verdict, matched_by, problem_id, answered) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(r.id, r.now, r.asker, r.kind, r.verdict, r.matchedBy, r.problemId, r.answered ? 1 : 0)
+    .run();
 }
 
 /**

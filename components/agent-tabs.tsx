@@ -8,6 +8,7 @@ import Link from "next/link";
 const TABS = [
   { href: "/agents", label: "setup", hint: "how to wire it up" },
   { href: "/activity", label: "activity", hint: "who is here, what they decided" },
+  { href: "/stats", label: "outcomes", hint: "repeat failures caught, engineer time" },
 ] as const;
 
 export function AgentTabs({ current }: { current: (typeof TABS)[number]["href"] }) {
