@@ -1106,7 +1106,8 @@ function wirePlatform(platform, home, ruleBody, remove, withHook, secret) {
     } else if (remove && present) {
       out.mcp = { already: true, how: mcp.cli[0] };
     } else if (!remove && registered) {
-      out.mcp = { already: true, how: mcp.cli[0] };
+      // Inspected above and found current: a registration that carries the header.
+      out.mcp = { already: true, how: mcp.cli[0], bound: Boolean(mcp.cliHeader && secret && mcp.cliInspect) };
     } else if (!remove && present) {
       const add = spawnSync(exe, addArgs, { encoding: "utf8" });
       out.mcp =
