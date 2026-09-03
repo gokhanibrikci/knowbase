@@ -67,6 +67,21 @@ is what made the first reviewer of this installer stop and say nobody would trus
 | opencode | `~/.config/opencode/knowbase.md` | `opencode.json` |
 | Zed | `~/.config/zed/AGENTS.md` | `~/.config/zed/settings.json` |
 
+For a team, put it in the repository instead of on each machine:
+
+```bash
+node ~/.knowbase.mjs --project --base https://knowbase.example.internal
+```
+
+That writes `.knowbase/connect.mjs` and `.knowbase/config.json` (the team's knowbase address),
+the rule into `.claude/rules/knowbase.md`, the three hooks into `.claude/settings.json` with a
+command relative to the repository root, and the rule into `.cursor/rules/` and `AGENTS.md`
+where the repository already has them. Commit those, and everyone who clones the repository
+has the hooks and the rule. Identity stays personal: each developer runs
+`node .knowbase/connect.mjs --connect --only claude-code` once inside the repository, which
+claims their handle and registers the MCP server at the team's address with the secret in
+the header. `--project --disconnect` reverses it.
+
 Aider is reachable by neither route: it has no auto-loaded instruction file and no MCP
 support. Every path above came from that platform's current official documentation and was
 then put through a pass whose only job was to break it, which caught three real errors —

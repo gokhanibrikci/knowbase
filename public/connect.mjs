@@ -44,7 +44,22 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const BASE = (process.env.KNOWBASE_BASE ?? "https://knowbase.sh").replace(/\/$/, "");
+/**
+ * A repository can carry its own knowbase: `--project` writes .knowbase/config.json beside
+ * the hooks it commits, and from then on every run inside that directory — the hooks
+ * Claude Code fires, a developer's `--connect` — points at the team's deployment without
+ * anyone setting an environment variable. The variable still wins when present.
+ */
+function projectConfig() {
+  try {
+    const file = path.join(process.cwd(), ".knowbase", "config.json");
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+  } catch {
+    return null;
+  }
+}
+const PROJECT = projectConfig();
+const BASE = (process.env.KNOWBASE_BASE ?? PROJECT?.base ?? "https://knowbase.sh").replace(/\/$/, "");
 const ENDPOINT = process.env.KNOWBASE_ENDPOINT ?? `${BASE}/experience.json`;
 const HOME =
   process.env.KNOWBASE_HOME ??
@@ -544,11 +559,11 @@ function compactRule() {
   ].join("\n");
 }
 
-async function fetchRule() {
+async function fetchRule(base = BASE) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(`${BASE}/rule.md`, {
+    const res = await fetch(`${base}/rule.md`, {
       headers: { accept: "text/markdown, text/plain" },
       signal: controller.signal,
     });
@@ -1361,12 +1376,97 @@ function short(p, home) {
 }
 
 /**
+ * A knowbase for the repository, committed.
+ *
+ * The user-level install wires one developer's machine. A team wants the same thing to
+ * follow the code: clone the repository and the hooks, the rule and the address of the
+ * team's knowbase are already there. So `--project` writes, into the current directory,
+ * a copy of this file under .knowbase/, the deployment's address beside it, the rule
+ * into .claude/rules/, and the three hooks into .claude/settings.json with a command
+ * relative to the repository root. Cursor's rule file and AGENTS.md get the rule too,
+ * but only where the repository already has them. Identity stays personal: each
+ * developer runs `--connect` once, inside the repository, and the address in
+ * .knowbase/config.json is where their agents are pointed.
+ */
+async function project(argv) {
+  const remove = argv.includes("--disconnect");
+  const root = process.cwd();
+  const baseArg = argv.indexOf("--base") !== -1 ? argv[argv.indexOf("--base") + 1] : null;
+  const base = (baseArg ?? BASE).replace(/\/$/, "");
+  const dir = path.join(root, ".knowbase");
+  const selfCopy = path.join(dir, "connect.mjs");
+  const command = "node .knowbase/connect.mjs";
+
+  console.log(remove ? "knowbase: removing the project install\n" : `knowbase: project install → ${base}\n`);
+  if (!fs.existsSync(path.join(root, ".git"))) {
+    console.log("  note    no .git in this directory; writing here anyway");
+  }
+
+  if (!remove) {
+    fs.mkdirSync(dir, { recursive: true });
+    const running = process.argv[1] ? path.resolve(process.argv[1]) : null;
+    if (running && running !== path.resolve(selfCopy)) fs.copyFileSync(running, selfCopy);
+    fs.writeFileSync(
+      path.join(dir, "config.json"),
+      `${JSON.stringify(
+        {
+          base,
+          note: "Written by connect.mjs --project. Hooks in .claude/settings.json run node .knowbase/connect.mjs; each developer runs it once with --connect to claim a handle and register the MCP server at this base.",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    console.log(`  config  written  .knowbase/config.json (base ${base})`);
+    console.log("  runtime written  .knowbase/connect.mjs");
+  }
+
+  const ruleBody = remove ? "" : await fetchRule(base);
+  const rule = installRule(path.join(root, ".claude", "rules", "knowbase.md"), ruleBody, true, remove);
+  console.log(`  rule    ${describe(rule, remove)}  .claude/rules/knowbase.md`);
+
+  const hooks = configure(remove, {
+    quiet: true,
+    settingsPath: path.join(root, ".claude", "settings.json"),
+    command,
+  });
+  console.log(`  hooks   ${describe(hooks, remove)}  .claude/settings.json (${command})`);
+
+  const cursorRule = path.join(root, ".cursor", "rules", "knowbase.mdc");
+  if (fs.existsSync(path.join(root, ".cursor")) || (remove && fs.existsSync(cursorRule))) {
+    const c = installRule(cursorRule, `${ALWAYS.cursor}${ruleBody}`, true, remove);
+    console.log(`  cursor  ${describe(c, remove)}  .cursor/rules/knowbase.mdc`);
+  }
+  const agentsMd = path.join(root, "AGENTS.md");
+  if (fs.existsSync(agentsMd)) {
+    const a = installRule(agentsMd, ruleBody, false, remove);
+    console.log(`  agents  ${describe(a, remove)}  AGENTS.md (read by Codex, opencode, Zed)`);
+  }
+
+  if (remove) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    console.log("  removed  .knowbase/");
+    return;
+  }
+  console.log("");
+  console.log("  Commit .knowbase/, .claude/rules/knowbase.md and .claude/settings.json.");
+  console.log("  Everyone who has the repository now gets the hooks and the rule. Each");
+  console.log("  developer runs, once, inside it:");
+  console.log("    node .knowbase/connect.mjs --connect --only claude-code");
+  console.log(`  which claims their handle and registers the MCP server at ${base} with the`);
+  console.log("  secret in the connection header. The hooks read that same secret from");
+  console.log("  ~/.config/knowbase/secret. Undo with --project --disconnect.");
+}
+
+/**
  * Registering and unregistering the hook, so nobody has to hand-merge JSON into a
  * settings file. Writes a timestamped backup first and prints exactly what it changed.
  */
 function configure(remove, opts = {}) {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-  const settingsPath = path.join(claudeDir(home), "settings.json");
+  // User-level by default; a project install passes the repository's settings file and a
+  // command relative to the repository root, so the hooks run for everyone who clones it.
+  const settingsPath = opts.settingsPath ?? path.join(claudeDir(home), "settings.json");
 
   /**
    * The hook has to be registered by absolute path, and it must be a path that still
@@ -1388,7 +1488,9 @@ function configure(remove, opts = {}) {
   const running = process.argv[1] ? path.resolve(process.argv[1]) : null;
   const stable = path.join(home, ".knowbase.mjs");
   let self = stable;
-  if (running && running !== stable && !remove) {
+  if (opts.command) {
+    self = opts.command;
+  } else if (running && running !== stable && !remove) {
     try {
       fs.copyFileSync(running, stable);
     } catch {
@@ -1542,6 +1644,7 @@ function explainHook() {
 
 async function main() {
   if (process.argv.includes("--what-it-sends")) return explainHook();
+  if (process.argv.includes("--project")) return project(process.argv);
   if (process.argv.includes("--connect") || process.argv.includes("--disconnect")) {
     return connect(process.argv);
   }
@@ -1645,6 +1748,7 @@ async function main() {
 const CLI = process.argv.some(
   (a) =>
     a === "--connect" ||
+    a === "--project" ||
     a === "--disconnect" ||
     a === "--install" ||
     a === "--uninstall" ||
