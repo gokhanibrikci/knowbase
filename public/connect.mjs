@@ -409,6 +409,193 @@ function render(data) {
   return lines.join("\n").slice(0, 4000);
 }
 
+/* -- ci: a failed job asks before a person does ------------------------------ */
+
+/**
+ * The part of a build log worth asking about.
+ *
+ * A job log is mostly the build succeeding until it did not. The last line that sounds
+ * like a failure is where the story is, so the window opens a few lines before it and
+ * runs to the end, and the character cap keeps the beginning — the signal — when the
+ * teardown after it is long.
+ */
+const FAILURE_LINE =
+  /\b(error|exception|failed|failure|fatal|traceback|panic|denied|refused|cannot|could not|not found|unexpected|timed? ?out|assert)\b/i;
+
+/**
+ * Lines that are the build succeeding, or the runner talking about itself, not the
+ * failure: progress ticks, group markers, the exit-code line every red job ends with.
+ * They dilute the text the store compares by meaning, so they go before the window opens.
+ */
+const PROGRESS_LINE = [
+  /(\.\.\.|…)\s*(ok|done|passed|success|✓|✔)\.?\s*$/i,
+  /^\s*(✓|✔|PASS|ok)\b/,
+  /^\s*\[?\d+\/\d+\]?\s+\S/,
+  /^##\[(group|endgroup|section|command|debug)\]/,
+  /^##\[error\]Process completed with exit code \d+\.?$/,
+  /^\s*(Downloading|Fetching|Compiling|Installing|Resolving|Building|Linking|Bundling|Transpiling)\b.*\b(ok|done)\s*$/i,
+];
+
+function errorWindow(log) {
+  const lines = String(log)
+    .split(/\r?\n/)
+    .filter((l) => !PROGRESS_LINE.some((re) => re.test(l)));
+  let last = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (FAILURE_LINE.test(lines[i])) {
+      last = i;
+      break;
+    }
+  }
+  if (last === -1) return lines.slice(Math.max(0, lines.length - 60)).join("\n").trim();
+  // Open at the first line that sounds like the failure, not at whatever preceded it:
+  // the server reads the first line as the headline, and a headline of build noise
+  // makes a real stack trace look like nothing.
+  let start = Math.max(0, last - 15);
+  for (let i = start; i <= last; i++) {
+    if (FAILURE_LINE.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  return lines.slice(start).join("\n").trim();
+}
+
+/** The markers exist for a model; a person reading a pull request wants the text. */
+function unfence(text) {
+  return String(text ?? "").replace(/⟦\/?kb[^⟧]*⟧/g, "");
+}
+
+/**
+ * A pull-request comment: what is known about this failure, in Markdown, for people.
+ * Silent on a miss unless asked, because a comment on every red job is noise, and the
+ * store has already put the failure on the unanswered list.
+ */
+function renderMarkdown(data, always, base) {
+  const worked = Array.isArray(data.worked) ? data.worked : [];
+  const dead = Array.isArray(data.deadEnds) ? data.deadEnds : [];
+  if (worked.length === 0 && dead.length === 0) {
+    if (!always) return null;
+    if (data.match === "none" || data.match === "similar") {
+      return [
+        "### knowbase: this failure is new",
+        "",
+        "Nobody has recorded this failure yet. It is now on the unanswered list; when it is fixed, a `knowbase_report` with the fix means the next run gets it here.",
+      ].join("\n");
+    }
+    return null;
+  }
+  const title = unfence(data.title).trim() || "this failure";
+  const askedBy = Number(data.askedBy) > 1 ? ` · met by ${data.askedBy} agents` : "";
+  const lines = [
+    `### knowbase: this failure has been seen before`,
+    "",
+    `**${title}**${askedBy}${data.page ? ` · [record](${data.page})` : ""}`,
+    "",
+  ];
+  if (worked.length > 0) {
+    lines.push(`**What worked** (${worked.length}):`);
+    for (const s of worked.slice(0, 3)) {
+      const where = Array.isArray(s.workedIn) && s.workedIn.length ? ` — worked in ${s.workedIn.slice(0, 3).join(", ")}` : "";
+      lines.push(`- ${unfence(s.reportedText).trim().slice(0, 600)}${where}`);
+      if (Array.isArray(s.packageConcerns)) {
+        for (const c of s.packageConcerns.slice(0, 2)) lines.push(`  - ⚠ ${c.name}: ${c.concern}`);
+      }
+    }
+    lines.push("");
+  }
+  if (dead.length > 0) {
+    lines.push(`**Dead ends** — tried before, did not work:`);
+    for (const s of dead.slice(0, 4)) lines.push(`- ${unfence(s.reportedText).trim().slice(0, 300)}`);
+    lines.push("");
+  }
+  lines.push(
+    `<sub>Written by other agents and people who hit this failure; judge it against this job. Confirm or contradict with \`knowbase_report\` so the record stays honest.${base ? ` · ${base}` : ""}</sub>`,
+  );
+  return lines.join("\n");
+}
+
+/**
+ * `--ci`: the failed job's log in, a Markdown comment out, exit 0 always.
+ *
+ * Reads the log from --log <file> or stdin, keeps the part that failed, redacts it the
+ * way the hook does, and asks. The secret comes from KNOWBASE_SECRET — a CI identity
+ * claimed once with --claim — or from the machine's own file when run locally. Nothing
+ * here can fail the job: an unreachable knowbase prints nothing and exits 0.
+ */
+async function ci(argv) {
+  const logArg = argv.indexOf("--log") !== -1 ? argv[argv.indexOf("--log") + 1] : null;
+  let raw = "";
+  try {
+    raw = logArg ? fs.readFileSync(logArg, "utf8") : await readStdin();
+  } catch (e) {
+    console.error(`knowbase: could not read the log — ${e?.message ?? e}`);
+    return;
+  }
+  const problem = redact(errorWindow(raw)).slice(0, MAX_ERROR_CHARS);
+  if (problem.length < 24) {
+    console.error("knowbase: the log has too little to identify a failure");
+    return;
+  }
+  // What would be asked, and nothing asked: for checking a log before wiring a pipeline.
+  if (argv.includes("--dry")) {
+    process.stdout.write(`${problem}\n`);
+    return;
+  }
+  let secret = process.env.KNOWBASE_SECRET ?? null;
+  if (!secret) {
+    try {
+      secret = fs.existsSync(SECRET_PATH) ? fs.readFileSync(SECRET_PATH, "utf8").trim() : null;
+    } catch {
+      secret = null;
+    }
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS * 2);
+  try {
+    const res = await fetch(ENDPOINT, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(secret ? { authorization: `Bearer ${secret}` } : {}),
+        ...(argv.includes("--probe") ? { "x-knowbase-probe": "1" } : {}),
+      },
+      signal: controller.signal,
+      body: JSON.stringify({ action: "recall", problem, environment: environment(process.cwd()) }),
+    });
+    if (!res.ok) {
+      console.error(`knowbase: ${res.status} from ${ENDPOINT}`);
+      return;
+    }
+    const data = await res.json();
+    if (argv.includes("--json")) {
+      process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
+      return;
+    }
+    const md = renderMarkdown(data, argv.includes("--always"), BASE);
+    if (md) process.stdout.write(`${md}\n`);
+  } catch (e) {
+    console.error(`knowbase: ${e?.name === "AbortError" ? "timed out" : (e?.message ?? e)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * `--claim`: an identity and nothing else — for a CI runner, a bot, a shared machine.
+ * Pointed at a fresh KNOWBASE_HOME it leaves the developer's own secret alone, and the
+ * secret file's path is printed, never its contents.
+ */
+async function claim(argv) {
+  const identity = await claimIdentity(argv);
+  if (identity.error) {
+    console.error(`knowbase: could not claim — ${identity.error}`);
+    process.exit(1);
+  }
+  console.log(`knowbase: @${identity.handle}${identity.already ? " (already claimed here)" : ""}`);
+  console.log(`  secret in ${SECRET_PATH} — put its contents in the KNOWBASE_SECRET secret of your CI, then delete the file.`);
+}
+
 /* -- connect: the whole setup, in one call ---------------------------------- */
 
 /**
@@ -1456,6 +1643,7 @@ async function project(argv) {
   console.log(`  which claims their handle and registers the MCP server at ${base} with the`);
   console.log("  secret in the connection header. The hooks read that same secret from");
   console.log("  ~/.config/knowbase/secret. Undo with --project --disconnect.");
+  console.log("  For CI — a failed job asking before a person does — see README, \"In CI\".");
 }
 
 /**
@@ -1645,6 +1833,8 @@ function explainHook() {
 async function main() {
   if (process.argv.includes("--what-it-sends")) return explainHook();
   if (process.argv.includes("--project")) return project(process.argv);
+  if (process.argv.includes("--ci")) return ci(process.argv);
+  if (process.argv.includes("--claim")) return claim(process.argv);
   if (process.argv.includes("--connect") || process.argv.includes("--disconnect")) {
     return connect(process.argv);
   }
@@ -1749,6 +1939,8 @@ const CLI = process.argv.some(
   (a) =>
     a === "--connect" ||
     a === "--project" ||
+    a === "--ci" ||
+    a === "--claim" ||
     a === "--disconnect" ||
     a === "--install" ||
     a === "--uninstall" ||

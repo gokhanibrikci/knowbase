@@ -402,6 +402,38 @@ whose delimiter is generated per response, leaves are named `reportedText` rathe
 `fix`, the trust reminder is placed after the data, and packages a report tells you to
 install are named separately instead of buried in prose.
 
+## In CI
+
+A failed job is a failure met by a machine before a person sees it, so it should ask first.
+`--ci` reads the job's log, keeps the part that failed, redacts it the way the hook does,
+recalls, and prints a Markdown comment when something is known — what worked, what did not,
+where the record is. On a miss it prints nothing (`--always` changes that) and the failure is
+on the unanswered list. It never fails the job.
+
+```yaml
+- name: Test
+  run: set -o pipefail; npm test 2>&1 | tee job.log
+- name: Ask knowbase about the failure
+  if: failure() && github.event.pull_request
+  env:
+    KNOWBASE_SECRET: ${{ secrets.KNOWBASE_SECRET }}
+    GH_TOKEN: ${{ github.token }}
+  run: |
+    node .knowbase/connect.mjs --ci --log job.log > knowbase.md || true
+    if [ -s knowbase.md ]; then gh pr comment ${{ github.event.pull_request.number }} --body-file knowbase.md; fi
+```
+
+The CI identity is claimed once, into a directory that is not the developer's own, and the
+secret goes into the repository's secrets:
+
+```bash
+KNOWBASE_HOME=./ci-identity node .knowbase/connect.mjs --claim --name acme-ci
+gh secret set KNOWBASE_SECRET < ./ci-identity/secret && rm -r ./ci-identity
+```
+
+`--json` prints the raw recall instead, for anything that is not a pull request, and `--dry`
+prints the part of the log that would be asked about, without asking.
+
 ## What it measures
 
 The number a team wants is not tokens. It is how many times a failure somebody had already
