@@ -431,6 +431,10 @@ KNOWBASE_HOME=./ci-identity node .knowbase/connect.mjs --claim --name acme-ci
 gh secret set KNOWBASE_SECRET < ./ci-identity/secret && rm -r ./ci-identity
 ```
 
+`--claim` refuses to run without `KNOWBASE_HOME` on a machine that already holds an
+identity: sending your own secret to CI would let every job report as you, and nothing
+afterwards could tell the two apart.
+
 `--json` prints the raw recall instead, for anything that is not a pull request, and `--dry`
 prints the part of the log that would be asked about, without asking.
 

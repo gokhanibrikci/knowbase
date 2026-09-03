@@ -46,14 +46,27 @@ import path from "node:path";
 
 /**
  * A repository can carry its own knowbase: `--project` writes .knowbase/config.json beside
- * the hooks it commits, and from then on every run inside that directory — the hooks
- * Claude Code fires, a developer's `--connect` — points at the team's deployment without
- * anyone setting an environment variable. The variable still wins when present.
+ * the hooks it commits, so the team's deployment needs no environment variable.
+ *
+ * Only the copy that lives in that repository may read it. The user-level installer and
+ * the hook it registers run in whatever directory the agent happens to be working in, and
+ * an agent works in directories the user cloned from strangers — so honouring any
+ * .knowbase/config.json under the cwd would let a repository point somebody else's hook,
+ * carrying their error text and their bearer token, at an address of its choosing. The
+ * running script must therefore BE that project's copy, and the address must be a URL.
  */
 function projectConfig() {
   try {
-    const file = path.join(process.cwd(), ".knowbase", "config.json");
-    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+    const dir = path.join(process.cwd(), ".knowbase");
+    const file = path.join(dir, "config.json");
+    if (!fs.existsSync(file)) return null;
+    const running = process.argv[1] ? path.resolve(process.argv[1]) : null;
+    if (!running || path.dirname(running) !== path.resolve(dir)) return null;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    const base = parsed && typeof parsed.base === "string" ? parsed.base.trim() : null;
+    // A malformed base used to reach `.replace` at module load, which turned every failed
+    // shell command in that repository into a crashed hook.
+    return base && /^https?:\/\/[^\s]+$/.test(base) ? { base } : null;
   } catch {
     return null;
   }
@@ -66,6 +79,28 @@ const HOME =
   path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".config", "knowbase");
 const SECRET_PATH = path.join(HOME, "secret");
 const HANDLE_PATH = path.join(HOME, "handle");
+/** Which deployment issued the secret. A secret is worthless elsewhere and must not travel. */
+const BASE_PATH = path.join(HOME, "base");
+
+/**
+ * The secret, but only for the deployment that issued it.
+ *
+ * Sending it anywhere else would hand a bearer token to whoever arranged for the address
+ * to change. When no base was recorded — a secret claimed before this file existed — the
+ * secret is sent as before, and the next `--connect` records it.
+ */
+function secretFor(base) {
+  try {
+    if (!fs.existsSync(SECRET_PATH)) return null;
+    if (fs.existsSync(BASE_PATH)) {
+      const claimed = fs.readFileSync(BASE_PATH, "utf8").trim().replace(/\/$/, "");
+      if (claimed && claimed !== base.replace(/\/$/, "")) return null;
+    }
+    return fs.readFileSync(SECRET_PATH, "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
 const TIMEOUT_MS = 6000;
 
 /** Earlier versions named these citizen-secret and citizen-handle. Same files, renamed once. */
@@ -301,6 +336,20 @@ function readLine() {
   });
 }
 
+/** Read a stream to its end, keeping the last `keep` characters. */
+function readAll(stream, keep = 1_000_000) {
+  return new Promise((resolve) => {
+    let data = "";
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk) => {
+      data += chunk;
+      if (data.length > keep * 2) data = data.slice(-keep);
+    });
+    stream.on("end", () => resolve(data.length > keep ? data.slice(-keep) : data));
+    stream.on("error", () => resolve(data));
+  });
+}
+
 function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -434,11 +483,23 @@ const PROGRESS_LINE = [
   /^##\[(group|endgroup|section|command|debug)\]/,
   /^##\[error\]Process completed with exit code \d+\.?$/,
   /^\s*(Downloading|Fetching|Compiling|Installing|Resolving|Building|Linking|Bundling|Transpiling)\b.*\b(ok|done)\s*$/i,
+  // A test runner's tally is about the run, not about any one failure. Opening the window
+  // on "Tests: 1 failed, 40 passed" gives every unrelated red build the same first line,
+  // and the store reads the first line as the headline.
+  /^\s*(Tests?|Suites?|Test Suites|Snapshots|Time|Ran all test suites)\s*:/i,
+  /^\s*Summary of all failing tests\s*$/i,
+  /^\s*\d+ (passing|failing|pending|examples?, \d+ failures?)\b/i,
+  /^(FAIL|PASS)\s+\S+$/,
 ];
+
+/** Colour is noise to a fingerprint: two identical failures should not differ by escape codes. */
+const ANSI = /\u001b\[[0-9;]*m/g;
 
 function errorWindow(log) {
   const lines = String(log)
+    .replace(ANSI, "")
     .split(/\r?\n/)
+    .map((l) => l.replace(/\r/g, ""))
     .filter((l) => !PROGRESS_LINE.some((re) => re.test(l)));
   let last = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -467,6 +528,22 @@ function unfence(text) {
 }
 
 /**
+ * Another agent's words, rendered as words.
+ *
+ * A pull-request comment is live Markdown: an @mention notifies a stranger, an image URL
+ * fetches from wherever it points the moment anybody opens the page, a link can say one
+ * thing and go to another, and raw HTML is passed through. None of that is what a
+ * recorded fix is for, and every character of it was typed by somebody outside this
+ * repository — so it goes in a fenced block, where a reader sees exactly what was stored.
+ */
+function quote(text) {
+  const body = unfence(text).trim();
+  const longest = (body.match(/`+/g) ?? []).reduce((n, run) => Math.max(n, run.length), 0);
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}\n${body}\n${fence}`;
+}
+
+/**
  * A pull-request comment: what is known about this failure, in Markdown, for people.
  * Silent on a miss unless asked, because a comment on every red job is noise, and the
  * store has already put the failure on the unanswered list.
@@ -485,32 +562,38 @@ function renderMarkdown(data, always, base) {
     }
     return null;
   }
-  const title = unfence(data.title).trim() || "this failure";
+  // A title is one line of somebody else's text, so it is shown as code rather than as
+  // Markdown that could carry a mention or a link.
+  const title = unfence(data.title).trim().replace(/`/g, "'") || "this failure";
   const askedBy = Number(data.askedBy) > 1 ? ` · met by ${data.askedBy} agents` : "";
   const lines = [
     `### knowbase: this failure has been seen before`,
     "",
-    `**${title}**${askedBy}${data.page ? ` · [record](${data.page})` : ""}`,
+    `\`${title}\`${askedBy}${data.page ? ` · [record](${data.page})` : ""}`,
     "",
   ];
   if (worked.length > 0) {
     lines.push(`**What worked** (${worked.length}):`);
     for (const s of worked.slice(0, 3)) {
       const envs = Array.isArray(s.workedIn) ? [...new Set(s.workedIn.map(String))].slice(0, 3) : [];
-      const where = envs.length ? ` — worked in ${envs.join(" · ")}` : "";
+      const where = envs.length ? `worked in ${envs.join(" · ")}` : "";
       const dated =
-        s.freshness === "stale" && s.lastConfirmed ? ` · last confirmed ${String(s.lastConfirmed).slice(0, 7)}, may be out of date` : "";
-      const latest = s.contradictedSince ? " · **the most recent report says it did not work**" : "";
-      lines.push(`- ${unfence(s.reportedText).trim().slice(0, 600)}${where}${dated}${latest}`);
+        s.freshness === "stale" && s.lastConfirmed
+          ? `last confirmed ${String(s.lastConfirmed).slice(0, 7)}, may be out of date`
+          : "";
+      const latest = s.contradictedSince ? "**the most recent report says it did not work**" : "";
+      const notes = [where, dated, latest].filter(Boolean).join(" · ");
+      lines.push(quote(String(s.reportedText ?? "").slice(0, 600)));
+      if (notes) lines.push(notes);
       if (Array.isArray(s.packageConcerns)) {
-        for (const c of s.packageConcerns.slice(0, 2)) lines.push(`  - ⚠ ${c.name}: ${c.concern}`);
+        for (const c of s.packageConcerns.slice(0, 2)) lines.push(`- ⚠ \`${String(c.name).replace(/`/g, "'")}\`: ${String(c.concern).replace(/`/g, "'")}`);
       }
+      lines.push("");
     }
-    lines.push("");
   }
   if (dead.length > 0) {
     lines.push(`**Dead ends** — tried before, did not work:`);
-    for (const s of dead.slice(0, 4)) lines.push(`- ${unfence(s.reportedText).trim().slice(0, 300)}`);
+    for (const s of dead.slice(0, 4)) lines.push(quote(String(s.reportedText ?? "").slice(0, 300)));
     lines.push("");
   }
   lines.push(
@@ -531,7 +614,11 @@ async function ci(argv) {
   const logArg = argv.indexOf("--log") !== -1 ? argv[argv.indexOf("--log") + 1] : null;
   let raw = "";
   try {
-    raw = logArg ? fs.readFileSync(logArg, "utf8") : await readStdin();
+    // Not readStdin(): that one gives up after two seconds and destroys the stream past
+    // two megabytes, which is right for a hook that must not delay a turn and wrong for a
+    // job log arriving down a pipe. Here the tail is what matters, so the read runs to the
+    // end and keeps the last megabyte.
+    raw = logArg ? fs.readFileSync(logArg, "utf8") : await readAll(process.stdin);
   } catch (e) {
     console.error(`knowbase: could not read the log — ${e?.message ?? e}`);
     return;
@@ -546,14 +633,7 @@ async function ci(argv) {
     process.stdout.write(`${problem}\n`);
     return;
   }
-  let secret = process.env.KNOWBASE_SECRET ?? null;
-  if (!secret) {
-    try {
-      secret = fs.existsSync(SECRET_PATH) ? fs.readFileSync(SECRET_PATH, "utf8").trim() : null;
-    } catch {
-      secret = null;
-    }
-  }
+  const secret = process.env.KNOWBASE_SECRET ?? secretFor(BASE);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS * 2);
   try {
@@ -591,6 +671,15 @@ async function ci(argv) {
  * secret file's path is printed, never its contents.
  */
 async function claim(argv) {
+  if (fs.existsSync(SECRET_PATH) && !process.env.KNOWBASE_HOME) {
+    console.error("knowbase: this machine already holds an identity, and it is yours.\n");
+    console.error("  Sending your own secret to CI would let every job report as you, and");
+    console.error("  it cannot be told apart from you afterwards. Claim a separate one into");
+    console.error("  a directory of its own instead:\n");
+    console.error("    KNOWBASE_HOME=./ci-identity node .knowbase/connect.mjs --claim --name acme-ci");
+    console.error("    gh secret set KNOWBASE_SECRET < ./ci-identity/secret && rm -r ./ci-identity");
+    process.exit(1);
+  }
   const identity = await claimIdentity(argv);
   if (identity.error) {
     console.error(`knowbase: could not claim — ${identity.error}`);
@@ -701,6 +790,14 @@ async function claimIdentity(argv) {
     // appearing to honour a flag that was quietly dropped.
     const asked = proposeHandle(argv);
     const ignored = asked.chosen && asked.handle !== existing ? asked.handle : null;
+    // A secret claimed before the binding existed gains it here, on the first reconnect.
+    if (!fs.existsSync(BASE_PATH)) {
+      try {
+        fs.writeFileSync(BASE_PATH, `${BASE}\n`, { mode: 0o600 });
+      } catch {
+        // not fatal: the secret simply keeps its old, unbound behaviour
+      }
+    }
     return { handle: existing, already: true, ignored };
   }
 
@@ -716,6 +813,7 @@ async function claimIdentity(argv) {
       fs.mkdirSync(HOME, { recursive: true });
       fs.writeFileSync(secretPath, `${json.agentSecret}\n`, { mode: 0o600 });
       fs.writeFileSync(handlePath, `${candidate}\n`, { mode: 0o600 });
+      fs.writeFileSync(BASE_PATH, `${BASE}\n`, { mode: 0o600 });
       return { handle: candidate, wanted, chosen: identity.chosen, taken: candidate !== wanted };
     }
     if (status === 403 && !enrolToken()) {
@@ -1307,11 +1405,22 @@ function wirePlatform(platform, home, ruleBody, remove, withHook, secret) {
       ...mcp.cli.slice(1),
       ...(mcp.cliHeader && secret ? mcp.cliHeader(secret) : []),
     ];
-    // Registered by an earlier version, before the secret rode in the header? Rebind.
+    /**
+     * Registered already — but pointing where, and carrying what? An install from before
+     * the secret rode in the header needs rebinding, and so does one left over from a
+     * different deployment: a developer moving from the public store to their team's
+     * private one kept an MCP server aimed at the old address, and the connect run that
+     * was supposed to move them reported success.
+     */
     let stale = false;
-    if (!remove && registered && mcp.cliHeader && secret && mcp.cliInspect && mcp.cliRemove) {
+    if (!remove && registered && mcp.cliInspect && mcp.cliRemove) {
       const shown = spawnSync(exe, mcp.cliInspect.slice(1), { encoding: "utf8" });
-      stale = !shown.error && !(shown.stdout ?? "").includes("Authorization");
+      const printed = shown.error ? null : (shown.stdout ?? "");
+      if (printed !== null) {
+        const unbound = Boolean(mcp.cliHeader && secret) && !printed.includes("Authorization");
+        const elsewhere = !printed.includes(MCP_URL);
+        stale = unbound || elsewhere;
+      }
     }
     if (stale) {
       spawnSync(exe, mcp.cliRemove.slice(1), { encoding: "utf8" });
@@ -1603,6 +1712,12 @@ async function project(argv) {
   const remove = argv.includes("--disconnect");
   const root = process.cwd();
   const baseArg = argv.indexOf("--base") !== -1 ? argv[argv.indexOf("--base") + 1] : null;
+  // Checked before anything is written: a typo here is committed to the repository and
+  // every developer who clones it inherits the wrong address.
+  if (baseArg !== null && !/^https?:\/\/[^\s]+$/.test(baseArg ?? "")) {
+    console.error(`knowbase: --base must be a URL, got "${baseArg ?? ""}"`);
+    process.exit(1);
+  }
   const base = (baseArg ?? BASE).replace(/\/$/, "");
   const dir = path.join(root, ".knowbase");
   const selfCopy = path.join(dir, "connect.mjs");
@@ -1612,6 +1727,11 @@ async function project(argv) {
   if (!fs.existsSync(path.join(root, ".git"))) {
     console.log("  note    no .git in this directory; writing here anyway");
   }
+
+  // Fetched before anything is written. The address is the one thing here that can be
+  // wrong in a way this installer can detect, and an install that stops halfway leaves a
+  // .knowbase/ directory somebody has to notice and delete by hand.
+  const ruleBody = remove ? "" : await fetchRule(base);
 
   if (!remove) {
     fs.mkdirSync(dir, { recursive: true });
@@ -1632,7 +1752,6 @@ async function project(argv) {
     console.log("  runtime written  .knowbase/connect.mjs");
   }
 
-  const ruleBody = remove ? "" : await fetchRule(base);
   const rule = installRule(path.join(root, ".claude", "rules", "knowbase.md"), ruleBody, true, remove);
   console.log(`  rule    ${describe(rule, remove)}  .claude/rules/knowbase.md`);
 
@@ -1657,6 +1776,33 @@ async function project(argv) {
   if (remove) {
     fs.rmSync(dir, { recursive: true, force: true });
     console.log("  removed  .knowbase/");
+    /**
+     * The backups this installer took on the way in. Leaving them behind means a
+     * `--disconnect` that says "removed" and still leaves knowbase text in the working
+     * tree, which is how a file nobody meant to commit gets committed. Only our own
+     * suffix is ever removed, and only after the file it shadowed has been restored.
+     */
+    for (const touched of [
+      path.join(root, "AGENTS.md"),
+      path.join(root, ".claude", "settings.json"),
+      path.join(root, ".cursor", "rules", "knowbase.mdc"),
+    ]) {
+      const backup = `${touched}.bak-knowbase`;
+      if (fs.existsSync(backup)) {
+        fs.rmSync(backup);
+        console.log(`  removed  ${path.relative(root, backup)}`);
+      }
+    }
+    // A settings file we created and then emptied is ours to take with us.
+    const settings = path.join(root, ".claude", "settings.json");
+    try {
+      if (fs.existsSync(settings) && Object.keys(JSON.parse(fs.readFileSync(settings, "utf8"))).length === 0) {
+        fs.rmSync(settings);
+        console.log("  removed  .claude/settings.json (it was empty)");
+      }
+    } catch {
+      // Somebody else's JSON, or unreadable: leave it exactly as it is.
+    }
     return;
   }
   console.log("");
@@ -1879,6 +2025,17 @@ async function main() {
   // Three moments, one file. The end of a turn asks about anything still open; a recall
   // or report the model made through the MCP tool is noted or settled; and a failed
   // shell command is asked about automatically, as before.
+  /**
+   * A developer who has run the machine install and then clones a repository that carries
+   * its own has two hooks registered for the same events: two recalls per failed command,
+   * two reminders at the end of a turn, and two rows in the store for one person's one
+   * failure. The repository's own copy wins, because it knows which deployment the team
+   * uses; the machine-level one stands down while inside such a repository.
+   */
+  const projectCopy = path.join(process.cwd(), ".knowbase", "connect.mjs");
+  const runningNow = process.argv[1] ? path.resolve(process.argv[1]) : null;
+  if (fs.existsSync(projectCopy) && runningNow !== path.resolve(projectCopy)) return;
+
   const event = String(payload.hook_event_name ?? "PostToolUse");
   const sessionId = payload.session_id;
   const toolName = String(payload.tool_name ?? "");
@@ -1921,14 +2078,10 @@ async function main() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    // The secret rides along when there is one: a private deployment admits nothing
-    // without it, and a public one ignores it on a read.
-    let secret = null;
-    try {
-      secret = fs.existsSync(SECRET_PATH) ? fs.readFileSync(SECRET_PATH, "utf8").trim() : null;
-    } catch {
-      secret = null;
-    }
+    // The secret rides along when there is one, and only to the deployment that issued
+    // it: a private deployment admits nothing without it, a public one ignores it on a
+    // read, and a stranger's address gets nothing at all.
+    const secret = secretFor(BASE);
     const res = await fetch(ENDPOINT, {
       method: "POST",
       headers: {
