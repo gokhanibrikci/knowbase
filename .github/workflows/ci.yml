@@ -31,6 +31,12 @@ jobs:
 
       - run: npm ci
 
+      # A fresh checkout has neither the compiled corpus nor Next's generated route types
+      # (PageProps, LayoutProps, RouteContext); both are gitignored and both are inputs to
+      # the type check, so they are produced first.
+      - name: Generate the corpus and route types
+        run: npm run content && npx next typegen
+
       - name: Lint
         run: npm run lint
 

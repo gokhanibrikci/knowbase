@@ -32,8 +32,8 @@ const publish = (text: string) => placehold(redact(text));
 const secrets: [string, string, string][] = [
   ["GitHub token in a remote URL", "fatal: Authentication failed for 'https://ghp_" + "AbCdNOTAREALSECRETNOTAREALSECRETNOTA@github.com/acme/core.git'", "ghp_AbCd"],
   ["GitHub token bare", "GITHUB_TOKEN ghp_" + "AbCdNOTAREALSECRETNOTAREALSECRETNOTA is invalid", "ghp_AbCd"],
-  ["Slack bot token", "SlackApiError: invalid_auth token=xoxb-" + "EXAMPLE-NOT-A-REAL-TOKEN", "xoxb-1234"],
-  ["Slack token without a label", "posting with xoxb-" + "EXAMPLE-NOT-A-REAL-TOKEN failed", "xoxb-1234"],
+  ["Slack bot token", "SlackApiError: invalid_auth token=xoxb-" + "EXAMPLE-NOT-A-REAL-TOKEN", "xoxb-EXAMPLE"],
+  ["Slack token without a label", "posting with xoxb-" + "EXAMPLE-NOT-A-REAL-TOKEN failed", "xoxb-EXAMPLE"],
   ["Google API key", "API key not valid. key=AIzaSy" + "D-9tNOTAREALSECRETNOTAREALSECRETN", "AIzaSyD"],
   ["AWS access key id", "InvalidClientTokenId: AccessKeyId AKIA" + "IOSFODNN7EXAMPLE", "AKIA" + "IOSFODNN7EXAMPLE"],
   ["OpenAI project key", "Incorrect API key provided: sk-proj-" + "AbCdNOTAREALSECRETNOTAREALSECRETNOTAREALSECR", "sk-proj-AbCd"],
