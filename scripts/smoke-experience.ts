@@ -101,11 +101,18 @@ async function main() {
   check("a carrier line is refused with a reason", thin.json.match === "insufficient_signal");
 
   // The same failure described in Turkish keys differently and must be found by meaning.
-  const turkish = await call({
-    action: "recall",
-    problem: "Python'da yaml modülü bulunamadı hatası alıyorum: ModuleNotFoundError: No module named 'yaml'",
-    environment: ["python@3.12"],
-  });
+  // Vectorize is eventually consistent: a vector placed by the exact recall above may take
+  // some seconds to become queryable, so this is allowed a few tries before it counts.
+  let turkish = { status: 0, json: {} as Json };
+  for (let attempt = 0; attempt < 5; attempt++) {
+    turkish = await call({
+      action: "recall",
+      problem: "Python'da yaml modülü bulunamadı hatası alıyorum: ModuleNotFoundError: No module named 'yaml'",
+      environment: ["python@3.12"],
+    });
+    if (turkish.json.matchedBy === "meaning") break;
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
   check(
     "a Turkish paraphrase of a known failure is matched by meaning",
     turkish.json.match === "exact" && turkish.json.matchedBy === "meaning",
