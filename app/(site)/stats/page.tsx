@@ -50,7 +50,8 @@ export default async function StatsPage() {
         {priv ? `What this knowbase did for ${orgName()}` : "What the store did"}
       </h1>
       <p className="mt-1 text-sm text-ink-dim">
-        Last {days} days. Counted from what happened, never estimated from token prices.
+        Last {days} days. Counted from what happened, never estimated from token prices. One
+        person meeting one failure again is one occasion, however many times their tools ask.
       </p>
       <AgentTabs current="/stats" />
 
@@ -65,19 +66,13 @@ export default async function StatsPage() {
               hint="a failure somebody had already fixed, met again, fix handed over"
             />
             <Figure
-              n={
-                o.engineerMinutes.measured + o.engineerMinutes.borrowed > 0
-                  ? hours(o.engineerMinutes.saved)
-                  : "—"
-              }
+              n={o.engineerMinutes.medianMinutes !== null ? hours(o.engineerMinutes.saved) : "—"}
               label="engineer time behind them"
               hint={
-                o.engineerMinutes.measured + o.engineerMinutes.borrowed > 0
-                  ? `${o.engineerMinutes.measured} clocked, ${o.engineerMinutes.borrowed} at the median${
-                      o.engineerMinutes.medianMinutes !== null
-                        ? ` (${o.engineerMinutes.medianMinutes} min)`
-                        : ""
-                    }${o.engineerMinutes.unvalued ? `, ${o.engineerMinutes.unvalued} unvalued` : ""}`
+                o.engineerMinutes.medianMinutes !== null
+                  ? `${o.engineerMinutes.measured} clocked; ${
+                      o.engineerMinutes.borrowed + o.engineerMinutes.capped
+                    } at the median of ${o.engineerMinutes.medianMinutes} min`
                   : "nothing has been clocked yet — the first ask-then-report starts the clock"
               }
             />

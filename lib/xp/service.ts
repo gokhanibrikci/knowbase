@@ -976,7 +976,6 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
     });
     await touchAgent(db, agent.id, now);
     const problem = await problemById(db, solution.problem_id);
-    if (worked && problem) await markSolved(db, problem.id, now);
 
     /**
      * The agent's own error text, when it sent it. If it keys to a different fingerprint
@@ -1007,6 +1006,15 @@ export async function xpReport(args: Record<string, unknown>): Promise<XpResult>
         linked = true;
       }
     }
+
+    /**
+     * After the fold, never before it. The agent's own text may have been waiting as an
+     * unanswered ask, and folding it in is what gives the problem a start time — so a
+     * clock stopped first found nothing to stop, and the measurement of the one solve
+     * this call represents was lost, to be replaced later by a much longer interval
+     * ending at somebody else's report.
+     */
+    if (worked && problem) await markSolved(db, problem.id, now);
 
     return {
       ok: true,

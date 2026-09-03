@@ -441,13 +441,16 @@ solved was met again with the fix handed over, and how much engineer time that s
 `/stats` on the site and `/stats.json?days=30` answer both, and every figure is counted
 rather than estimated:
 
-- a **repeat failure caught** is a recall that landed on a problem which already had a
-  solution some report says worked;
+- a **repeat failure caught** is an occasion: a recall that landed on a problem which
+  already had a solution some report says worked, counting the same asker on the same
+  problem within an hour once. A hook and a model both reacting to one failed command, or
+  a CI job retried three times, is one person being saved one search;
 - its **engineer time** is the clocked time the same problem took to solve the first time —
-  from the first ask that got no working answer to the first report that something worked,
-  clamped between one minute and four hours. A problem never clocked borrows the median of
-  those that were and is reported as borrowed. When nothing has been clocked, no time is
-  claimed;
+  from the first ask that got no working answer to the first report that something worked —
+  when that interval is between one minute and four hours. A longer interval is a clock
+  somebody left running rather than a measurement, so it is excluded from the median and
+  its problem is valued like an unclocked one. A problem never clocked borrows the median
+  of those that were. When nothing has been clocked, no time is claimed;
 - a **fix confirmed from memory** is a report that the handed-over solution worked, the
   strongest evidence the hit was real.
 

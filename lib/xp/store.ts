@@ -893,6 +893,10 @@ export async function retract(
     problem.seen_count <= ASKED_BY_OTHERS;
   if (dropProblem) {
     await db.prepare("DELETE FROM problem_aliases WHERE problem_id = ?").bind(solution.problem_id).run();
+    // The recall log points at this row. Deleting it first is not bookkeeping: the
+    // foreign key is enforced, so without this the retraction fails outright once
+    // anybody has recalled the problem.
+    await db.prepare("DELETE FROM recalls WHERE problem_id = ?").bind(solution.problem_id).run();
     await db.prepare("DELETE FROM problems WHERE id = ?").bind(solution.problem_id).run();
   }
 
@@ -965,6 +969,14 @@ export async function forgetAgent(
       .run();
     await db
       .prepare(
+        `DELETE FROM recalls WHERE problem_id = ?1
+           AND EXISTS (SELECT 1 FROM problems WHERE id = ?1 AND created_by = ?2)
+           AND NOT EXISTS (SELECT 1 FROM solutions WHERE problem_id = ?1)`,
+      )
+      .bind(problemId, agentId)
+      .run();
+    await db
+      .prepare(
         `DELETE FROM problems WHERE id = ?1 AND created_by = ?2
            AND NOT EXISTS (SELECT 1 FROM solutions WHERE problem_id = ?1)`,
       )
@@ -974,6 +986,14 @@ export async function forgetAgent(
   await db
     .prepare(
       `DELETE FROM problem_aliases WHERE problem_id IN
+         (SELECT id FROM problems WHERE created_by = ?1
+            AND NOT EXISTS (SELECT 1 FROM solutions WHERE problem_id = problems.id))`,
+    )
+    .bind(agentId)
+    .run();
+  await db
+    .prepare(
+      `DELETE FROM recalls WHERE problem_id IN
          (SELECT id FROM problems WHERE created_by = ?1
             AND NOT EXISTS (SELECT 1 FROM solutions WHERE problem_id = problems.id))`,
     )
