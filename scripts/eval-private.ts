@@ -48,6 +48,9 @@ async function main() {
   for (const page of ["/", "/p/abc123", "/activity", "/a/someone", "/experience", "/stats", "/search", "/library"]) {
     check(`page is 404 while the site is closed: ${page}`, allowRequest(page, true, false) === false);
   }
+  for (const advertised of ["/.well-known/mcp.json", "/.well-known/mcp", "/license.xml", "/20ad100837b75d3a5dbfa457d6f0e9a6.txt"]) {
+    check(`nothing is advertised to a registry or a crawler: ${advertised}`, allowRequest(advertised, true, false) === false);
+  }
   for (const machine of ["/experience.json", "/mcp", "/stats.json", "/rule.md", "/connect.mjs", "/p/abc123/md"]) {
     check(`machine surface stays reachable: ${machine}`, isMachinePath(machine) && allowRequest(machine, true, false));
   }

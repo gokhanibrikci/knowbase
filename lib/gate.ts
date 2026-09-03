@@ -31,8 +31,14 @@ export const MACHINE_PATHS = [
   "/llms-full.txt",
 ] as const;
 
-/** `/p/<id>/md` is store content for machines: the route requires the secret itself. */
-const MACHINE_PATTERNS = [/^\/p\/[^/]+\/md$/, /^\/\.well-known\//, /^\/_next\//];
+/**
+ * `/p/<id>/md` is store content for machines: the route requires the secret itself.
+ *
+ * `/.well-known/*` is deliberately NOT here. Those files are discovery metadata written
+ * for public registries and crawlers — they carry the public store's address, description
+ * and licence — and a private deployment has nothing to advertise to anyone.
+ */
+const MACHINE_PATTERNS = [/^\/p\/[^/]+\/md$/, /^\/_next\//];
 
 export function isMachinePath(pathname: string): boolean {
   const path = pathname.length > 1 ? pathname.replace(/\/$/, "") : pathname;

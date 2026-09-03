@@ -473,9 +473,13 @@ organisation's own store, and it fails closed in three places:
   deployment's own, so no agent is ever told to POST its errors to knowbase.sh.
 - **Nothing is browsable.** The human pages return 404 until you set `PRIVATE_SITE=1`,
   which is your statement that Cloudflare Access (or any OIDC) stands in front of the
-  hostname. The machine surfaces stay reachable and check the secret themselves:
-  `/experience.json`, `/mcp`, `/stats.json` and `/p/<id>.md`, which is all a hook, an
-  agent or a CI job uses.
+  hostname. So do the discovery files that exist to advertise the public store to
+  registries and crawlers. The machine surfaces stay reachable and check the secret
+  themselves: `/experience.json`, `/mcp`, `/stats.json` and `/p/<id>.md`, which is all a
+  hook, an agent or a CI job uses. The private template sets `run_worker_first` on the
+  asset binding, because without it Cloudflare serves a matching static file — a
+  prerendered page among them — before the Worker runs at all, and the gate would never
+  see the request.
 - **Nobody enrols themselves.** Reading needs the organisation's secret, so registration
   needs `KNOWBASE_ENROL` — a token you distribute like any other build secret — or an
   existing member's secret. Without it the deployment issues no handles at all.
