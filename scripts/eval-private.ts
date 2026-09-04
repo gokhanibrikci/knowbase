@@ -43,35 +43,53 @@ async function main() {
 
   // The site is not browsable until the operator says an identity proxy stands in front.
   const { siteVisible } = await import("../lib/site");
-  const { allowRequest, isMachinePath } = await import("../lib/gate");
   check("the human site is closed until PRIVATE_SITE=1", siteVisible() === false);
-  for (const page of ["/", "/p/abc123", "/activity", "/a/someone", "/experience", "/stats", "/search", "/library"]) {
-    check(`page is 404 while the site is closed: ${page}`, allowRequest(page, true, false) === false);
-  }
-  for (const advertised of ["/.well-known/mcp.json", "/.well-known/mcp", "/license.xml", "/20ad100837b75d3a5dbfa457d6f0e9a6.txt"]) {
-    check(`nothing is advertised to a registry or a crawler: ${advertised}`, allowRequest(advertised, true, false) === false);
-  }
-  for (const machine of ["/experience.json", "/mcp", "/stats.json", "/rule.md", "/connect.mjs", "/p/abc123/md"]) {
-    check(`machine surface stays reachable: ${machine}`, isMachinePath(machine) && allowRequest(machine, true, false));
-  }
-  check("opening the site is deliberate", allowRequest("/p/abc123", true, true) === true);
-  check("a public deployment is never gated", allowRequest("/p/abc123", false, false) === true);
 
-  // The gate is only worth what the file that enforces it does, so the proxy itself is
-  // exercised here: Next 16 calls the export named `proxy`, and a wrong name would fail
-  // open with every page served.
+  const closed = (fn: () => unknown) => {
+    try {
+      fn();
+      return false;
+    } catch (error) {
+      // notFound() throws a framework error carrying a 404; anything else is a real fault.
+      return String((error as Error)?.message ?? error).includes("NEXT_HTTP_ERROR_FALLBACK;404");
+    }
+  };
+  const layout = (await import("../app/(site)/layout")).default;
+  const door = (await import("../app/page")).default;
+  const children = null as unknown as React.ReactNode;
+  check("every page under the site layout is 404 while the site is closed", closed(() => layout({ children, params: Promise.resolve({}) } as never)));
+  check("and so is the front door", closed(() => door()));
+  process.env.PRIVATE_SITE = "1";
+  check("opening the site is one deliberate flag", siteVisible() === true && !closed(() => door()));
   process.env.PRIVATE_SITE = "";
-  const { proxy } = await import("../proxy");
-  const { NextRequest } = await import("next/server");
-  const through = (url: string) => proxy(new NextRequest(new Request(url)));
-  const page = through("https://kb.acme.internal/p/abc123");
-  check("proxy: a page is 404 on a private deployment", page.status === 404, `HTTP ${page.status}`);
+  process.env.PRIVATE = "";
+  check("a public deployment is never gated", (await import("../lib/site")).siteVisible() === true);
+  process.env.PRIVATE = "1";
+
+  // What a private build must not carry into its bundle at all.
+  const { PUBLIC_ONLY_ASSETS, ALWAYS_SERVED } = await import("../lib/gate");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const shipped: string[] = [];
+  const walk = (dir: string, prefix = "") => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(path.join(dir, entry.name), rel);
+      else shipped.push(rel);
+    }
+  };
+  walk("public");
+  const advertises = shipped.filter((f) => {
+    if ((ALWAYS_SERVED as readonly string[]).includes(f)) return false;
+    const text = fs.readFileSync(path.join("public", f), "utf8");
+    return text.includes("knowbase.sh") || text.toLowerCase().includes("creativecommons");
+  });
+  const missed = advertises.filter((f) => !(PUBLIC_ONLY_ASSETS as readonly string[]).includes(f));
   check(
-    "proxy: and says nothing about what this deployment is",
-    !(page.headers.get("content-type") ?? "").includes("html") && page.headers.get("cache-control") === "no-store",
+    "every static file that advertises the public store is pruned from a private build",
+    missed.length === 0,
+    `not listed in PUBLIC_ONLY_ASSETS: ${missed.join(", ")}`,
   );
-  const machine = through("https://kb.acme.internal/experience.json");
-  check("proxy: the machine surfaces are let through", machine.status !== 404, `HTTP ${machine.status}`);
 
   const { ruleMarkdown } = await import("../lib/rule");
   const privateRule = ruleMarkdown(true, "Acme Bank", "https://kb.acme.internal");

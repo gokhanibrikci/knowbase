@@ -471,15 +471,14 @@ organisation's own store, and it fails closed in three places:
   licence grant, no IndexNow. The rule at `/rule.md`, the MCP tool descriptions and the
   server instructions say "this stays inside <org>" — and every URL in them is this
   deployment's own, so no agent is ever told to POST its errors to knowbase.sh.
-- **Nothing is browsable.** The human pages return 404 until you set `PRIVATE_SITE=1`,
+- **Nothing is browsable.** Every human page returns 404 unless you set `PRIVATE_SITE=1`,
   which is your statement that Cloudflare Access (or any OIDC) stands in front of the
-  hostname. So do the discovery files that exist to advertise the public store to
-  registries and crawlers. The machine surfaces stay reachable and check the secret
+  hostname. A private build prerenders those 404s, so the flag is decided at deploy time;
+  changing it means deploying again. The files that exist only to advertise the public
+  store — the discovery documents, the licence, the IndexNow key — are deleted from the
+  bundle rather than served. The machine surfaces stay reachable and check the secret
   themselves: `/experience.json`, `/mcp`, `/stats.json` and `/p/<id>.md`, which is all a
-  hook, an agent or a CI job uses. The private template sets `run_worker_first` on the
-  asset binding, because without it Cloudflare serves a matching static file — a
-  prerendered page among them — before the Worker runs at all, and the gate would never
-  see the request.
+  hook, an agent or a CI job uses.
 - **Nobody enrols themselves.** Reading needs the organisation's secret, so registration
   needs `KNOWBASE_ENROL` — a token you distribute like any other build secret — or an
   existing member's secret. Without it the deployment issues no handles at all.

@@ -1,59 +1,28 @@
 /**
- * What a private deployment lets through.
+ * The static files a private deployment must not ship.
  *
- * PRIVATE=1 stopped the store being *published* — no sitemap, no JSON-LD, no licence —
- * and put the organisation's secret in front of recall. It did not stop the browsable
- * site: /p/<id>, /activity, /a/<handle>, /experience and /stats all rendered the store's
- * contents to anyone who could reach the hostname, which for a bank is the whole promise
- * gone. The README said the answer was Cloudflare Access in front of the domain, so the
- * guarantee lived in a paragraph rather than in the code.
+ * Everything under app/ can decide for itself whether to answer — the site layout turns
+ * every human page into a 404 unless the operator has opened the site, and the machine
+ * surfaces check the organisation's secret. Files in public/ decide nothing: Cloudflare
+ * serves them off the asset binding, and several of them exist purely to advertise the
+ * public store — its address, its description, its licence, its IndexNow key. On a
+ * deployment that publishes nothing they are answers to questions nobody should be
+ * asking, so a private build removes them from the bundle rather than serving them.
  *
- * It lives here now, and it fails closed: on a private deployment the human site is 404
- * until the operator sets PRIVATE_SITE=1, which is their statement that an identity proxy
- * (Access, or any OIDC) sits in front of the hostname. The machine surfaces below stay
- * reachable, because an agent authenticates with its own secret and a hook cannot log in
- * through a browser flow — each one enforces that secret itself.
+ * public/connect.mjs stays: a developer has to be able to fetch the installer before
+ * they have anything at all, and it carries no organisation data. public/_headers is
+ * cache policy for the asset host, not a statement about anyone.
  */
-export const MACHINE_PATHS = [
-  "/experience.json", // recall requires the secret; report and register require identity
-  "/mcp", // same store, same secret
-  "/stats.json", // the outcome numbers, secret required
-  "/rule.md", // the instructions themselves — the installer fetches this before it has a secret
-  "/connect.mjs", // the installer
-  "/robots.txt",
-  "/sitemap.xml",
-  "/icon.svg",
-  "/favicon.ico",
-  "/search.json", // the shipped library corpus, not the organisation's store
-  "/diagnose.json",
-  "/outcome.json",
-  "/llms.txt",
-  "/llms-full.txt",
+export const PUBLIC_ONLY_ASSETS = [
+  "license.xml", // an RSL licence grant, for crawlers, over content that is not published
+  "20ad100837b75d3a5dbfa457d6f0e9a6.txt", // the IndexNow key: it exists to announce changes
+  "protocol.md", // the public store's protocol note, written in its own voice
+  ".well-known/mcp.json", // discovery metadata for registries: name, description, endpoint
+  ".well-known/mcp",
+  ".well-known/agents.json",
+  ".well-known/mcp/server-card.json",
+  ".well-known/mcp-registry-auth", // proves ownership of a registry entry that is not ours
 ] as const;
 
-/**
- * `/p/<id>/md` is store content for machines: the route requires the secret itself.
- *
- * `/.well-known/*` is deliberately NOT here. Those files are discovery metadata written
- * for public registries and crawlers — they carry the public store's address, description
- * and licence — and a private deployment has nothing to advertise to anyone.
- */
-const MACHINE_PATTERNS = [/^\/p\/[^/]+\/md$/, /^\/_next\//];
-
-export function isMachinePath(pathname: string): boolean {
-  const path = pathname.length > 1 ? pathname.replace(/\/$/, "") : pathname;
-  return (
-    (MACHINE_PATHS as readonly string[]).includes(path) ||
-    MACHINE_PATTERNS.some((re) => re.test(path))
-  );
-}
-
-/**
- * Whether a request may be served at all. `priv` is PRIVATE=1, `siteOpen` is
- * PRIVATE_SITE=1 — the operator's word that something checks identity in front.
- */
-export function allowRequest(pathname: string, priv: boolean, siteOpen: boolean): boolean {
-  if (!priv) return true;
-  if (isMachinePath(pathname)) return true;
-  return siteOpen;
-}
+/** Files that may be served by any deployment, private or public. */
+export const ALWAYS_SERVED = ["connect.mjs", "_headers"] as const;

@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { site } from "@/lib/site";
+import { notFound } from "next/navigation";
+
+import { site, siteVisible } from "@/lib/site";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/" },
@@ -24,6 +26,10 @@ export const metadata: Metadata = {
  * is linked from the two screens behind the buttons, so crawlers lose nothing.
  */
 export default function DoorPage() {
+  // The front door is a page of this site too, and a private deployment has no site
+  // until an identity proxy stands in front of it. See app/(site)/layout.tsx.
+  if (!siteVisible()) notFound();
+
   return (
     <main className="relative flex flex-1 flex-col items-center justify-center px-5 py-16">
       {/* CRT surface: static scanlines + slow traveling scan bar */}

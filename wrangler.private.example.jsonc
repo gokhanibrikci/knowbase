@@ -25,11 +25,7 @@
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-08-07",
   "compatibility_flags": ["nodejs_compat"],
-  // run_worker_first is what makes the gate real. Without it Cloudflare serves a matching
-  // static file — a prerendered page, the discovery files, the licence — straight off the
-  // asset binding, and proxy.ts never runs. On an internal deployment the extra invocation
-  // per asset costs nothing worth counting.
-  "assets": { "directory": ".open-next/assets", "binding": "ASSETS", "run_worker_first": true },
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
   "routes": [{ "pattern": "knowbase.example.internal", "custom_domain": true }],
   "observability": { "enabled": true },
   "vars": {
